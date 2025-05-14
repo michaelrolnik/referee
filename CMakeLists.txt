@@ -43,11 +43,11 @@ set(ANTLR4_JAR_LOCATION /usr/local/lib/antlr-4.10.1-complete.jar)
 endif()
 
 enable_testing()
-
 find_package(antlr4-runtime   REQUIRED)
 find_package(antlr4-generator REQUIRED)
 find_package(LLVM             REQUIRED CONFIG)
 find_package(FMT              REQUIRED)
+#find_package(spdlog           REQUIRED)
 
 add_code_coverage()
 
@@ -68,6 +68,7 @@ include_directories(
     ${ANTLR4_INCLUDE_DIR}
     ${LLVM_INCLUDE_DIRS}
     submodules/rapidcsv/src
+    submodules/spdlog/include
 )
 
 if (${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
