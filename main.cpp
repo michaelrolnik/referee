@@ -23,9 +23,9 @@
  */
 #include "referee.hpp"
 
-#include <spdlog/spdlog.h>
+#include "spdlog/spdlog.h"
 #include "spdlog/fmt/fmt.h"
-#include <spdlog/fmt/ostr.h>
+#include "spdlog/fmt/ostr.h"
 
 #include <CLI/App.hpp>
 #include "CLI/Formatter.hpp"

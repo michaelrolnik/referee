@@ -3,20 +3,16 @@
 ## Linux
 Install the following tools
 ```bash
-sudo apt-get install antlr4
 sudo apt-get install clang-format
 sudo apt-get install cmake
 sudo apt-get install g++
 sudo apt-get install gcc
-sudo apt-get install libantlr4-runtime-dev
 sudo apt-get install libcli11-dev
 sudo apt-get install libfmt-dev
 sudo apt-get install libfmt8
 sudo apt-get install libgtest-dev
 sudo apt-get install libgtextutils-dev
-sudo apt-get install libspdlog-dev
 sudo apt-get install llvm
-sudo apt-get install spdlog
 ```
 
 ## MacOS

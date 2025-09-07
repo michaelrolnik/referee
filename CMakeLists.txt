@@ -26,60 +26,57 @@ cmake_minimum_required(VERSION 3.16)
 
 project(referee)
 
-set(CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/submodules/cmake-scripts")
+list(APPEND CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake)
+list(APPEND CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/submodules/cmake-scripts)
+set(ANTLR4TAG 4.13.1)
+
 include(code-coverage)
 include(formatting)
+include(FetchContent)
+include(ExternalProject)
+include(add-antlr4)
 
 add_compile_options(-Wno-multichar)
 add_compile_options(-g -ggdb)
 add_compile_options(-std=c++20)
 add_compile_options(-O0)
+# TODO: remove this once we have fixed all the deprecation warnings
+add_compile_options(-Wno-deprecated-declarations)
 
 if (${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
-set(ANTLR4_JAR_LOCATION /opt/homebrew/Cellar/antlr/4.10.1/antlr-4.10.1-complete.jar)
-set(LLVM_DIR            /opt/homebrew/opt/llvm/lib/cmake/llvm )
-else()
-set(ANTLR4_JAR_LOCATION /usr/local/lib/antlr-4.10.1-complete.jar)
+    set(LLVM_DIR            /opt/homebrew/opt/llvm/lib/cmake/llvm )
 endif()
 
 enable_testing()
 
-find_package(antlr4-runtime   REQUIRED)
-find_package(antlr4-generator REQUIRED)
 find_package(LLVM             REQUIRED CONFIG)
 find_package(FMT              REQUIRED)
 
 add_code_coverage()
 
-antlr4_generate(
+# Setup ANTLR4 first
+add_antlr4_jar(${ANTLR4TAG})
+add_antlr4_cpp(${ANTLR4TAG} SHARED WITH_LIBCXX DISABLE_WARNINGS)
+
+# Then use ANTLR4 to generate parser
+add_antlr4_target(
     referee_parser
-    ${CMAKE_CURRENT_SOURCE_DIR}/core/referee.g4
-    BOTH
-    TRUE
-    TRUE
-    "referee"
+    INPUT_FILES ${CMAKE_CURRENT_SOURCE_DIR}/core/referee.g4
+    NAMESPACE referee
+    GEN_VISITOR
 )
-include_directories(
-    .
-    core
-    ${ANTLR4_INCLUDE_DIR_referee_parser}
-    ${ANTLR4_INCLUDE_DIR}
-    ${PROJECT_BINARY_DIR}
-    ${ANTLR4_INCLUDE_DIR}
-    ${LLVM_INCLUDE_DIRS}
-    submodules/rapidcsv/src
-)
+
 
 if (${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
-include_directories(
-    /opt/homebrew/Cellar/googletest/1.11.0/include
-    /opt/homebrew/Cellar/antlr4-cpp-runtime/4.10.1/include/
-)
+    include_directories(
+        /opt/homebrew/Cellar/googletest/1.11.0/include
+        /opt/homebrew/Cellar/antlr4-cpp-runtime/4.10.1/include/
+    )
 
-link_directories(
-    /opt/homebrew/Cellar/googletest/1.11.0/lib
-    /opt/homebrew/Cellar/antlr4-cpp-runtime/4.10.1/lib
-)
+    link_directories(
+        /opt/homebrew/Cellar/googletest/1.11.0/lib
+        /opt/homebrew/Cellar/antlr4-cpp-runtime/4.10.1/lib
+    )
 endif()
 
 separate_arguments(LLVM_DEFINITIONS_LIST NATIVE_COMMAND ${LLVM_DEFINITIONS})
@@ -94,7 +91,7 @@ file(GLOB_RECURSE ALL_CODE_FILES
 )
 
 clang_format(format ${ALL_CODE_FILES})
-message( ${ALL_CODE_FILES})
+
 
 add_library(
     core
@@ -112,28 +109,44 @@ add_library(
     core/utils.cpp
     rdb/database.cpp
     referee.cpp
-    ${ANTLR4_SRC_FILES_referee_parser}
+    ${antlr4_referee_parser_SOURCES}
 )
 
+target_include_directories(core PRIVATE
+    ${ANTLR4CPP_INCLUDE_DIR}
+    ${antlr4_referee_parser_INCLUDE_DIR}
+    ${PROJECT_SOURCE_DIR}/core
+    ${PROJECT_BINARY_DIR}
+    ${LLVM_INCLUDE_DIRS}
+    ${PROJECT_SOURCE_DIR}/submodules/rapidcsv/src
+    ${PROJECT_SOURCE_DIR}/submodules/spdlog/include
+)
+
+# Main executable
 add_executable(
     referee
     main.cpp
 )
+
+target_include_directories(referee PRIVATE
+    ${PROJECT_SOURCE_DIR}/submodules/spdlog/include
+)
+
 add_dependencies(
     referee
-    antlr4_shared
+    antlr4::antlr4_shared
 )
 
 target_link_libraries(
     referee PUBLIC
     fmt::fmt
     core
-    fmt::fmt
-    antlr4_shared
+    antlr4::antlr4_shared
     ${llvm_libs}
 )
 target_code_coverage(referee)
 
+# Tests executable
 add_executable(
     tests
     test/main.cpp
@@ -142,26 +155,42 @@ add_executable(
     test/logic.cpp
 )
 
+target_include_directories(tests PRIVATE
+    ${ANTLR4CPP_INCLUDE_DIR}
+    ${PROJECT_SOURCE_DIR}
+    ${PROJECT_SOURCE_DIR}/core
+    ${antlr4_referee_parser_INCLUDE_DIR}
+    ${LLVM_INCLUDE_DIRS}
+)
+
 target_link_libraries(
     tests PUBLIC
     fmt::fmt
     core
-    fmt::fmt
     gtest
     gtest_main
     pthread
-    antlr4_shared
+    antlr4::antlr4_shared
     ${llvm_libs}
 )
 target_code_coverage(tests)
 
 add_test(tests tests)
 
+# RDB executable
 add_executable(
     rdb
     rdb/database.cpp
     rdb/main.cpp
 )
+
+target_include_directories(rdb PRIVATE
+    ${PROJECT_SOURCE_DIR}/submodules/rapidcsv/src
+    ${PROJECT_SOURCE_DIR}/submodules/spdlog/include
+    ${PROJECT_SOURCE_DIR}/core
+)
+
 target_link_libraries(
     rdb
-    fmt::fmt)
+    fmt::fmt
+)

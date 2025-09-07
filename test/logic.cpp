@@ -25,7 +25,7 @@
 #include "gtest/gtest.h"
 #include "../rdb/database.hpp"
 
-#include "antlr4-runtime/antlr4-runtime.h"
+#include "antlr4-runtime.h"
 #include "refereeParser.h"
 #include "refereeLexer.h"
 #include "refereeBaseVisitor.h"
@@ -75,7 +75,7 @@
 extern "C"
 void    debug(int64_t value)
 {
-    printf("debug: %lld\n", value);
+    printf("debug: %ld\n", value);
 }
 //  GCOV_EXCL_STOP
 //  LCOV_EXCL_STOP

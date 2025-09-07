@@ -1,0 +1,66 @@
+name: Build C++ Project
+
+on:
+  pull_request:
+    branches: [ "**" ]
+
+jobs:
+  build:
+
+    strategy:
+      matrix:
+        os: [ubuntu-22.04, macos-latest]
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install LLVM 14 and dependencies (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt update
+          sudo apt install -y wget gnupg lsb-release ninja-build
+          wget https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh 14
+          sudo apt install -y clang-format-14 clang-14 llvm-14 \
+            cmake g++ build-essential \
+            libcli11-dev libfmt-dev libgtest-dev libgtextutils-dev
+
+          sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-14 100
+          sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-14 100
+          sudo update-alternatives --install /usr/bin/clang-format clang-format /usr/bin/clang-format-14 100
+
+      - name: Install LLVM 14 (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew tap-new llvm14/llvm14
+          brew extract --version=14 llvm llvm14/llvm14
+          brew install llvm14/llvm14/llvm@14
+
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew update
+          brew install cmake antlr antlr4-cpp-runtime clang-format cli11 fmt googletest
+
+      - name: Create build directory
+        run: mkdir -p build
+
+      - name: Run CMake
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_C_COMPILER=clang
+          -DCMAKE_CXX_COMPILER=clang++
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Run tests
+        run: |
+          cd build
+          ./tests

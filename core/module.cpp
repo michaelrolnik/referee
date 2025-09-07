@@ -23,6 +23,8 @@
  */
 
 
+#include <algorithm>
+
 #include "module.hpp"
 #include "factory.hpp"
 

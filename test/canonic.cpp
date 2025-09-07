@@ -23,8 +23,8 @@
  */
 
 #include "gtest/gtest.h"
-#include "core/visitors/canonic.hpp"
-#include "core/factory.hpp"
+#include "visitors/canonic.hpp"
+#include "factory.hpp"
 #include <iostream>
 
 class testCanonic

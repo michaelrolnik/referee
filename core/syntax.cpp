@@ -22,6 +22,8 @@
  *  SOFTWARE.
  */
 
+#include <algorithm>
+
 #include "syntax.hpp"
 #include "module.hpp"
 #include "factory.hpp"
