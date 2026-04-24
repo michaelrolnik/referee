@@ -78,7 +78,7 @@ void    CsvHeadersImpl::visit(TypeArray*    type)
             size = 1;
         }
         
-        for(auto i = 0; i < size; i++)
+        for(auto i = 0u; i < size; i++)
         {
             auto index  = "[" + std::to_string(i) + "]";
 

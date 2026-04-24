@@ -121,7 +121,9 @@ struct CompileExprImpl
             llvm::Module*       module,
             llvm::IRBuilder<>*  builder,
             llvm::Function*     function,
-            Module*             refmod);
+            Module*             refmod,
+            llvm::Type*         propType,
+            llvm::Type*         confType);
 
     void    visit(ExprAdd*          expr) override;
     void    visit(ExprAnd*          expr) override;
@@ -263,7 +265,7 @@ void    CompileTypeImpl::visit(TypeNumber*           type)
 
 void    CompileTypeImpl::visit(TypeString*           type)
 {
-    m_type  = m_builder->getInt8PtrTy();
+    m_type  = m_builder->getPtrTy();
 }
 
 void    CompileTypeImpl::visit(TypeBoolean*          type)
@@ -297,7 +299,7 @@ void    CompileTypeImpl::visit(TypeArray*            type)
 
     if(size == 0)
     {
-        elements.push_back(llvm::PointerType::get(base, 0));
+        elements.push_back(llvm::PointerType::get(*m_context, 0));
 
         m_type  = llvm::StructType::create(*m_context, elements, m_name);
     }
@@ -321,7 +323,9 @@ CompileExprImpl::CompileExprImpl(
             llvm::Module*       module,
             llvm::IRBuilder<>*  builder,
             llvm::Function*     function,
-            Module*             refmod)
+            Module*             refmod,
+            llvm::Type*         propType,
+            llvm::Type*         confType)
     : m_context(context)
     , m_module(module)
     , m_function(function)
@@ -339,9 +343,9 @@ CompileExprImpl::CompileExprImpl(
     m_frst.push_back(iter++);
     m_last.push_back(iter++);
     m_conf  = iter;
-    m_propType      = cast<llvm::PointerType>(m_frst.front()->getType())->getPointerElementType();
+    m_propType      = propType;
     m_propPtrType   = m_frst.front()->getType();
-    m_confType      = cast<llvm::PointerType>(m_conf->getType())->getPointerElementType();
+    m_confType      = confType;
     m_confPtrType   = m_conf->getType();
     m_boolType      = m_builder->getInt1Ty();
 
@@ -410,7 +414,7 @@ void    CompileExprImpl::visit(ExprConstString*  expr)
 {
     auto    value   = llvm::ConstantInt::getSigned(m_builder->getInt64Ty(), reinterpret_cast<int64_t>(Strings::instance()->getString(expr->value)));
 
-    m_value = m_builder->CreateIntToPtr(value, m_builder->getInt8PtrTy(), expr->value);
+    m_value = m_builder->CreateIntToPtr(value, m_builder->getPtrTy(), expr->value);
 }
 
 void    CompileExprImpl::visit(ExprContext*      expr)
@@ -445,15 +449,14 @@ void    CompileExprImpl::visit(ExprContext*      expr)
 void    CompileExprImpl::visit(ExprConf*         expr)
 {
     auto    ctxtPtr     = make(expr->ctxt);
-    auto    ctxtPtrType = cast<llvm::PointerType>(ctxtPtr->getType());
-    auto    ctxtType    = ctxtPtrType->getPointerElementType();
+    auto    ctxtType    = m_confType;
 
     auto    confPtr     = m_builder->CreateStructGEP(ctxtType, ctxtPtr, dynamic_cast<TypeContext*>(expr->ctxt->type())->index(expr->name));
-    auto    confPtrType = cast<llvm::PointerType>(confPtr->getType());
 
     if(dynamic_cast<TypePrimitive*>(expr->type()))
     {
-        m_value = m_builder->CreateLoad(confPtrType->getPointerElementType(), m_value, false, "val_" + expr->name);
+        auto    fieldType   = Compile::make(m_context, m_module, expr->type(), expr->name);
+        m_value = m_builder->CreateLoad(fieldType, m_value, false, "val_" + expr->name);
     }
     else
     {
@@ -464,30 +467,24 @@ void    CompileExprImpl::visit(ExprConf*         expr)
 void    CompileExprImpl::visit(ExprData*         expr)
 {
     auto    ctxtPtr     = make(expr->ctxt);
-    auto    ctxtPtrType = cast<llvm::PointerType>(ctxtPtr->getType());
-    auto    ctxtType    = ctxtPtrType->getPointerElementType();
+    auto    ctxtType    = m_propType;
 
     if(expr->name == "__time__")
     {
         auto    propPtr         = m_builder->CreateStructGEP(ctxtType, ctxtPtr, 0);     //  skip __time__
-        auto    propPtrType     = cast<llvm::PointerType>(propPtr->getType());
-        auto    propType        = propPtrType->getPointerElementType();
-
-        m_value = m_builder->CreateLoad(propType, propPtr, false, "__time__");
+        m_value = m_builder->CreateLoad(m_builder->getInt64Ty(), propPtr, false, "__time__");
     }
     else
     {
         auto    propPtrPtr      = m_builder->CreateStructGEP(ctxtType, ctxtPtr, dynamic_cast<TypeContext*>(expr->ctxt->type())->index(expr->name) + 1); //  +1 to skip __time__
-        auto    propPtrPtrType  = cast<llvm::PointerType>(propPtrPtr->getType());
-        auto    propPtrType     = cast<llvm::PointerType>(propPtrPtrType->getPointerElementType());
-
-        auto    propType        = propPtrType->getPointerElementType();
+        auto    propPtrType     = m_builder->getPtrTy();
 
         m_value = m_builder->CreateLoad(propPtrType, propPtrPtr, false, "ptr_" + expr->name);
 
         if(dynamic_cast<TypePrimitive*>(expr->type()))
         {
-            m_value = m_builder->CreateLoad(propPtrType->getPointerElementType(), m_value, false, "val_" + expr->name);
+            auto    propFieldType   = Compile::make(m_context, m_module, expr->type(), expr->name);
+            m_value = m_builder->CreateLoad(propFieldType, m_value, false, "val_" + expr->name);
         }
     }
 }
@@ -620,8 +617,8 @@ void    CompileExprImpl::visit(ExprIndx*         expr)
     auto    exprType    = expr->type();
     auto    basePtr     = make(expr->lhs);
     auto    indx        = make(expr->rhs);
-    auto    basePtrType = cast<llvm::PointerType>(basePtr->getType());
-    auto    baseType    = cast<llvm::ArrayType>(basePtrType->getPointerElementType());
+    auto    baseLLVMType= Compile::make(m_context, m_module, expr->lhs->type(), "[]");
+    auto    baseType    = cast<llvm::ArrayType>(baseLLVMType);
     auto    elemType    = baseType->getElementType();
 
     m_value = m_builder->CreateGEP(baseType, basePtr, {m_0, indx}, "ptr_[]");
@@ -916,8 +913,7 @@ void    CompileExprImpl::visit(ExprMmbr*         expr)
 {
     auto    exprType    = expr->type();
     auto    basePtr     = make(expr->arg);
-    auto    basePtrType = cast<llvm::PointerType>(basePtr->getType());
-    auto    baseType    = basePtrType->getPointerElementType();
+    auto    baseType    = Compile::make(m_context, m_module, expr->arg->type(), expr->mmbr);
 
     if(dynamic_cast<TypeComposite*>(exprType) || dynamic_cast<TypeArray*>(exprType))
     {
@@ -925,7 +921,7 @@ void    CompileExprImpl::visit(ExprMmbr*         expr)
 
         m_value = m_builder->CreateStructGEP(baseType, basePtr, temp->index(expr->mmbr), "ptr_" + expr->mmbr);
     }
-    else if(auto type = dynamic_cast<TypePrimitive*>(exprType))
+    else if(dynamic_cast<TypePrimitive*>(exprType))
     {
         auto    temp        = dynamic_cast<TypeComposite*>(expr->arg->type());
 
@@ -937,8 +933,7 @@ void    CompileExprImpl::visit(ExprMmbr*         expr)
         else
         {
             auto    dataPtr     = m_builder->CreateStructGEP(baseType, basePtr, temp->index(expr->mmbr), "ptr_" + expr->mmbr);
-            auto    dataPtrType = cast<llvm::PointerType>(dataPtr->getType());
-            auto    dataType    = dataPtrType->getPointerElementType();
+            auto    dataType    = Compile::make(m_context, m_module, expr->type(), expr->mmbr);
 
             m_value = m_builder->CreateLoad(dataType, dataPtr, false, "val_" + expr->mmbr);
         }
@@ -1189,8 +1184,6 @@ uint64_t    UR(prop_t const* curr, prop_t const* frst, prop_t const* last, bool 
     return  endV;
 }
 */
-    auto    debug   = m_module->getFunction("debug");
-
     auto    bbWhile = llvm::BasicBlock::Create(*m_context, name + "-while", m_function);
     auto    bbOuter = llvm::BasicBlock::Create(*m_context, name + "-outer", m_function);
     auto    bbInner = llvm::BasicBlock::Create(*m_context, name + "-inner", m_function);
@@ -1383,8 +1376,6 @@ uint64_t    ST(prop_t const* curr, prop_t const* frst, prop_t const* last, bool 
     return  endV;
 }
 */
-    auto    debug   = m_module->getFunction("debug");
-
     auto    bbWhile = llvm::BasicBlock::Create(*m_context, name + "-while", m_function);
     auto    bbOuter = llvm::BasicBlock::Create(*m_context, name + "-outer", m_function);
     auto    bbInner = llvm::BasicBlock::Create(*m_context, name + "-inner", m_function);
@@ -1398,6 +1389,7 @@ uint64_t    ST(prop_t const* curr, prop_t const* frst, prop_t const* last, bool 
     auto    frst    = m_frst.back();
     auto    curr0   = m_curr.back();
     auto    prev0   = getPrev(curr0);
+    __attribute__((unused))
     auto    last    = m_last.back();
 
     llvm::Value*    timeLo  = nullptr;
@@ -1556,6 +1548,7 @@ void    CompileExprImpl::visit(SpecBefore*       spec)
 
     auto    bbWhile = llvm::BasicBlock::Create(*m_context, "spec-while",m_function);
     auto    bbTestHi= llvm::BasicBlock::Create(*m_context, "spec-test", m_function);
+    __attribute__((unused))
     auto    bbTestLo= bbTestHi;
     auto    bbBodyHi= llvm::BasicBlock::Create(*m_context, "spec-body", m_function);
     auto    bbBodyLo= bbBodyHi;
@@ -1636,6 +1629,7 @@ void    CompileExprImpl::visit(SpecAfter*        spec)
 
     auto    bbWhile = llvm::BasicBlock::Create(*m_context, "spec-while",m_function);
     auto    bbTestHi= llvm::BasicBlock::Create(*m_context, "spec-test", m_function);
+    __attribute__((unused))
     auto    bbTestLo= bbTestHi;
     auto    bbBodyHi= llvm::BasicBlock::Create(*m_context, "spec-body", m_function);
     auto    bbBodyLo= bbBodyHi;
@@ -1695,8 +1689,6 @@ void    CompileExprImpl::visit(SpecAfter*        spec)
 
 void    CompileExprImpl::visit(SpecBetweenAnd*   spec)
 {
-    auto    debug       = m_module->getFunction("debug");
-
     auto    bbWhile     = llvm::BasicBlock::Create(*m_context, "spec-while", m_function);
     auto    bbEvalCondHi= llvm::BasicBlock::Create(*m_context, "spec-eval-cond", m_function);
     auto    bbEvalCondLo= bbEvalCondHi;
@@ -1814,10 +1806,9 @@ void    CompileExprImpl::visit(SpecBetweenAnd*   spec)
 
 void    CompileExprImpl::visit(SpecAfterUntil*   spec)
 {
-    auto    debug       = m_module->getFunction("debug");
-
     auto    bbWhile     = llvm::BasicBlock::Create(*m_context, "spec-while", m_function);
     auto    bbEvalCondHi= llvm::BasicBlock::Create(*m_context, "spec-eval-cond", m_function);
+    __attribute__((unused))
     auto    bbEvalCondLo= bbEvalCondHi;
     auto    bbEvalBodyHi= llvm::BasicBlock::Create(*m_context, "spec-eval-body", m_function);
     auto    bbEvalBodyLo= bbEvalBodyHi;
@@ -1990,7 +1981,7 @@ void Compile::make(llvm::LLVMContext* context, llvm::Module* module, Module* ref
         confTypes.push_back(make(context, module, type, name));
     }
     auto    confType    = llvm::StructType::create(*context, confTypes, "__conf_t");
-    auto    confPtrType = llvm::PointerType::get(confType, 0);
+    auto    confPtrType = llvm::PointerType::get(*context, 0);
     module->getOrInsertGlobal("__conf__", confType);
 
     //  create __prop__
@@ -2002,11 +1993,11 @@ void Compile::make(llvm::LLVMContext* context, llvm::Module* module, Module* ref
         if(name == "__time__")
             continue;
 
-        auto    type    = refmod->getProp(name);
-        propTypes.push_back(llvm::PointerType::get(make(context, module, type, name), 0));
+        (void)refmod->getProp(name);            // keep semantic types reachable
+        propTypes.push_back(llvm::PointerType::get(*context, 0));
     }
     auto    propType    = llvm::StructType::create(*context, propTypes, "__prop_t");
-    auto    propPtrType = llvm::PointerType::get(propType, 0);
+    auto    propPtrType = llvm::PointerType::get(*context, 0);
     module->getOrInsertGlobal("__prop__", propPtrType);
 
     auto    exprs   = refmod->getExprs();
@@ -2025,7 +2016,7 @@ void Compile::make(llvm::LLVMContext* context, llvm::Module* module, Module* ref
         auto    bb          = llvm::BasicBlock::Create(*context, "entry", funcBody);
         builder->SetInsertPoint(bb);
 
-        CompileExprImpl compExpr(context, module, builder.get(), funcBody, refmod);
+        CompileExprImpl compExpr(context, module, builder.get(), funcBody, refmod, propType, confType);
 
         auto    temp        = Rewrite::make(expr);
         TypeCalc::make(refmod, temp);
@@ -2056,7 +2047,7 @@ void Compile::make(llvm::LLVMContext* context, llvm::Module* module, Module* ref
         auto    bb          = llvm::BasicBlock::Create(*context, "entry", funcBody);
         builder->SetInsertPoint(bb);
 
-        CompileExprImpl compExpr(context, module, builder.get(), funcBody, refmod);
+        CompileExprImpl compExpr(context, module, builder.get(), funcBody, refmod, propType, confType);
 
         builder->CreateRet(compExpr.make(spec));
 

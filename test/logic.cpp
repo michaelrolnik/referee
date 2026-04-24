@@ -54,6 +54,12 @@
 #include "llvm/ExecutionEngine/Orc/IRTransformLayer.h"
 #include "llvm/ExecutionEngine/Orc/JITTargetMachineBuilder.h"
 #include "llvm/ExecutionEngine/Orc/RTDyldObjectLinkingLayer.h"
+#include "llvm/ExecutionEngine/Orc/LLJIT.h"
+#if __has_include("llvm/ExecutionEngine/Orc/AbsoluteSymbols.h")
+#  include "llvm/ExecutionEngine/Orc/AbsoluteSymbols.h"
+#endif
+#include "llvm/ExecutionEngine/Orc/Shared/ExecutorSymbolDef.h"
+#include "llvm/ExecutionEngine/Orc/Shared/ExecutorAddress.h"
 #include "llvm/ExecutionEngine/SectionMemoryManager.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/LegacyPassManager.h"
@@ -75,77 +81,59 @@
 extern "C"
 void    debug(int64_t value)
 {
-    printf("debug: %lld\n", value);
+    std::cout << value << std::endl;
 }
 //  GCOV_EXCL_STOP
 //  LCOV_EXCL_STOP
 
-class RefereeJIT 
+class RefereeJIT
 {
 private:
-    std::unique_ptr<llvm::orc::ExecutionSession>    ES;
-    llvm::DataLayout                                DL;
-    llvm::orc::MangleAndInterner                    Mangle;
-    llvm::orc::RTDyldObjectLinkingLayer             ObjectLayer;
-    llvm::orc::IRCompileLayer                       CompileLayer;
-    llvm::orc::JITDylib&                            MainJD;
+    std::unique_ptr<llvm::orc::LLJIT>   J;
 
 public:
-    RefereeJIT(
-            std::unique_ptr<llvm::orc::ExecutionSession>    ES,
-            llvm::orc::JITTargetMachineBuilder              JTMB, 
-            llvm::DataLayout                                DL)
-        : ES(std::move(ES))
-        , DL(std::move(DL))
-        , Mangle(*this->ES, this->DL)
-        , ObjectLayer(*this->ES,[]() { return std::make_unique<llvm::SectionMemoryManager>(); })
-        , CompileLayer(*this->ES, ObjectLayer, std::make_unique<llvm::orc::ConcurrentIRCompiler>(std::move(JTMB)))
-        , MainJD(this->ES->createBareJITDylib("<main>")) 
+    explicit RefereeJIT(std::unique_ptr<llvm::orc::LLJIT> J_)
+        : J(std::move(J_))
     {
-
-        llvm::ExitOnError()(MainJD.define(
-            llvm::orc::absoluteSymbols(llvm::orc::SymbolMap{
-                { Mangle("debug"), llvm::JITEvaluatedSymbol::fromPointer(&debug)}})));
-
-        MainJD.addGenerator(cantFail(llvm::orc::DynamicLibrarySearchGenerator::GetForCurrentProcess(DL.getGlobalPrefix())));
     }
 
-    ~RefereeJIT() 
+    static llvm::Expected<std::unique_ptr<RefereeJIT>> Create()
     {
-        if (auto Err = ES->endSession())
-        {
-            ES->reportError(std::move(Err));
-        }
+        auto    JOrErr  = llvm::orc::LLJITBuilder().create();
+        if (!JOrErr)
+            return JOrErr.takeError();
+
+        auto    J       = std::move(*JOrErr);
+
+        auto    GenOrErr = llvm::orc::DynamicLibrarySearchGenerator::GetForCurrentProcess(
+            J->getDataLayout().getGlobalPrefix());
+        if (!GenOrErr)
+            return GenOrErr.takeError();
+        J->getMainJITDylib().addGenerator(std::move(*GenOrErr));
+
+        llvm::orc::MangleAndInterner    Mangle(J->getExecutionSession(), J->getDataLayout());
+        llvm::orc::SymbolMap            symMap;
+        symMap[Mangle("debug")]     = {
+            llvm::orc::ExecutorAddr::fromPtr(&debug),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable,
+        };
+        if (auto Err = J->getMainJITDylib().define(
+                llvm::orc::absoluteSymbols(std::move(symMap))))
+            return std::move(Err);
+
+        return std::make_unique<RefereeJIT>(std::move(J));
     }
 
-    static llvm::Expected<std::unique_ptr<RefereeJIT>> Create() 
+    const llvm::DataLayout& getDataLayout() const   { return J->getDataLayout(); }
+    llvm::orc::JITDylib&    getMainJITDylib()       { return J->getMainJITDylib(); }
+    llvm::Error             addModule(llvm::orc::ThreadSafeModule TSM)
     {
-        auto EPC = llvm::orc::SelfExecutorProcessControl::Create();
-        if (!EPC)
-            return EPC.takeError();
-
-        auto    ES     = std::make_unique<llvm::orc::ExecutionSession>(std::move(*EPC));
-        auto    JTMB   = llvm::orc::JITTargetMachineBuilder(ES->getExecutorProcessControl().getTargetTriple());
-        auto    DL     = JTMB.getDefaultDataLayoutForTarget();
-        
-        if (!DL)
-            return DL.takeError();
-
-        return std::make_unique<RefereeJIT>(std::move(ES), std::move(JTMB), std::move(*DL));
+        return J->addIRModule(std::move(TSM));
     }
 
-    const llvm::DataLayout& getDataLayout() const   { return DL; }
-    llvm::orc::JITDylib&    getMainJITDylib()       { return MainJD; }
-    llvm::Error             addModule(llvm::orc::ThreadSafeModule TSM, llvm::orc::ResourceTrackerSP RT = nullptr)
+    llvm::Expected<llvm::orc::ExecutorAddr>     lookup(llvm::StringRef Name)
     {
-        if (!RT)
-            RT = MainJD.getDefaultResourceTracker();
-        return CompileLayer.add(RT, std::move(TSM));
-    }
-
-    llvm::Expected<llvm::JITEvaluatedSymbol>    lookup(llvm::StringRef Name)
-    {
-        return ES->lookup({&MainJD}, Mangle(Name.str()));
+        return J->lookup(Name);
     }
 };
 
@@ -218,7 +206,7 @@ static llvm::ExitOnError ExitOnErr;
 
 TEST_F(LogicTest, Pass)
 {
-    std::string                 filename    = "../test/logic/pass.ref";
+    std::string                 filename    = std::string(REFEREE_TEST_DATA_DIR) + "/pass.ref";
     std::ifstream               stream(filename, std::ios_base::in);
 
     ASSERT_TRUE(stream.is_open());
@@ -247,46 +235,21 @@ TEST_F(LogicTest, Pass)
     TheModule->setDataLayout(TheJIT->getDataLayout());
 
     try {
-        TheFPM->add(llvm::createInstructionCombiningPass());
-        TheFPM->add(llvm::createReassociatePass());
-        TheFPM->add(llvm::createGVNPass());
-        TheFPM->add(llvm::createCFGSimplificationPass());
-        TheFPM->add(llvm::createLoopStrengthReducePass());
-        TheFPM->add(llvm::createLoopLoadEliminationPass());
-        TheFPM->add(llvm::createLoopDataPrefetchPass());
-        TheFPM->add(llvm::createLoopSimplifyCFGPass());
-        TheFPM->add(llvm::createLoopGuardWideningPass());
-        TheFPM->add(llvm::createLoopDistributePass());
-        TheFPM->add(llvm::createInstructionCombiningPass());
-        TheFPM->add(llvm::createReassociatePass());
-        TheFPM->add(llvm::createGVNPass());
-        TheFPM->add(llvm::createCFGSimplificationPass());
-
-        TheFPM->doInitialization();
-
-        auto& functions = TheModule->getFunctionList();
         std::vector<std::string>    names;
-
-        for(auto iter = functions.begin(); iter != functions.end(); iter++)
+        for(auto& F : *TheModule)
         {
-            names.push_back(iter->getName().str());
-
-            TheFPM->run(*iter);
+            names.push_back(F.getName().str());
         }
 
         ExitOnErr(TheJIT->addModule(llvm::orc::ThreadSafeModule(std::move(TheModule), std::move(TheContext))));
 
-        //auto    symbol  = ExitOnErr(TheJIT->lookup("30:3 .. 30:13"));
-        //auto    func    = (bool (*)(state_t*, state_t*, void*))(intptr_t)symbol.getAddress();
-        //auto    result  = func(&state[0], &state[26], nullptr);
-        //std::cout << "result: " << result << std::endl; 
         {
             for(auto name: names)
             {
-                auto    symbol  = ExitOnErr(TheJIT->lookup(name));
-                auto    func    = (bool (*)(state_t*, state_t*, void*))(intptr_t)symbol.getAddress();
                 if(name == "debug")
                     continue;
+                auto    symbol  = ExitOnErr(TheJIT->lookup(name));
+                auto    func    = symbol.toPtr<bool (*)(state_t*, state_t*, void*)>();
                 auto    result  = func(&state[0], &state[27], &conf);
                 std::cout << std::setw(20) << std::left << name << " eval: " << result << std::endl; 
                 ASSERT_TRUE(result);
@@ -307,7 +270,7 @@ TEST_F(LogicTest, Pass)
 
 TEST_F(LogicTest, Fail)
 {
-    std::string                 filename    = "../test/logic/fail.ref";
+    std::string                 filename    = std::string(REFEREE_TEST_DATA_DIR) + "/fail.ref";
     std::ifstream               stream(filename, std::ios_base::in);
 
     ASSERT_TRUE(stream.is_open());
@@ -332,31 +295,10 @@ TEST_F(LogicTest, Fail)
     TheModule->setDataLayout(TheJIT->getDataLayout());
 
     try {
-        TheFPM->add(llvm::createInstructionCombiningPass());
-        TheFPM->add(llvm::createReassociatePass());
-        TheFPM->add(llvm::createGVNPass());
-        TheFPM->add(llvm::createCFGSimplificationPass());
-        TheFPM->add(llvm::createLoopStrengthReducePass());
-        TheFPM->add(llvm::createLoopLoadEliminationPass());
-        TheFPM->add(llvm::createLoopDataPrefetchPass());
-        TheFPM->add(llvm::createLoopSimplifyCFGPass());
-        TheFPM->add(llvm::createLoopGuardWideningPass());
-        TheFPM->add(llvm::createLoopDistributePass());
-        TheFPM->add(llvm::createInstructionCombiningPass());
-        TheFPM->add(llvm::createReassociatePass());
-        TheFPM->add(llvm::createGVNPass());
-        TheFPM->add(llvm::createCFGSimplificationPass());
-
-        TheFPM->doInitialization();
-
-        auto& functions = TheModule->getFunctionList();
         std::vector<std::string>    names;
-
-        for(auto iter = functions.begin(); iter != functions.end(); iter++)
+        for(auto& F : *TheModule)
         {
-            names.push_back(iter->getName().str());
-
-            TheFPM->run(*iter);
+            names.push_back(F.getName().str());
         }
 
         ExitOnErr(TheJIT->addModule(llvm::orc::ThreadSafeModule(std::move(TheModule), std::move(TheContext))));
@@ -364,10 +306,10 @@ TEST_F(LogicTest, Fail)
         {
             for(auto name: names)
             {
-                auto    symbol  = ExitOnErr(TheJIT->lookup(name));
-                auto    func    = (bool (*)(state_t*, state_t*, void*))(intptr_t)symbol.getAddress();
                 if(name == "debug")
                     continue;
+                auto    symbol  = ExitOnErr(TheJIT->lookup(name));
+                auto    func    = symbol.toPtr<bool (*)(state_t*, state_t*, void*)>();
                 auto    result  = func(&state[0], &state[27], &conf);
                 std::cout << std::setw(20) << std::left << name << " eval: " << result << std::endl; 
                 ASSERT_FALSE(result);

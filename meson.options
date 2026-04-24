@@ -1,0 +1,6 @@
+option(
+    'antlr4_jar',
+    type        : 'string',
+    value       : '',
+    description : 'Path to antlr-4.x-complete.jar. If empty, a platform default is used (/opt/homebrew/... on macOS, /usr/local/lib/... on Linux).',
+)

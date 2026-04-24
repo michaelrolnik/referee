@@ -1,18 +1,18 @@
 /*
  *  MIT License
- *  
+ *
  *  Copyright (c) 2022 Michael Rolnik
- *  
+ *
  *  Permission is hereby granted, free of charge, to any person obtaining a copy
  *  of this software and associated documentation files (the "Software"), to deal
  *  in the Software without restriction, including without limitation the rights
  *  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  *  copies of the Software, and to permit persons to whom the Software is
  *  furnished to do so, subject to the following conditions:
- *  
+ *
  *  The above copyright notice and this permission notice shall be included in all
  *  copies or substantial portions of the Software.
- *  
+ *
  *  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  *  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  *  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -56,7 +56,7 @@ integer     : INTEGER
             | OCTINT
             | HEXINT;
 
-FLOATING    : [1-9][0-9]*'.'[0-9]* 
+FLOATING    : [1-9][0-9]*'.'[0-9]*
             | '0'?'.'[0-9]+
             ;
 EXPONENT    : [eE][+-]?[1-9][0-9]*;
@@ -64,7 +64,7 @@ floating    : FLOATING EXPONENT?
             | INTEGER  EXPONENT
             ;
 
-STRING      : '"' [a-zA-Z_0-9?!.]* '"' ;         
+STRING      : '"' [a-zA-Z_0-9?!.]* '"' ;
 string      : STRING;
 
 ID          : [a-zA-Z_][a-zA-Z0-9_]*
@@ -149,8 +149,8 @@ specPattern : psbody                                                # SpecBody
             | globally                            ',' specPattern   # SpecGlobally
             | before  expression                  ',' specPattern   # SpecBefore
             | after   expression                  ',' specPattern   # SpecAfter
-            | while   expression                  ',' specPattern   # SpecWhile
-            | between expression and   expression ',' specPattern   # SpecBetweenAnd
+            | while expression                    ',' specPattern   # SpecWhile
+            | between expression and expression   ',' specPattern   # SpecBetweenAnd
             | after   expression until expression ',' specPattern   # SpecAfterUntil
             ;
 
@@ -219,21 +219,21 @@ exprZ           : expression ;
 exprN           : expression ;
 
 
-specUniversality        : it is always the case that exprP holds? timeBound                                         
+specUniversality        : it is always the case that exprP holds? timeBound
                         ;
-specAbsence             : it is never the case that  exprP holds? timeBound                                         
+specAbsence             : it is never the case that  exprP holds? timeBound
                         ;
-specExistence           : exprP eventually holds? timeBound                                                                   
+specExistence           : exprP eventually holds? timeBound
                         ;
-specTransientState      : exprP holds after exprN units                                                                  
+specTransientState      : exprP holds after exprN units
                         ;
-specSteadyState         : exprP holds in the long run                                                                 
+specSteadyState         : exprP holds in the long run
                         ;
-specMinimunDuration     : once exprP (becomes satisfied)? it remains so for at least exprN units          
+specMinimunDuration     : once exprP (becomes satisfied)? it remains so for at least exprN units
                         ;
-specMaximumDuration     : once exprP (becomes satisfied)? it remains so for less than exprN units         
+specMaximumDuration     : once exprP (becomes satisfied)? it remains so for less than exprN units
                         ;
-specRecurrence          : exprP holds? repeatedly (every exprN units)?                                                   
+specRecurrence          : exprP holds? repeatedly (every exprN units)?
                         ;
 specPrecedence          : if exprP holds? ',' then it must have been the case that exprS (has occurred)? intervalBound before it?
                         ;
@@ -241,15 +241,15 @@ specPrecedenceChain12   : if exprS and afterwards exprT upperTimeBound holds? ',
                         ;
 specPrecedenceChain21   : if exprP holds? ',' then it must have been the case that exprS and afterwards exprT upperTimeBound (have occurred)? intervalBound before it?
                         ;
-specResponse            : if exprP (has occurred)? ',' then in response exprS (eventually holds)? timeBound constraint  
+specResponse            : if exprP (has occurred)? ',' then in response exprS (eventually holds)? timeBound constraint
                         ;
-specResponseChain12     : if exprP (has occurred)? ',' then in response timeBound constraint exprS followed by exprT timeBound constraint (eventually holds)? 
+specResponseChain12     : if exprP (has occurred)? ',' then in response timeBound constraint exprS followed by exprT timeBound constraint (eventually holds)?
                         ;
-specResponseChain21     : if exprS followed by exprT timeBound constraint (have occurred)? ',' then in response exprP (eventually holds)? timeBound constraint 
+specResponseChain21     : if exprS followed by exprT timeBound constraint (have occurred)? ',' then in response exprP (eventually holds)? timeBound constraint
                         ;
 specResponseInvariance  : if exprP (has occurred)? ',' then in response exprS holds? continually timeBound
                         ;
-specUntil               : exprP holds? without interruption until exprS holds? timeBound                        
+specUntil               : exprP holds? without interruption until exprS holds? timeBound
                         ;
 
 psbody      : specUniversality
@@ -275,7 +275,7 @@ constraint  : without exprZ holding in between
             ;
 
 timeBound   : upperTimeBound
-            | lowerTimeBound 
+            | lowerTimeBound
             | intervalBound
             ;
 
@@ -292,7 +292,7 @@ intervalBound
             : between exprN and exprN units
             | noTimeBound
             ;
-            
+
 noTimeBound : /* no time bound */
             ;
 
@@ -330,7 +330,7 @@ size        : integer
 type        : 'struct' '{' mmbrList '}'                         # TypeStruct
             | 'enum'   '{' itemList '}'                         # TypeEnum
             | typeID                                            # TypeAlias
-            | type     '[' size     ']'                         # TypeArray              
+            | type     '[' size     ']'                         # TypeArray
             ;
 
 declType    : 'type' typeID ':' type

@@ -61,7 +61,73 @@
 #include "llvm/Transforms/Scalar.h"
 #include "llvm/Transforms/Scalar/GVN.h"
 #include "llvm/ExecutionEngine/JITSymbol.h"
+#include "llvm/IR/InstIterator.h"
+#include "llvm/IR/Intrinsics.h"
+#include "llvm/IR/IntrinsicInst.h"
 #include "llvm/Support/raw_os_ostream.h"
+#include "llvm/TargetParser/Host.h"
+
+namespace {
+bool isMinMaxIntrinsic(llvm::Intrinsic::ID id)
+{
+    using namespace llvm;
+    switch (id)
+    {
+        case Intrinsic::smax:
+        case Intrinsic::smin:
+        case Intrinsic::umax:
+        case Intrinsic::umin:
+            return true;
+        default:
+            return false;
+    }
+}
+
+void lowerMinMaxIntrinsics(llvm::Module& M)
+{
+    using namespace llvm;
+    for (auto& F : M)
+    {
+        SmallVector<IntrinsicInst*, 8>  worklist;
+        for (auto& I : instructions(F))
+        {
+            if (auto* II = dyn_cast<IntrinsicInst>(&I))
+            {
+                if (isMinMaxIntrinsic(II->getIntrinsicID()))
+                    worklist.push_back(II);
+            }
+        }
+        for (auto* II : worklist)
+        {
+            IRBuilder<>     B(II);
+            Value*          lhs  = II->getArgOperand(0);
+            Value*          rhs  = II->getArgOperand(1);
+            CmpInst::Predicate pred;
+            switch (II->getIntrinsicID())
+            {
+                case Intrinsic::smax:   pred = ICmpInst::ICMP_SGT; break;
+                case Intrinsic::smin:   pred = ICmpInst::ICMP_SLT; break;
+                case Intrinsic::umax:   pred = ICmpInst::ICMP_UGT; break;
+                case Intrinsic::umin:   pred = ICmpInst::ICMP_ULT; break;
+                default:                continue;
+            }
+            Value*      cmp  = B.CreateICmp(pred, lhs, rhs);
+            Value*      sel  = B.CreateSelect(cmp, lhs, rhs);
+            II->replaceAllUsesWith(sel);
+            II->eraseFromParent();
+        }
+    }
+
+    SmallVector<Function*, 4>   deadDecls;
+    for (auto& F : M)
+    {
+        if (F.isDeclaration() && F.use_empty() && isMinMaxIntrinsic(F.getIntrinsicID()))
+            deadDecls.push_back(&F);
+    }
+    for (auto* F : deadDecls)
+        F->eraseFromParent();
+}
+} // namespace
 
 #include <memory>
 
@@ -83,11 +149,23 @@ void    Referee::compile(std::istream& is, std::string name, std::ostream& os)
     auto    TheFPM      = std::make_unique<llvm::legacy::FunctionPassManager>(TheModule.get());
 
     auto    funcType    = llvm::FunctionType::get(TheBuilder->getVoidTy(), {TheBuilder->getInt64Ty()}, false);
+    __attribute__((unused))
     auto    func        = llvm::Function::Create(funcType, llvm::Function::ExternalLinkage, "debug", *TheModule);
 
     llvm::InitializeNativeTarget();
     llvm::InitializeNativeTargetAsmPrinter();
     llvm::InitializeNativeTargetAsmParser();
+
+    //  pin the module to the host data layout
+    {
+        llvm::Triple                        triple{llvm::sys::getDefaultTargetTriple()};
+        llvm::orc::JITTargetMachineBuilder  JTMB{triple};
+        if (auto DL = JTMB.getDefaultDataLayoutForTarget())
+        {
+            TheModule->setDataLayout(*DL);
+            TheModule->setTargetTriple(triple.getTriple());
+        }
+    }
 
     try {
         auto*   tree    = parser.program();
@@ -99,12 +177,12 @@ void    Referee::compile(std::istream& is, std::string name, std::ostream& os)
         TheFPM->add(llvm::createReassociatePass());
         TheFPM->add(llvm::createGVNPass());
         TheFPM->add(llvm::createCFGSimplificationPass());
-        TheFPM->add(llvm::createLoopStrengthReducePass());
-        TheFPM->add(llvm::createLoopLoadEliminationPass());
+        //  TheFPM->add(llvm::createLoopStrengthReducePass());
+        //  TheFPM->add(llvm::createLoopLoadEliminationPass());
         TheFPM->add(llvm::createLoopDataPrefetchPass());
-        TheFPM->add(llvm::createLoopSimplifyCFGPass());
-        TheFPM->add(llvm::createLoopGuardWideningPass());
-        TheFPM->add(llvm::createLoopDistributePass());
+        //  TheFPM->add(llvm::createLoopSimplifyCFGPass());
+        //  TheFPM->add(llvm::createLoopGuardWideningPass());
+        //  TheFPM->add(llvm::createLoopDistributePass());
         TheFPM->add(llvm::createInstructionCombiningPass());
         TheFPM->add(llvm::createReassociatePass());
         TheFPM->add(llvm::createGVNPass());
@@ -121,6 +199,8 @@ void    Referee::compile(std::istream& is, std::string name, std::ostream& os)
 
             TheFPM->run(*iter);
         }
+
+        lowerMinMaxIntrinsics(*TheModule);
 
         auto    xyz = llvm::raw_os_ostream(os);
         TheModule->print(xyz, nullptr);

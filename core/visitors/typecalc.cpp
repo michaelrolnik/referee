@@ -734,10 +734,10 @@ Type*   TypeCalcImpl::nmbrNmbr2Bool(
     auto    typeLhs = make(lhs);    
     auto    typeRhs = make(rhs);
 
-    if(     (typeLhs == typeInteger || typeLhs == typeNumber)
-        &&  (typeRhs == typeInteger || typeRhs == typeNumber)
-        ||  (typeLhs == typeBoolean && typeRhs == typeBoolean)
-        ||  (typeLhs == typeString  && typeRhs == typeString))
+    if(     (((typeLhs == typeInteger) || (typeLhs == typeNumber))
+        &&  ((typeRhs == typeInteger) || (typeRhs == typeNumber)))
+        ||  ((typeLhs == typeBoolean) && (typeRhs == typeBoolean))
+        ||  ((typeLhs == typeString)  && (typeRhs == typeString)))
         
     {
         return  typeBoolean;

@@ -243,7 +243,7 @@ void    DataWriterTyped::size(      unsigned            size)
 
     m_writer.size(size);
 
-    for(auto i = 0; i < size; i++)
+    for(auto i = 0u; i < size; i++)
     {
         m_type.push_front(type->base);
     }
@@ -463,7 +463,7 @@ void    DataReaderTyped::size(      unsigned&           size)
     if(type->size != 0 && type->size != size)
         throw   std::runtime_error("invalid array size");
 
-    for(auto i = 0; i < size; i++)
+    for(auto i = 0u; i < size; i++)
     {
         m_type.push_front(type->base);
     }
@@ -882,7 +882,7 @@ void    readData(Type* main, std::string const& data)
 
         type.pop_front();
 
-        if(auto curr = dynamic_cast<TypeInteger*>(top))
+        if(dynamic_cast<TypeInteger*>(top))
         {
             uint64_t    buff;
 
@@ -892,7 +892,7 @@ void    readData(Type* main, std::string const& data)
             std::cout << std::dec << buff << " ";
         }
 
-        if(auto curr = dynamic_cast<TypeNumber*>(top))
+        if(dynamic_cast<TypeNumber*>(top))
         {
             uint64_t    buff;
 
@@ -902,7 +902,7 @@ void    readData(Type* main, std::string const& data)
             std::cout << std::dec << *reinterpret_cast<double*>(&buff) << " ";
         }    
 
-        if(auto curr = dynamic_cast<TypeBoolean*>(top))
+        if(dynamic_cast<TypeBoolean*>(top))
         {
             bool    buff;
 
@@ -911,7 +911,7 @@ void    readData(Type* main, std::string const& data)
             std::cout << buff << " ";
         }    
 
-        if(auto curr = dynamic_cast<TypeString*>(top))
+        if(dynamic_cast<TypeString*>(top))
         {
             unsigned    size;
 
@@ -938,7 +938,7 @@ void    readData(Type* main, std::string const& data)
             is.read(reinterpret_cast<char*>(&size), sizeof(size));
             size = ntohl(size);
 
-            for(auto i = 0; i < size; i++)
+            for(auto i = 0u; i < size; i++)
             {
                 type.push_front(curr->base);
             }
@@ -955,7 +955,7 @@ void nameHelper(Type* type, std::string prefix, std::vector<std::string>& names)
         names.push_back(prefix + "#size");
 
         std::cout << prefix << "#size" << std::endl;
-        for(auto i = 0; i < size; i++)
+        for(auto i = 0u; i < size; i++)
         {
             nameHelper(array->base, prefix + "[" + std::to_string(i) + "]", names);
         }
@@ -1036,19 +1036,19 @@ void readCsv(Type* type, std::string name, std::string data)
             auto    type    = types.front();    types.pop_front();
             auto    name    = names.front();    names.pop_front();
 
-            if(auto curr = dynamic_cast<TypeInteger*>(type))
+            if(dynamic_cast<TypeInteger*>(type))
             {
                 int64_t     data    = doc.GetCell<int64_t>(name, row);
                 builder.integer(data);
             }
 
-            if(auto curr = dynamic_cast<TypeNumber*>(type))
+            if(dynamic_cast<TypeNumber*>(type))
             {
                 double      data    = doc.GetCell<double>(name, row);
                 builder.number(data);
             }
 
-            if(auto curr = dynamic_cast<TypeBoolean*>(type))
+            if(dynamic_cast<TypeBoolean*>(type))
             {
                 std::string data    = doc.GetCell<std::string>(name, row);
                 bool        value   = false;
@@ -1060,7 +1060,7 @@ void readCsv(Type* type, std::string name, std::string data)
                 builder.boolean(value);
             }
 
-            if(auto curr = dynamic_cast<TypeString*>(type))
+            if(dynamic_cast<TypeString*>(type))
             {
                 std::string data    = doc.GetCell<std::string>(name, row);
                 builder.string(data);
@@ -1079,7 +1079,7 @@ void readCsv(Type* type, std::string name, std::string data)
             {
                 unsigned    size    = doc.GetCell<unsigned>(name + "#size", row);
 
-                for(auto i = 0; i < size; i++)
+                for(auto i = 0u; i < size; i++)
                 {
                     types.push_front(curr->base);
                     names.push_front(name + "[" + std::to_string(size - i - 1) + "]");

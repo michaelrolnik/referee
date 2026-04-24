@@ -26,6 +26,8 @@
 #include "module.hpp"
 #include "factory.hpp"
 
+#include <algorithm>
+
 Module::Module(std::string name)
 {
     m_name2type["boolean"]  = Factory<TypeBoolean>::create();

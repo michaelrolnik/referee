@@ -26,6 +26,8 @@
 #include "module.hpp"
 #include "factory.hpp"
 
+#include <algorithm>
+
 ExprNullary::ExprNullary()
 {
 }

@@ -39,4 +39,5 @@ TEST(Strings, simple)
     EXPECT_EQ(b, B);
     EXPECT_NE(a, b);
     EXPECT_NE(a, aa);
+    EXPECT_EQ(c, B);
 }

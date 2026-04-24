@@ -682,7 +682,7 @@ std::any Antlr2AST::visitTypeStruct(    referee::refereeParser::TypeStructContex
     auto    types   = ctx->mmbrList()->type();
     auto    size    = names.size();
 
-    for(auto i = 0; i < size; i++)
+    for(auto i = 0u; i < size; i++)
     {
         auto    name    = names[i]->getText();
         auto    type    = types[i]->accept(this);

@@ -398,15 +398,14 @@ class ExprConf final
 {
 public:
     ExprConf(ExprContext* ctxt, std::string name)
-        : Visitable<ExprNullary, ExprConf>()
-        , ctxt(ctxt)
+        : ctxt(ctxt)
         , name(name)
     {
     }
 
 public:
-    std::string const   name;
     ExprContext* const  ctxt;
+    std::string const   name;
 };
 
 class ExprData final
@@ -414,15 +413,14 @@ class ExprData final
 {
 public:
     ExprData(ExprContext* ctxt, std::string name)
-        : Visitable<ExprNullary, ExprData>()
-        , ctxt(ctxt)
+        : ctxt(ctxt)
         , name(name)
     {
     }
 
 public:
-    std::string const   name;
     ExprContext* const  ctxt;
+    std::string const   name;
 };
 
 class ExprMmbr final
@@ -430,7 +428,7 @@ class ExprMmbr final
 {
 public:
     ExprMmbr(Expr* base, std::string mmbr)
-        : Visitable<ExprUnary, ExprMmbr>(0, base)
+        : Visitable(0, base)
         , mmbr(mmbr)
     {
     }
@@ -488,8 +486,7 @@ class SpecScoped
 {
 public:
     SpecScoped(Spec* spec)
-        : Visitable<Spec, SpecScoped>()
-        , spec(spec)
+        : spec(spec)
     {
     }
 
@@ -665,7 +662,7 @@ class SpecResponseChain12
 {
 public:  
     SpecResponseChain12(Expr* P, Expr* S, Expr* T, Time* tPS, Time* tST, Expr* cPS, Expr* cST)
-        : P(P), S(S), T(T), tST(tST), tPS(tPS), cST(tST), cPS(cPS)
+        : P(P), S(S), T(T), tPS(tPS), tST(tST), cPS(cPS), cST(cST)
     {
     }
 
