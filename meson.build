@@ -44,13 +44,10 @@ if antlr4_jar_option != ''
 endif
 if is_darwin
     antlr4_jar_guesses += [
-        '/opt/homebrew/Cellar/antlr/4.13.2/antlr-4.13.2-complete.jar',
         '/opt/homebrew/Cellar/antlr/4.10.1/antlr-4.10.1-complete.jar',
     ]
 endif
 antlr4_jar_guesses += [
-    '/usr/local/lib/antlr-4.13.2-complete.jar',
-    '/usr/local/share/antlr/antlr-4.13.2-complete.jar',
     '/usr/local/lib/antlr-4.10.1-complete.jar',
     '/usr/local/share/antlr/antlr-4.10.1-complete.jar',
     '/usr/share/java/antlr-complete.jar',
@@ -68,6 +65,7 @@ fmt_dep             = dependency('fmt')
 spdlog_dep          = dependency('spdlog')
 cli11_dep           = dependency('CLI11', required : false)
 threads_dep         = dependency('threads')
+yamlcpp_dep         = dependency('yaml-cpp')
 
 # ANTLR4 C++ runtime: pkg-config, with manual fallback for Homebrew layouts
 antlr4_runtime_dep  = dependency(
@@ -112,10 +110,66 @@ if not antlr4_runtime_dep.found()
         is_system : true,
     )
 
-    antlr4_runtime_dep      = declare_dependency(
-        dependencies        : antlr4_runtime_lib,
-        include_directories : antlr4_runtime_incdirs,
-    )
+    # Detect runtime version when pkg-config did not supply one.
+    # Brew layout (darwin): /opt/homebrew/opt/antlr4-cpp-runtime is a relative
+    # symlink whose final path component is the version (e.g. "4.13.2").
+    # Generic layout: scan antlr4_lib_dirs for libantlr4-runtime.<X.Y.Z>.dylib
+    # (darwin) or libantlr4-runtime.so.<X.Y.Z> (linux).
+    antlr4_rt_detected_ver  = ''
+    if is_darwin
+        foreach _link : ['/opt/homebrew/opt/antlr4-cpp-runtime',
+                         '/usr/local/opt/antlr4-cpp-runtime']
+            if antlr4_rt_detected_ver == '' and fs.exists(_link)
+                _rl = run_command('readlink', _link, check : false)
+                if _rl.returncode() == 0
+                    _segs = _rl.stdout().strip().split('/')
+                    if _segs.length() >= 1
+                        _tail = _segs[_segs.length() - 1]
+                        if _tail.contains('.') and not _tail.contains(' ')
+                            antlr4_rt_detected_ver = _tail
+                        endif
+                    endif
+                endif
+            endif
+        endforeach
+    endif
+    if antlr4_rt_detected_ver == '' and antlr4_lib_dirs.length() > 0
+        # `ls` the lib dirs and look for a versioned soname/dylib filename.
+        _pat = is_darwin ? 'libantlr4-runtime.*.dylib' : 'libantlr4-runtime.so.*'
+        _lsargs = ['sh', '-c',
+                   'for d in "$@"; do ls "$d"/' + _pat + ' 2>/dev/null; done',
+                   'sh'] + antlr4_lib_dirs
+        _ls = run_command(_lsargs, check : false)
+        foreach _line : _ls.stdout().strip().split('\n')
+            if antlr4_rt_detected_ver == '' and _line != ''
+                _segs = _line.split('/')
+                _base = _segs[_segs.length() - 1]
+                # darwin:  libantlr4-runtime.4.13.2.dylib -> 4.13.2
+                # linux:   libantlr4-runtime.so.4.13.2    -> 4.13.2
+                if is_darwin
+                    _v = _base.replace('libantlr4-runtime.', '').replace('.dylib', '')
+                else
+                    _v = _base.replace('libantlr4-runtime.so.', '')
+                endif
+                if _v.contains('.') and not _v.contains('/')
+                    antlr4_rt_detected_ver = _v
+                endif
+            endif
+        endforeach
+    endif
+
+    if antlr4_rt_detected_ver != ''
+        antlr4_runtime_dep  = declare_dependency(
+            dependencies        : antlr4_runtime_lib,
+            include_directories : antlr4_runtime_incdirs,
+            version             : antlr4_rt_detected_ver,
+        )
+    else
+        antlr4_runtime_dep  = declare_dependency(
+            dependencies        : antlr4_runtime_lib,
+            include_directories : antlr4_runtime_incdirs,
+        )
+    endif
 endif
 
 # LLVM components
@@ -257,13 +311,13 @@ elif antlr4_launcher.found()
     endforeach
 endif
 
-_rt_so = run_command(
-    'sh', '-c',
-    'find /usr/lib /usr/local/lib -name "libantlr4-runtime.so.*" 2>/dev/null' +
-    ' | grep -oE "so\\.[0-9][0-9.]*" | sort -V | tail -1',
-    check : false,
-).stdout().strip()
-_rt_ver = _rt_so.startswith('so.') ? _rt_so.split('so.').get(1, 'unknown') : antlr4_runtime_dep.version()
+_rt_ver = antlr4_runtime_dep.version()
+# Meson returns 'undefined' for declare_dependency() without a version keyword
+# and may otherwise leak the *project* version through. Treat both as unknown
+# so we don't compare the ANTLR generator against referee's own version.
+if _rt_ver == 'undefined' or _rt_ver == meson.project_version()
+    _rt_ver = 'unknown'
+endif
 
 message('ANTLR4: generator=' + _gen_ver + '  runtime=' + _rt_ver)
 if _gen_ver != 'unknown' and _rt_ver != 'unknown'
@@ -309,12 +363,17 @@ core_sources        = [
     'core/visitors/printer.cpp',
     'core/visitors/rewrite.cpp',
     'core/visitors/csvHeaders.cpp',
+    'core/visitors/loader.cpp',
+    'core/loaders/row.cpp',
+    'core/loaders/csv.cpp',
+    'core/loaders/yml.cpp',
     'core/antlr2ast.cpp',
     'core/syntax.cpp',
     'core/strings.cpp',
     'core/module.cpp',
     'core/utils.cpp',
     'rdb/database.cpp',
+    'rdb/ingest.cpp',
     'referee.cpp',
 ]
 
@@ -323,14 +382,14 @@ core_lib            = static_library(
     core_sources,
     antlr4_gen,
     include_directories : project_inc,
-    dependencies        : [fmt_dep, antlr4_runtime_dep, llvm_dep],
+    dependencies        : [fmt_dep, antlr4_runtime_dep, llvm_dep, yamlcpp_dep],
 )
 
 core_dep            = declare_dependency(
     link_with           : core_lib,
     sources             : antlr4_gen,
     include_directories : project_inc,
-    dependencies        : [fmt_dep, antlr4_runtime_dep, llvm_dep],
+    dependencies        : [fmt_dep, antlr4_runtime_dep, llvm_dep, yamlcpp_dep],
 )
 
 # referee CLI
@@ -351,10 +410,15 @@ executable(
 # rdb helper CLI
 executable(
     'rdb',
-    'rdb/database.cpp',
     'rdb/main.cpp',
-    include_directories : project_inc,
-    dependencies        : [fmt_dep, spdlog_dep, cli11_dep],
+    dependencies        : [
+        core_dep,
+        fmt_dep,
+        spdlog_dep,
+        cli11_dep,
+        antlr4_runtime_dep,
+        llvm_dep,
+    ],
     install             : false,
 )
 
@@ -367,6 +431,7 @@ tests_exe           = executable(
     'test/strings.cpp',
     'test/canonic.cpp',
     'test/logic.cpp',
+    'test/rdb.cpp',
     cpp_args     : [
         '-DREFEREE_TEST_DATA_DIR="' + test_data_dir + '"',
     ],

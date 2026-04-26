@@ -38,7 +38,7 @@ Module::Module(std::string name)
     m_name2data["__time__"] = Factory<TypeInteger>::create();
 }
 
-void    Module::addType(std::string name, Type* type)
+void    Module::addType(std::string const& name, Type* type)
 {
     if(m_name2type.contains(name))
     {
@@ -52,7 +52,7 @@ void    Module::addType(std::string name, Type* type)
     m_typeNames.push_back(name);
 }
 
-void    Module::addProp(std::string name, Type* data)
+void    Module::addProp(std::string const& name, Type* data)
 {
     if(m_name2data.contains(name))
     {
@@ -66,7 +66,7 @@ void    Module::addProp(std::string name, Type* data)
     m_propNames.push_back(name);
 }
 
-void    Module::addConf(std::string name, Type* data)
+void    Module::addConf(std::string const& name, Type* data)
 {
     if(m_name2conf.contains(name))
     {
@@ -80,7 +80,7 @@ void    Module::addConf(std::string name, Type* data)
     m_confNames.push_back(name);
 }
 
-Type*   Module::getType(std::string name)
+Type*   Module::getType(std::string const& name)
 {
     if(!m_name2type.contains(name))
     {
@@ -93,7 +93,7 @@ Type*   Module::getType(std::string name)
     return m_name2type[name];
 }
 
-Type*   Module::getProp(std::string name)
+Type*   Module::getProp(std::string const& name)
 {
     if(!m_name2data.contains(name))
     {
@@ -106,7 +106,7 @@ Type*   Module::getProp(std::string name)
     return m_name2data[name];
 }
 
-Type*   Module::getConf(std::string name)
+Type*   Module::getConf(std::string const& name)
 {
     if(!m_name2conf.contains(name))
     {
@@ -119,22 +119,22 @@ Type*   Module::getConf(std::string name)
     return m_name2conf[name];
 }
 
-bool    Module::hasType(std::string name)
+bool    Module::hasType(std::string const& name)
 {
     return m_name2type.contains(name);
 }
 
-bool    Module::hasData(std::string name)
+bool    Module::hasData(std::string const& name)
 {
     return m_name2data.contains(name);
 }
 
-bool    Module::hasConf(std::string name)
+bool    Module::hasConf(std::string const& name)
 {
     return m_name2conf.contains(name);
 }
 
-void    Module::pushContext(std::string name)
+void    Module::pushContext(std::string const& name)
 {
     m_context.push_back(name);
 }
@@ -144,7 +144,7 @@ void    Module::popContext()
     m_context.pop_back();
 }
 
-bool    Module::hasContext(std::string name)
+bool    Module::hasContext(std::string const& name)
 {
     return std::find(m_context.begin(), m_context.end(), name) != m_context.end();
 }

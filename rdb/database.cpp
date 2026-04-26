@@ -1,18 +1,18 @@
 /*
  *  MIT License
- *  
+ *
  *  Copyright (c) 2022 Michael Rolnik
- *  
+ *
  *  Permission is hereby granted, free of charge, to any person obtaining a copy
  *  of this software and associated documentation files (the "Software"), to deal
  *  in the Software without restriction, including without limitation the rights
  *  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  *  copies of the Software, and to permit persons to whom the Software is
  *  furnished to do so, subject to the following conditions:
- *  
+ *
  *  The above copyright notice and this permission notice shall be included in all
  *  copies or substantial portions of the Software.
- *  
+ *
  *  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  *  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  *  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -24,1305 +24,1059 @@
 
 #include "database.hpp"
 
-#include <stdint.h>
-#include <string>
+#include "strings.hpp"
+#include "syntax.hpp"
+
+#include <fmt/format.h>
+
+#include <array>
+#include <cstring>
 #include <fstream>
-#include <chrono>
-#include <iostream>
 #include <iomanip>
+#include <optional>
+#include <ostream>
+#include <stdexcept>
+#include <unordered_map>
 
-#include <arpa/inet.h>
-
-#include "rapidcsv.h"
-#include "utils.hpp"
-
-#ifndef __APPLE__
-constexpr auto htonll(int64_t h)
+namespace referee::db
 {
-    if (std::endian::native != std::endian::big) {
-        static_assert(CHAR_BIT==8);
-        constexpr auto shift_bytes1{8};
-        constexpr auto shift_bytes2{16};
-        constexpr auto shift_bytes4{32};
-        h = ((h&UINT64_C(0x00FF00FF00FF00FF))<<shift_bytes1) | ((h&UINT64_C(0xFF00FF00FF00FF00))>>shift_bytes1);
-        h = ((h&UINT64_C(0x0000FFFF0000FFFF))<<shift_bytes2) | ((h&UINT64_C(0xFFFF0000FFFF0000))>>shift_bytes2);
-        h = ((h&UINT64_C(0x00000000FFFFFFFF))<<shift_bytes4) | ((h&UINT64_C(0xFFFFFFFF00000000))>>shift_bytes4);
-    }
-    return h;
+
+namespace
+{
+
+constexpr char      kMagic[8]    = {'R', 'E', 'F', '-', 'R', 'D', 'B', '1'};
+constexpr uint32_t  kVersion     = 1;
+constexpr int64_t   kNullOffset  = -1;
+
+#pragma pack(push, 1)
+/// Byte range inside the .rdb file:
+///   * `fileOffs` — distance from the start of the header, in bytes.
+///   * `fileSize` — section length, in bytes.
+///   * `itemNmbr` — number of logical entries the section holds (rows for
+///                  `states`, decls for `schema` / `conf`, 0 for
+///                  variable-shape blob pools).
+///
+/// `fileOffs == 0 && fileSize == 0` is reserved for empty sections that have
+/// not been laid out yet.
+struct Section
+{
+    uint64_t    fileOffs;
+    uint64_t    fileSize;
+    uint64_t    itemNmbr;
+};
+
+struct OnDiskHeader
+{
+    char        magic[8];
+    uint32_t    version;
+    uint32_t    flags;
+    Section     schema;     // itemNmbr = number of `data` decls (== numProps)
+    Section     conf;       // itemNmbr = number of `conf` decls
+    Section     states;     // itemNmbr = number of state rows; stride = rowBytes
+    Section     propBlobs;  // heterogeneous; itemNmbr = 0
+    Section     stringPool; // heterogeneous; itemNmbr = 0
+    uint64_t    rowBytes;   // stride of `states`; equals 8 + 8 * schema.itemNmbr
+};
+#pragma pack(pop)
+
+enum TypeTag : uint8_t
+{
+    TAG_BOOLEAN = 1,
+    TAG_INTEGER = 2,
+    TAG_NUMBER  = 3,
+    TAG_STRING  = 4,
+    TAG_ENUM    = 5,
+    TAG_STRUCT  = 6,
+    TAG_ARRAY   = 7,
+};
+
+template<typename T>
+void    appendBytes(std::vector<uint8_t>& out, T const& v)
+{
+    auto const* p = reinterpret_cast<uint8_t const*>(&v);
+    out.insert(out.end(), p, p + sizeof(T));
 }
 
-constexpr auto ntohll(int64_t h)
+void    appendString(std::vector<uint8_t>& out, std::string const& s)
 {
-    if (std::endian::native != std::endian::big) {
-        static_assert(CHAR_BIT==8);
-        constexpr auto shift_bytes1{8};
-        constexpr auto shift_bytes2{16};
-        constexpr auto shift_bytes4{32};
-        h = ((h&UINT64_C(0x00FF00FF00FF00FF))<<shift_bytes1) | ((h&UINT64_C(0xFF00FF00FF00FF00))>>shift_bytes1);
-        h = ((h&UINT64_C(0x0000FFFF0000FFFF))<<shift_bytes2) | ((h&UINT64_C(0xFFFF0000FFFF0000))>>shift_bytes2);
-        h = ((h&UINT64_C(0x00000000FFFFFFFF))<<shift_bytes4) | ((h&UINT64_C(0xFFFFFFFF00000000))>>shift_bytes4);
-    }
-    return h;
-}
-#endif
-
-namespace referee::db {
-
-class DataWriter::Impl
-{
-public:
-    virtual ~Impl() {};
-
-    virtual void        integer(    int64_t             data) = 0;
-    virtual void        number(     double              data) = 0;
-    virtual void        boolean(    bool                data) = 0;
-    virtual void        string(     std::string const&  data) = 0;
-    virtual void        size(       unsigned            size) = 0;
-    virtual std::string build() = 0;
-};
-
-class DataWriterPlain
-    : public DataWriter::Impl
-{
-public:
-    DataWriterPlain();
-
-    void        integer(    int64_t             data) override;
-    void        number(     double              data) override;
-    void        boolean(    bool                data) override;
-    void        string(     std::string const&  data) override;
-    void        size(       unsigned            size) override;
-    std::string build() override;
-
-private:
-    std::ostringstream  m_os;
-};
-
-class DataWriterTyped
-    : public DataWriter::Impl
-{
-public:
-    DataWriterTyped(Type* type);
-
-    void        integer(    int64_t             data) override;
-    void        number(     double              data) override;
-    void        boolean(    bool                data) override;
-    void        string(     std::string const&  data) override;
-    void        size(       unsigned            size) override;
-    std::string build() override;
-
-private:
-    template<typename Type>
-    Type*       pop_type();
-
-private:
-    std::deque<Type*>   m_type;
-    DataWriterPlain     m_writer;
-};
-
-class DataReader::Impl
-{
-public:
-    virtual ~Impl() {};
-
-    virtual void        integer(    int64_t&            data) = 0;
-    virtual void        number(     double&             data) = 0;
-    virtual void        boolean(    bool&               data) = 0;
-    virtual void        string(     std::string&        data) = 0;
-    virtual void        size(       unsigned&           size) = 0;
-    virtual void        done() = 0;
-};
-
-class DataReaderPlain
-    : public DataReader::Impl
-{
-public:
-    DataReaderPlain(std::string const& data);
-
-    void        integer(    int64_t&            data) override;
-    void        number(     double&             data) override;
-    void        boolean(    bool&               data) override;
-    void        string(     std::string&        data) override;
-    void        size(       unsigned&           size) override;
-    void        done() override;
-
-private:
-    std::istringstream  m_is;
-};
-
-class DataReaderTyped
-    : public DataReader::Impl
-{
-public:
-    DataReaderTyped(std::string const& data, Type* type);
-
-    void        integer(    int64_t&            data) override;
-    void        number(     double&             data) override;
-    void        boolean(    bool&               data) override;
-    void        string(     std::string&        data) override;
-    void        size(       unsigned&           size) override;
-    void        done() override;
-
-private:
-    template<typename Type>
-    Type*       pop_type();
-
-private:
-    std::deque<Type*>   m_type;
-    DataReaderPlain     m_reader;
-};
-
-DataWriterTyped::DataWriterTyped(Type* type)
-{
-    m_type.push_back(type);
+    uint32_t    n = static_cast<uint32_t>(s.size());
+    appendBytes(out, n);
+    out.insert(out.end(), s.begin(), s.end());
 }
 
-template<typename Type>
-Type*           DataWriterTyped::pop_type()
+template<typename T>
+T       readBytes(uint8_t const*& cur, uint8_t const* end)
 {
-    if(m_type.empty())
-        throw   std::runtime_error("wrong data/type");
+    if (cur + sizeof(T) > end)
+        throw std::runtime_error("rdb: truncated read");
+    T   v;
+    std::memcpy(&v, cur, sizeof(T));
+    cur += sizeof(T);
+    return v;
+}
 
-    if(auto record = dynamic_cast<TypeRecord*>(m_type.front()))
+std::string     readString(uint8_t const*& cur, uint8_t const* end)
+{
+    auto    n = readBytes<uint32_t>(cur, end);
+    if (cur + n > end)
+        throw std::runtime_error("rdb: truncated string");
+    std::string s(reinterpret_cast<char const*>(cur), n);
+    cur += n;
+    return s;
+}
+
+struct TypeEncoder
+    : Visitor<TypeBoolean, TypeInteger, TypeNumber, TypeString,
+              TypeEnum, TypeStruct, TypeArray>
+{
+    std::vector<uint8_t>&   out;
+    explicit TypeEncoder(std::vector<uint8_t>& o) : out(o) {}
+
+    void    visit(TypeBoolean*) override { appendBytes<uint8_t>(out, TAG_BOOLEAN); }
+    void    visit(TypeInteger*) override { appendBytes<uint8_t>(out, TAG_INTEGER); }
+    void    visit(TypeNumber*)  override { appendBytes<uint8_t>(out, TAG_NUMBER);  }
+    void    visit(TypeString*)  override { appendBytes<uint8_t>(out, TAG_STRING);  }
+
+    void    visit(TypeEnum* e) override
     {
-        m_type.pop_front();
-
-        for(auto it = record->body().rbegin(); it != record->body().rend(); it ++)
+        appendBytes<uint8_t>(out, TAG_ENUM);
+        appendBytes<uint32_t>(out, static_cast<uint32_t>(e->items.size()));
+        for (auto const& it : e->items)
+            appendString(out, it);
+    }
+    void    visit(TypeStruct* s) override
+    {
+        appendBytes<uint8_t>(out, TAG_STRUCT);
+        appendBytes<uint32_t>(out, static_cast<uint32_t>(s->members.size()));
+        for (auto const& m : s->members)
         {
-            m_type.push_front(it->type);
+            appendString(out, m.name);
+            m.data->accept(*this);
         }
     }
-
-    if(m_type.empty())
-        throw   std::runtime_error("wrong data/type");
-
-    auto    type    = dynamic_cast<Type*>(m_type.front());
-
-    if(type == nullptr)
-        throw   std::runtime_error("wrong data/type");
-
-    m_type.pop_front();
-
-    return type;
-}
-
-void    DataWriterTyped::integer(   int64_t             data)
-{
-    pop_type<TypeInteger>();
-
-    m_writer.integer(data);
-}
-
-void    DataWriterTyped::number(    double              data)
-{
-    pop_type<TypeNumber>();
-
-    m_writer.number(data);
-}
-
-void    DataWriterTyped::boolean(   bool                data)
-{
-    pop_type<TypeBoolean>();
-
-    m_writer.boolean(data);
-}
-
-void    DataWriterTyped::string(    std::string const&  data)
-{
-    pop_type<TypeString>();
-
-    m_writer.string(data);
-}
-
-void    DataWriterTyped::size(      unsigned            size)
-{
-    auto*   type    = pop_type<TypeArray>();
-
-    if(type->size != 0 && type->size != size)
-        throw   std::runtime_error("invalid array size");
-
-    m_writer.size(size);
-
-    for(auto i = 0u; i < size; i++)
+    void    visit(TypeArray* a) override
     {
-        m_type.push_front(type->base);
+        appendBytes<uint8_t>(out, TAG_ARRAY);
+        appendBytes<uint32_t>(out, a->count);
+        a->type->accept(*this);
     }
-}
-
-std::string     DataWriterTyped::build()
-{
-    return  m_writer.build();
-}
-
-DataWriterPlain::DataWriterPlain()
-{
-}
-
-void    DataWriterPlain::integer(   int64_t             data)
-{
-    auto    buff    = htonll(data);
-    m_os.write(reinterpret_cast<char const*>(&buff), sizeof(buff));
-}
-
-void    DataWriterPlain::number(    double              data)
-{
-    auto    buff    = htonll(*reinterpret_cast<uint64_t*>(&data));
-    m_os.write(reinterpret_cast<char const*>(&buff), sizeof(buff));
-}
-
-void    DataWriterPlain::boolean(   bool                data)
-{
-    m_os.write(reinterpret_cast<char const*>(&data), sizeof(data));
-}
-
-void    DataWriterPlain::string(    std::string const&  data)
-{
-    auto    size    = htonl(data.size());
-    m_os.write(reinterpret_cast<char const*>(&size), sizeof(size));
-    m_os.write(reinterpret_cast<char const*>(data.data()), data.size());
-}
-
-void    DataWriterPlain::size(      unsigned            size)
-{
-    auto    buff    = htonl(size);
-    m_os.write(reinterpret_cast<char const*>(&buff), sizeof(buff));
-}
-
-std::string     DataWriterPlain::build()
-{
-    return  m_os.str();
-}
-
-DataWriter::DataWriter()
-    : m_impl(new DataWriterPlain())
-{
-}
-
-DataWriter::DataWriter(Type* type)
-    : m_impl(new DataWriterTyped(type))
-{
-}
-
-DataWriter::~DataWriter() = default;
-
-DataWriter&    DataWriter::integer( int64_t             data)
-{
-    m_impl->integer(data);
-    return *this;
-}
-
-DataWriter&    DataWriter::number(  double              data)
-{
-    m_impl->number(data);
-    return *this;
-}
-
-DataWriter&    DataWriter::boolean( bool                data)
-{
-    m_impl->boolean(data);
-    return *this;
-}
-
-DataWriter&    DataWriter::string(  std::string const&  data)
-{
-    m_impl->string(data);
-    return *this;
-}
-
-DataWriter&    DataWriter::size(    unsigned            size)
-{
-    m_impl->size(size);
-    return *this;
-}
-
-std::string     DataWriter::build()
-{
-    return  m_impl->build();
-}
-
-DataReader::DataReader( std::string const&  data)
-    : m_impl(new DataReaderPlain(data))
-{
-}
-
-DataReader::DataReader( std::string const&  data,
-                        Type*               type)
-    : m_impl(new DataReaderTyped(data, type))
-{
-}
-
-DataReader::~DataReader() = default;
-
-DataReader& DataReader::integer(    int64_t&            data)
-{
-    m_impl->integer(data);
-
-    return *this;
-}
-
-DataReader& DataReader::number(     double&             data)
-{
-    m_impl->number(data);
-
-    return *this;
-}
-DataReader& DataReader::boolean(    bool&               data)
-{
-    m_impl->boolean(data);
-
-    return *this;
-}
-DataReader& DataReader::string(     std::string&        data)
-{
-    m_impl->string(data);
-
-    return *this;
-}
-DataReader& DataReader::size(       unsigned&           size)
-{
-    m_impl->size(size);
-
-    return *this;
-}
-
-void        DataReader::done()
-{
-    m_impl->done();
-}
-
-
-DataReaderTyped::DataReaderTyped(std::string const& data, Type* type)
-    : m_reader(data)
-{
-    m_type.push_back(type);
-}
-
-template<typename Type>
-Type*           DataReaderTyped::pop_type()
-{
-    if(m_type.empty())
-        throw   std::runtime_error("wrong data/type");
-
-    if(auto record = dynamic_cast<TypeRecord*>(m_type.front()))
-    {
-        m_type.pop_front();
-
-        for(auto it = record->body().rbegin(); it != record->body().rend(); it ++)
-        {
-            m_type.push_front(it->type);
-        }
-    }
-
-    if(m_type.empty())
-        throw   std::runtime_error("wrong data/type");
-
-    auto    type    = dynamic_cast<Type*>(m_type.front());
-
-    if(type == nullptr)
-        throw   std::runtime_error("wrong data/type");
-
-    m_type.pop_front();
-
-    return type;
-}
-
-void    DataReaderTyped::integer(   int64_t&            data)
-{
-    pop_type<TypeInteger>();
-
-    m_reader.integer(data);
-}
-
-void    DataReaderTyped::number(    double&             data)
-{
-    pop_type<TypeNumber>();
-
-    m_reader.number(data);
-}
-
-void    DataReaderTyped::boolean(   bool&               data)
-{
-    pop_type<TypeBoolean>();
-
-    m_reader.boolean(data);
-}
-
-void    DataReaderTyped::string(    std::string&        data)
-{
-    pop_type<TypeString>();
-
-    m_reader.string(data);
-}
-
-void    DataReaderTyped::size(      unsigned&           size)
-{
-    auto*   type    = pop_type<TypeArray>();
-
-    m_reader.size(size);
-
-    if(type->size != 0 && type->size != size)
-        throw   std::runtime_error("invalid array size");
-
-    for(auto i = 0u; i < size; i++)
-    {
-        m_type.push_front(type->base);
-    }
-}
-
-void    DataReaderTyped::done()
-{
-    m_reader.done();
-}
-
-DataReaderPlain::DataReaderPlain(std::string const& data)
-    : m_is(data)
-{
-}
-
-void    DataReaderPlain::integer(   int64_t&            data)
-{
-    int64_t buff;
-    m_is.read(reinterpret_cast<char*>(&buff), sizeof(buff));
-    data    = ntohll(buff);
-}
-
-void    DataReaderPlain::number(    double&             data)
-{
-    auto    buff    = htonll(*reinterpret_cast<uint64_t*>(&data));
-    m_is.read(reinterpret_cast<char*>(&buff), sizeof(buff));
-    *reinterpret_cast<uint64_t*>(&data) = ntohll(buff);
-}
-
-void    DataReaderPlain::boolean(   bool&               data)
-{
-    m_is.read(reinterpret_cast<char*>(&data), sizeof(data));
-}
-
-void    DataReaderPlain::string(    std::string&        data)
-{
-    uint32_t    size;
-    m_is.read(reinterpret_cast<char*>(&size), sizeof(size));
-    size    = ntohl(size);
-    data.resize(size);
-    m_is.read(reinterpret_cast<char*>(data.data()), data.size());
-}
-
-void    DataReaderPlain::size(      unsigned&           size)
-{
-    unsigned    buff;
-    m_is.read(reinterpret_cast<char*>(&buff), sizeof(buff));
-    size    = ntohl(buff);
-}
-
-void    DataReaderPlain::done()
-{
-    //  TODO: assert m_is is empty
-}
-
-#if 0
-struct RecordInfo 
-{
-    uint64_t    timestamp;
-    uint32_t    size;    
-    uint8_t     type;
-    uint8_t     subtype;
 };
 
-class   Database
+void    encodeType(std::vector<uint8_t>& out, Type* type)
+{
+    TypeEncoder enc(out);
+    type->accept(enc);
+}
+
+Type*   decodeType(uint8_t const*& cur, uint8_t const* end,
+                   std::vector<std::unique_ptr<Type>>& sink);
+
+using TypeCtor = Type* (*)(uint8_t const*&, uint8_t const*,
+                           std::vector<std::unique_ptr<Type>>&);
+
+static std::array<TypeCtor, 8> const kTypeCtors = {
+    /* 0  (unused)  */ nullptr,
+    /* TAG_BOOLEAN  */ [](uint8_t const*&, uint8_t const*,
+                          std::vector<std::unique_ptr<Type>>&) -> Type*
+    {
+        return new TypeBoolean();
+    },
+    /* TAG_INTEGER  */ [](uint8_t const*&, uint8_t const*,
+                          std::vector<std::unique_ptr<Type>>&) -> Type*
+    {
+        return new TypeInteger();
+    },
+    /* TAG_NUMBER   */ [](uint8_t const*&, uint8_t const*,
+                          std::vector<std::unique_ptr<Type>>&) -> Type*
+    {
+        return new TypeNumber();
+    },
+    /* TAG_STRING   */ [](uint8_t const*&, uint8_t const*,
+                          std::vector<std::unique_ptr<Type>>&) -> Type*
+    {
+        return new TypeString();
+    },
+    /* TAG_ENUM     */ [](uint8_t const*& cur, uint8_t const* end,
+                          std::vector<std::unique_ptr<Type>>&) -> Type*
+    {
+        auto                        n = readBytes<uint32_t>(cur, end);
+        std::vector<std::string>    items;
+        items.reserve(n);
+        for (uint32_t i = 0; i < n; i++)
+            items.push_back(readString(cur, end));
+        return new TypeEnum(items);
+    },
+    /* TAG_STRUCT   */ [](uint8_t const*& cur, uint8_t const* end,
+                          std::vector<std::unique_ptr<Type>>& sink) -> Type*
+    {
+        auto                        n = readBytes<uint32_t>(cur, end);
+        std::vector<Named<Type>>    members;
+        members.reserve(n);
+        for (uint32_t i = 0; i < n; i++)
+        {
+            auto    name = readString(cur, end);
+            auto*   t    = decodeType(cur, end, sink);
+            members.push_back(Named<Type>{name, t});
+        }
+        return new TypeStruct(members);
+    },
+    /* TAG_ARRAY    */ [](uint8_t const*& cur, uint8_t const* end,
+                          std::vector<std::unique_ptr<Type>>& sink) -> Type*
+    {
+        auto    count = readBytes<uint32_t>(cur, end);
+        auto*   t     = decodeType(cur, end, sink);
+        return new TypeArray(t, count);
+    },
+};
+
+Type*   decodeType(uint8_t const*& cur, uint8_t const* end,
+                   std::vector<std::unique_ptr<Type>>& sink)
+{
+    auto    tag = readBytes<uint8_t>(cur, end);
+    if (tag >= kTypeCtors.size() || kTypeCtors[tag] == nullptr)
+        throw std::runtime_error(fmt::format("rdb: unknown type tag {}",
+                                             static_cast<int>(tag)));
+    Type*   raw = kTypeCtors[tag](cur, end, sink);
+    sink.emplace_back(raw);
+    return raw;
+}
+
+void    encodeSchema(std::vector<uint8_t>&             out,
+                     std::vector<PropDecl> const&      props,
+                     std::vector<ConfDecl> const&      confs)
+{
+    appendBytes<uint32_t>(out, static_cast<uint32_t>(props.size()));
+    for (auto const& p : props)
+    {
+        appendString(out, p.name);
+        encodeType(out, p.type);
+    }
+    appendBytes<uint32_t>(out, static_cast<uint32_t>(confs.size()));
+    for (auto const& c : confs)
+    {
+        appendString(out, c.name);
+        encodeType(out, c.type);
+    }
+}
+
+void    decodeSchema(uint8_t const*&                         cur,
+                     uint8_t const*                          end,
+                     std::vector<PropDecl>&                  props,
+                     std::vector<ConfDecl>&                  confs,
+                     std::vector<std::unique_ptr<Type>>&     sink)
+{
+    auto    np = readBytes<uint32_t>(cur, end);
+    props.reserve(np);
+    for (uint32_t i = 0; i < np; i++)
+    {
+        PropDecl    d;
+        d.name = readString(cur, end);
+        d.type = decodeType(cur, end, sink);
+        props.push_back(std::move(d));
+    }
+    auto    nc = readBytes<uint32_t>(cur, end);
+    confs.reserve(nc);
+    for (uint32_t i = 0; i < nc; i++)
+    {
+        ConfDecl    d;
+        d.name = readString(cur, end);
+        d.type = decodeType(cur, end, sink);
+        confs.push_back(std::move(d));
+    }
+}
+
+class BlobWalker
+    : public Visitor<TypeBoolean, TypeInteger, TypeNumber, TypeString,
+                     TypeEnum, TypeStruct, TypeArray>
 {
 public:
-    Database();
+    BlobWalker(uint8_t* base, size_t size) : m_base(base), m_size(size), m_cur(base) {}
 
-    void    open(std::string filename);
-    void    close();
+    void    walk(Type* type)
+    {
+        align(type->alignment());
+        type->accept(*this);
+    }
 
-    void    write(uint64_t timestamp, uint16_t type, uint16_t subtype, std::string data);
+    size_t  consumed() const { return static_cast<size_t>(m_cur - m_base); }
 
-    bool    valid();
-    uint64_t    timestamp() {return m_timestamp;}
-    uint16_t    type()      {return m_type;}
-    uint16_t    subtype()   {return m_subtype;}
-    std::string data();
+protected:
+    virtual void    visitString(uint8_t* slot) = 0;
 
-    void    next();
-    void    reset();
+    void    visit(TypeBoolean* t) override { advance(t); }
+    void    visit(TypeInteger* t) override { advance(t); }
+    void    visit(TypeNumber*  t) override { advance(t); }
+    void    visit(TypeEnum*    t) override { advance(t); }
+
+    void    visit(TypeString*  t) override
+    {
+        check(t->size());
+        visitString(m_cur);
+        advance(t);
+    }
+    void    visit(TypeStruct*  s) override
+    {
+        uint8_t*    start = m_cur;
+        for (auto const& m : s->members)
+            walk(m.data);
+        // Pad up to the struct's full aligned size, matching `TypeStruct::size()`.
+        size_t  written = static_cast<size_t>(m_cur - start);
+        size_t  full    = s->size();
+        if (written < full)
+            m_cur += (full - written);
+    }
+    void    visit(TypeArray*   a) override
+    {
+        if (a->count == 0)
+            throw std::runtime_error("rdb: dynamic arrays not yet supported");
+        for (uint32_t i = 0; i < a->count; i++)
+            walk(a->type);
+    }
 
 private:
-    std::fstream    m_file;
-    uint64_t        m_size      = 0;
-    uint64_t        m_timestamp;
-    uint16_t        m_type;
-    uint16_t        m_subtype;
-    std::string     m_data;
-    bool            m_has_data  = false;
+    void    advance(Type* t)
+    {
+        check(t->size());
+        m_cur += t->size();
+    }
+
+    void    align(size_t a)
+    {
+        size_t  off = static_cast<size_t>(m_cur - m_base);
+        size_t  rem = off % a;
+        if (rem)
+            m_cur += (a - rem);
+    }
+
+    void    check(size_t n)
+    {
+        if (m_cur + n > m_base + m_size)
+            throw std::runtime_error("rdb: blob walker ran past end");
+    }
+
+    uint8_t*    m_base;
+    size_t      m_size;
+    uint8_t*    m_cur;
 };
 
-Database::Database()
+class StringInterner final : public BlobWalker
 {
-}
-
-void    Database::open(std::string filename)
-{
-    m_file.open(filename, std::ios_base::binary | std::ios_base::in);
-    next();
-}
-
-void    Database::close()
-{
-    m_file.flush();
-    m_file.close();
-}
-
-
-void    Database::write(uint64_t timestamp, uint16_t type, uint16_t subtype, std::string data)
-{
-    uint64_t    size    = data.length();
-    m_file.write(reinterpret_cast<char const*>(&size), sizeof(size));
-    m_file.write(reinterpret_cast<char const*>(&type), sizeof(type));
-    m_file.write(reinterpret_cast<char const*>(&subtype), sizeof(subtype));
-    m_file.write(reinterpret_cast<char const*>(&timestamp), sizeof(timestamp));
-    m_file.write(reinterpret_cast<char const*>(data.data()), data.length());
-}
-
-uint64_t    timestamp()
-{
-    return  std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
-}
-
-
-bool    Database::valid()
-{
-    return m_file.good();
-}
-
-void    Database::next()
-{
-    uint64_t    size;
-
-    if(m_has_data == false)
+public:
+    StringInterner(uint8_t*                                 base,
+                   size_t                                   size,
+                   std::unordered_map<std::string, uint64_t>& dict,
+                   std::vector<uint8_t>&                    pool)
+        : BlobWalker(base, size)
+        , m_dict(dict)
+        , m_pool(pool)
     {
-        m_file.seekg(m_size, std::ios_base::cur);
     }
 
-    m_file.read(reinterpret_cast<char*>(&m_size), sizeof(m_size));
-    m_file.read(reinterpret_cast<char*>(&m_type), sizeof(m_type));
-    m_file.read(reinterpret_cast<char*>(&m_subtype), sizeof(m_subtype));
-    m_file.read(reinterpret_cast<char*>(&m_timestamp), sizeof(m_timestamp));
-    m_has_data = false;
-}
-
-std::string Database::data()
-{
-    if(m_has_data)
-        return m_data;
-
-    m_data.resize(m_size);
-    m_file.read(reinterpret_cast<char*>(m_data.data()), m_size);
-    m_has_data = true;
-
-    return m_data;
-}
-
-
-void    Database::reset()
-{
-    m_file.seekg(0, std::ios_base::beg);
-}
-
-int main(int argc, char* argv[])
-{
-    Database    db;
-#if 0
-    db.open("./database.rdb");
-
-    db.write(timestamp(), 0, 0, "referee");
-    db.write(timestamp(), 0, 1, "1.0.0");
-    db.write(timestamp(), 1, 2, "hello");
-    db.write(timestamp(), 1, 2, "we are here");
-    db.write(timestamp(), 1, 2, "why");
-
-    db.close();
-#else
-    db.open("./database.rdb");
-
-    while(db.valid())
+protected:
+    void    visitString(uint8_t* slot) override
     {
-        std::cout << db.timestamp() << " " << db.data() << std::endl;
-        db.next();
-    }
-#endif
+        char const* hostPtr = nullptr;
+        std::memcpy(&hostPtr, slot, sizeof(hostPtr));
 
-}
-
-
-
-//TypeBuilder&    add_timestamp(  std::string const&  name);
-TypeBuilder&    add_integer(    std::string const&  name);
-TypeBuilder&    add_boolean(    std::string const&  name);
-TypeBuilder&    add_number(     std::string const&  name);
-TypeBuilder&    add_string(     std::string const&  name);
-TypeBuilder&    enter_array(    std::string const&  name);
-TypeBuilder&    enter_array(    std::string const&  name,
-                                unsigned            size);
-TypeBuilder&    leave_array();
-TypeBuilder&    enter_struct(   std::string const&  name);
-TypeBuilder&    leave_struct();
-    
-#endif
-
-TypeBuilderRecord&  TypeBuilderRecord::integer(std::string name)
-{
-    m_body.push_back(Name2Type(name, new TypeInteger{}));
-    return  *this;
-}
-
-TypeBuilderRecord&  TypeBuilderRecord::number( std::string name)
-{
-    m_body.push_back(Name2Type(name, new TypeNumber{}));
-
-    return  *this;
-}
-
-TypeBuilderRecord&  TypeBuilderRecord::boolean(std::string name)
-{
-    m_body.push_back(Name2Type(name, new TypeBoolean{}));
-
-    return  *this;
-}
-
-TypeBuilderRecord&  TypeBuilderRecord::string( std::string name)
-{
-    m_body.push_back(Name2Type(name, new TypeString{}));
-
-    return  *this;
-}
-
-TypeBuilderRecord&  TypeBuilderRecord::record( std::string name, TypeRecord*type)
-{
-    m_body.push_back(Name2Type(name, type));
-
-    return  *this;
-}
-
-TypeBuilderRecord&  TypeBuilderRecord::array(  std::string name, TypeArray* type)
-{
-    m_body.push_back(Name2Type(name, type));
-
-    return  *this;
-}
-
-TypeRecord*         TypeBuilderRecord::build()
-{
-    return  new TypeRecord(m_body);
-}
-
-TypeBuilderArray&   TypeBuilderArray::integer()
-{
-    if(m_body != nullptr)
-        throw std::logic_error("array body has been already specified");
-
-    m_body  = new TypeInteger{};
-
-    return  *this;
-}
-
-TypeBuilderArray&   TypeBuilderArray::number()
-{
-    if(m_body != nullptr)
-        throw std::logic_error("array body has been already specified");
-
-    m_body  = new TypeNumber{};
-
-    return  *this;
-}
-
-TypeBuilderArray&   TypeBuilderArray::boolean()
-{
-    if(m_body != nullptr)
-        throw std::logic_error("array body has been already specified");
-
-    m_body  = new TypeBoolean{};
-
-    return  *this;
-}
-
-TypeBuilderArray&   TypeBuilderArray::string()
-{
-    if(m_body != nullptr)
-        throw std::logic_error("array body has been already specified");
-
-    m_body  = new TypeString{};
-
-    return  *this;
-}
-
-TypeBuilderArray&   TypeBuilderArray::record(   TypeRecord* type)
-{
-    if(m_body != nullptr)
-        throw std::logic_error("array body has been already specified");
-
-    m_body  = type;
-
-    return  *this;
-}
-
-TypeBuilderArray&   TypeBuilderArray::array(    TypeArray*  type)
-{
-    if(m_body != nullptr)
-        throw std::logic_error("array body has been already specified");
-
-    m_body  = type;
-
-    return  *this;
-}
-
-TypeBuilderArray&   TypeBuilderArray::size(   unsigned    size)
-{
-    m_size  = size;
-
-    return *this;
-}
-
-TypeArray*          TypeBuilderArray::build()
-{
-    if(m_body == nullptr)
-        throw std::logic_error("array body has not been yet specified");
-    
-    return  new TypeArray(m_body, m_size);
-}
-
-
-void printHelper(Type* const type, std::string prefix = "")
-{
-    if(nullptr != dynamic_cast<TypeInteger*>(type))
-        std::cout << "\"type\": \"integer\"";
-
-    if(nullptr != dynamic_cast<TypeBoolean*>(type))
-        std::cout << "\"type\": \"boolean\"";
-        
-    if(nullptr != dynamic_cast<TypeNumber*>(type))
-        std::cout << "\"type\": \"number\"";
-
-    if(nullptr != dynamic_cast<TypeString*>(type))
-        std::cout << "\"type\": \"string\"";
-
-    if(auto array = dynamic_cast<TypeArray*>(type))
-    {
-        std::cout << "\"type\": \"array\", \"body\": {\"size\": "<< array->size << ", ";
-        printHelper(array->base, prefix + "    ");
-        std::cout << "}";
-    }
-
-    if(auto record = dynamic_cast<TypeRecord*>(type))
-    {
-        std::cout << "\"type\": \"record\", \"body\": [";
-
-        auto    suffix   = "\n";
-        for(auto& item: record->body())
+        int64_t off = kNullOffset;
+        if (hostPtr != nullptr)
         {
-            std::cout << suffix << prefix << "    {\"name\": \"" << item.name << "\", ";
-            printHelper(item.type, prefix + "    ");
-            std::cout << "}";
-
-            suffix = ",\n";
-        }
-        std::cout << "]";
-    }
-}
-
-std::ostream&   printHex(std::string const& data)
-{
-    std::cout << std::endl;
-    char    text[17]    = "                ";
-    for(unsigned i = 0; i < data.size(); i++)
-    {
-        text[i % 16]    = isprint(data[i]) ? data[i] : '.';
-
-        if(i % 16 == 0)
-        {
-            std::cout << std::hex << std::setw(4) << std::setfill('0') <<  i << ": ";
-        }
-
-        std::cout << std::hex << std::setw(2) << std::setfill('0') << (0xff & (unsigned)data[i]) << " ";
-        if((i + 1) % 16 == 0)
-        {
-            std::cout << " | " << text << std::endl;
-        }
-    }
-
-    if(data.size() % 16 != 0)
-    {
-        auto i = data.size() % 16;
-
-        text[i] = 0;
-        std::cout << std::setfill(' ') << std::setw(3 * (16 - i)) << " " << " | " << text << std::endl;
-    }
-
-    return std::cout;
-}
-
-void print(Type* const type)
-{
-    std::cout << "{";
-    printHelper(type);
-    std::cout << "}";
-}
-
-void    readData(Type* main, std::string const& data)
-{
-    std::deque<Type*>   type;
-    std::vector<Type*>  fifo;
-    std::istringstream  is(data);
-
-    type.push_back(main);
-
-    while(type.empty() == false)
-    {
-        Type*   top     = type.front();
-
-        type.pop_front();
-
-        if(dynamic_cast<TypeInteger*>(top))
-        {
-            uint64_t    buff;
-
-            is.read(reinterpret_cast<char*>(&buff), sizeof(buff));
-
-            buff    = ntohll(buff);
-            std::cout << std::dec << buff << " ";
-        }
-
-        if(dynamic_cast<TypeNumber*>(top))
-        {
-            uint64_t    buff;
-
-            is.read(reinterpret_cast<char*>(&buff), sizeof(buff));
-
-            buff    = ntohll(buff);
-            std::cout << std::dec << *reinterpret_cast<double*>(&buff) << " ";
-        }    
-
-        if(dynamic_cast<TypeBoolean*>(top))
-        {
-            bool    buff;
-
-            is.read(reinterpret_cast<char*>(&buff), sizeof(buff));
-
-            std::cout << buff << " ";
-        }    
-
-        if(dynamic_cast<TypeString*>(top))
-        {
-            unsigned    size;
-
-            is.read(reinterpret_cast<char*>(&size), sizeof(size));
-            size    = ntohl(size);
-
-            std::string buff(size, 0);
-            is.read(buff.data(), size);
-
-            std::cout << "\"" << buff << "\" ";
-        }   
-
-        if(auto curr = dynamic_cast<TypeRecord*>(top))
-        {
-            for(auto it = curr->body().rbegin(); it != curr->body().rend(); it ++)
+            std::string key(hostPtr);
+            auto        it = m_dict.find(key);
+            if (it == m_dict.end())
             {
-                type.push_front(it->type);
+                uint64_t pos = m_pool.size();
+                m_pool.insert(m_pool.end(), key.begin(), key.end());
+                m_pool.push_back(0);
+                it = m_dict.emplace(std::move(key), pos).first;
+            }
+            off = static_cast<int64_t>(it->second);
+        }
+        std::memcpy(slot, &off, sizeof(off));
+    }
+
+private:
+    std::unordered_map<std::string, uint64_t>&  m_dict;
+    std::vector<uint8_t>&                       m_pool;
+};
+
+class StringResolver final : public BlobWalker
+{
+public:
+    StringResolver(uint8_t* base, size_t size, char const* pool, size_t poolSize)
+        : BlobWalker(base, size)
+        , m_pool(pool)
+        , m_poolSize(poolSize)
+    {
+    }
+
+protected:
+    void    visitString(uint8_t* slot) override
+    {
+        int64_t off = 0;
+        std::memcpy(&off, slot, sizeof(off));
+
+        char const* hostPtr = nullptr;
+        if (off != kNullOffset)
+        {
+            if (off < 0 || static_cast<uint64_t>(off) >= m_poolSize)
+                throw std::runtime_error("rdb: string offset out of range");
+            hostPtr = Strings::instance()->getString(m_pool + off);
+        }
+        std::memcpy(slot, &hostPtr, sizeof(hostPtr));
+    }
+
+private:
+    char const*     m_pool;
+    size_t          m_poolSize;
+};
+
+} // namespace
+
+// ============================================================================
+//  Writer
+// ============================================================================
+
+struct Writer::Impl
+{
+    std::ostream&                                       os;
+    std::vector<PropDecl>                               props;
+    std::vector<ConfDecl>                               confs;
+    size_t                                              numStates  = 0;
+    bool                                                hasNumStates = false;
+    std::vector<uint8_t>                                confBlob;
+    bool                                                hasConfBlob  = false;
+    // For each prop, the per-state blob bytes. blobs[pi][si] is the bytes for
+    // (state si, prop pi). Empty inner vector means "null pointer for this
+    // state's slot". Equivalent to `std::vector<blob_t>`, but the outer index
+    // is prop-major rather than state-major (the `blob_t` exposed by the API
+    // is one row's worth, indexed by prop).
+    std::vector<blob_t>                                 blobs;
+    std::vector<std::optional<int64_t>>                 times;
+
+    explicit Impl(std::ostream& s) : os(s) {}
+};
+
+Writer::Writer(std::ostream& os) : m_impl(std::make_unique<Impl>(os)) {}
+Writer::~Writer() = default;
+
+void    Writer::setSchema(std::vector<PropDecl> props,
+                          std::vector<ConfDecl> confs)
+{
+    m_impl->props = std::move(props);
+    m_impl->confs = std::move(confs);
+    m_impl->blobs.assign(m_impl->props.size(), {});
+}
+
+void    Writer::setNumStates(std::size_t numStates)
+{
+    m_impl->numStates    = numStates;
+    m_impl->hasNumStates = true;
+    m_impl->times.assign(numStates, {});
+    for (auto& vec : m_impl->blobs)
+        vec.assign(numStates, {});
+}
+
+void    Writer::setConfBlob(std::vector<std::uint8_t> blob)
+{
+    m_impl->confBlob    = std::move(blob);
+    m_impl->hasConfBlob = true;
+}
+
+void    Writer::writeState(std::size_t      stateIdx,
+                           std::int64_t     time,
+                           blob_t const&    propBlobs)
+{
+    if (!m_impl->hasNumStates)
+        throw std::runtime_error("rdb: writer.setNumStates() not called");
+    if (stateIdx >= m_impl->numStates)
+        throw std::runtime_error(fmt::format("rdb: state index {} out of range (0..{})",
+                                             stateIdx, m_impl->numStates));
+    if (propBlobs.size() != m_impl->props.size())
+        throw std::runtime_error(fmt::format("rdb: state {}: expected {} prop blobs, got {}",
+                                             stateIdx, m_impl->props.size(), propBlobs.size()));
+
+    m_impl->times[stateIdx]   = time;
+    for (size_t pi = 0; pi < propBlobs.size(); pi++)
+        m_impl->blobs[pi][stateIdx] = propBlobs[pi];
+}
+
+void    Writer::finish()
+{
+    if (!m_impl->hasNumStates)
+        throw std::runtime_error("rdb: writer.setNumStates() not called");
+    if (!m_impl->hasConfBlob)
+        throw std::runtime_error("rdb: writer.setConfBlob() not called");
+    for (size_t si = 0; si < m_impl->numStates; si++)
+        if (!m_impl->times[si].has_value())
+            throw std::runtime_error(fmt::format("rdb: writeState() never called for index {}", si));
+
+    auto const  numProps     = m_impl->props.size();
+    auto const  numStates    = m_impl->numStates;
+    auto const  rowBytes     = sizeof(int64_t) + numProps * sizeof(int64_t);
+
+    // Encode schema.
+    std::vector<uint8_t>    schemaBytes;
+    encodeSchema(schemaBytes, m_impl->props, m_impl->confs);
+
+    // Build the string pool incrementally, replacing each TypeString slot in
+    // every blob with an offset into the (yet-unfinished) pool. Pool offset 0
+    // is unused — the empty string is stored there explicitly so callers that
+    // happen to default-init a string to empty still get a real entry.
+    std::unordered_map<std::string, uint64_t>   dict;
+    std::vector<uint8_t>                        stringPool;
+    stringPool.push_back(0);                              // offset 0 = ""
+    dict.emplace("", uint64_t{0});
+
+    auto    internOne = [&](uint8_t* base, size_t size, Type* type)
+    {
+        if (size == 0) return;
+        StringInterner walker(base, size, dict, stringPool);
+        walker.walk(type);
+    };
+
+    // The conf blob is the concatenation of all conf members, each aligned
+    // with `alignBuffer(buf, ctype->alignment())` before Loader::load fills
+    // it. Replicate that exact walk so per-member alignment math stays
+    // buffer-relative — same as Loader::load.
+    {
+        size_t cur = 0;
+        for (auto const& c : m_impl->confs)
+        {
+            size_t a   = c.type->alignment();
+            size_t rem = cur % a;
+            if (rem) cur += (a - rem);
+            StringInterner sub(m_impl->confBlob.data() + cur,
+                               m_impl->confBlob.size() - cur,
+                               dict, stringPool);
+            sub.walk(c.type);
+            cur += sub.consumed();
+        }
+        if (cur > m_impl->confBlob.size())
+            throw std::runtime_error("rdb: conf blob size disagrees with schema");
+    }
+
+    for (size_t pi = 0; pi < numProps; pi++)
+    {
+        for (size_t si = 0; si < numStates; si++)
+        {
+            auto& blob = m_impl->blobs[pi][si];
+            if (blob.empty()) continue;
+            internOne(blob.data(), blob.size(), m_impl->props[pi].type);
+        }
+    }
+
+    // Build prop-blobs section and a parallel offset table.
+    std::vector<uint8_t>                        propBlobs;
+    std::vector<std::vector<int64_t>>           offsets(numStates,
+                                                        std::vector<int64_t>(numProps, kNullOffset));
+    for (size_t si = 0; si < numStates; si++)
+    {
+        for (size_t pi = 0; pi < numProps; pi++)
+        {
+            auto& blob = m_impl->blobs[pi][si];
+            if (blob.empty()) continue;
+            // Align inside the prop-blobs section to the prop type's alignment
+            // so that the host pointer the reader hands to JIT'd code respects
+            // the alignment Loader::load assumed.
+            size_t a   = m_impl->props[pi].type->alignment();
+            size_t rem = propBlobs.size() % a;
+            if (rem)
+                propBlobs.insert(propBlobs.end(), a - rem, uint8_t{0});
+            offsets[si][pi] = static_cast<int64_t>(propBlobs.size());
+            propBlobs.insert(propBlobs.end(), blob.begin(), blob.end());
+        }
+    }
+
+    // Build state buffer with int64 offsets (later relocated by Reader).
+    std::vector<uint8_t>    states(numStates * rowBytes, uint8_t{0});
+    for (size_t si = 0; si < numStates; si++)
+    {
+        uint8_t*    row = states.data() + si * rowBytes;
+        int64_t     t   = m_impl->times[si].value();
+        std::memcpy(row, &t, sizeof(t));
+        for (size_t pi = 0; pi < numProps; pi++)
+        {
+            int64_t off = offsets[si][pi];
+            std::memcpy(row + sizeof(int64_t) + pi * sizeof(int64_t),
+                        &off, sizeof(off));
+        }
+    }
+
+    // Lay out the file. Each section is 8-byte aligned for cleanliness so a
+    // future mmap-backed reader can directly cast section pointers without
+    // worrying about misalignment.
+    auto    align8 = [](uint64_t v) { return (v + 7u) & ~uint64_t{7}; };
+
+    OnDiskHeader    hdr{};
+    std::memcpy(hdr.magic, kMagic, sizeof(kMagic));
+    hdr.version        = kVersion;
+    hdr.flags          = 0;
+
+    auto    place = [&](Section& sec, uint64_t& cursor, uint64_t sz, uint64_t cnt)
+    {
+        cursor       = align8(cursor);
+        sec.fileOffs = cursor;
+        sec.fileSize = sz;
+        sec.itemNmbr = cnt;
+        cursor      += sz;
+    };
+
+    uint64_t cursor = sizeof(OnDiskHeader);
+    place(hdr.schema,     cursor, schemaBytes.size(),     numProps);
+    place(hdr.conf,       cursor, m_impl->confBlob.size(), m_impl->confs.size());
+    place(hdr.states,     cursor, states.size(),          numStates);
+    place(hdr.propBlobs,  cursor, propBlobs.size(),       0);
+    place(hdr.stringPool, cursor, stringPool.size(),      0);
+
+    hdr.rowBytes         = rowBytes;
+
+    auto    write = [&](void const* p, size_t n)
+    {
+        m_impl->os.write(reinterpret_cast<char const*>(p), static_cast<std::streamsize>(n));
+    };
+    auto    pad = [&](uint64_t curOff, uint64_t target)
+    {
+        while (curOff < target)
+        {
+            uint8_t z = 0;
+            write(&z, 1);
+            curOff++;
+        }
+        return curOff;
+    };
+
+    uint64_t off = 0;
+    write(&hdr, sizeof(hdr)); off += sizeof(hdr);
+    auto    emit = [&](Section const& sec, void const* data)
+    {
+        off = pad(off, sec.fileOffs);
+        write(data, sec.fileSize);
+        off += sec.fileSize;
+    };
+    emit(hdr.schema,     schemaBytes.data());
+    emit(hdr.conf,       m_impl->confBlob.data());
+    emit(hdr.states,     states.data());
+    emit(hdr.propBlobs,  propBlobs.data());
+    emit(hdr.stringPool, stringPool.data());
+
+    m_impl->os.flush();
+}
+
+// ============================================================================
+//  Reader
+// ============================================================================
+
+struct Reader::Impl
+{
+    std::vector<uint8_t>                    data;
+    OnDiskHeader                            hdr{};
+    std::vector<std::unique_ptr<Type>>      typeSink;
+    std::vector<PropDecl>                   props;
+    std::vector<ConfDecl>                   confs;
+
+    // Validate the slab in `data` and run the in-place pointer fix-up.
+    // `ctx` is purely for error messages (file path or "<memory>").
+    void    fixUp(std::string const& ctx)
+    {
+        if (data.size() < sizeof(OnDiskHeader))
+            throw std::runtime_error(fmt::format("rdb: '{}' is too small to be a .rdb file", ctx));
+
+        std::memcpy(&hdr, data.data(), sizeof(OnDiskHeader));
+
+        if (std::memcmp(hdr.magic, kMagic, sizeof(kMagic)) != 0)
+            throw std::runtime_error(fmt::format("rdb: bad magic in '{}'", ctx));
+        if (hdr.version != kVersion)
+            throw std::runtime_error(fmt::format("rdb: unsupported version {} in '{}'",
+                                                 hdr.version, ctx));
+
+        auto    needRange = [&](Section const& sec, char const* what)
+        {
+            if (sec.fileOffs + sec.fileSize > data.size())
+                throw std::runtime_error(fmt::format("rdb: {} section out of bounds", what));
+        };
+        needRange(hdr.schema,     "schema");
+        needRange(hdr.conf,       "conf");
+        needRange(hdr.states,     "states");
+        needRange(hdr.propBlobs,  "prop-blobs");
+        needRange(hdr.stringPool, "string-pool");
+
+        if (hdr.states.itemNmbr * hdr.rowBytes != hdr.states.fileSize)
+            throw std::runtime_error("rdb: states section size mismatch");
+
+        // Decode schema, then cross-check all the redundant counts/strides.
+        {
+            uint8_t const*  cur = data.data() + hdr.schema.fileOffs;
+            uint8_t const*  end = cur + hdr.schema.fileSize;
+            decodeSchema(cur, end, props, confs, typeSink);
+            if (cur != end)
+                throw std::runtime_error("rdb: trailing bytes in schema section");
+        }
+        if (props.size() != hdr.schema.itemNmbr)
+            throw std::runtime_error("rdb: schema/schema.itemNmbr disagree");
+        if (confs.size() != hdr.conf.itemNmbr)
+            throw std::runtime_error("rdb: schema/conf.itemNmbr disagree");
+        if (hdr.rowBytes != sizeof(int64_t) + hdr.schema.itemNmbr * sizeof(int64_t))
+            throw std::runtime_error("rdb: rowBytes inconsistent with schema.itemNmbr");
+
+        // Resolve all string offsets to interned host pointers, in place.
+        char const*     poolBase   = reinterpret_cast<char const*>(
+                                        data.data() + hdr.stringPool.fileOffs);
+        size_t          poolSize   = hdr.stringPool.fileSize;
+        uint8_t*        propBase   = data.data() + hdr.propBlobs.fileOffs;
+        uint64_t        propSize   = hdr.propBlobs.fileSize;
+
+        {
+            // conf blob: same per-member alignment walk as the writer.
+            uint8_t*    confBase = data.data() + hdr.conf.fileOffs;
+            size_t      confSz   = hdr.conf.fileSize;
+            size_t      cur      = 0;
+            for (auto const& c : confs)
+            {
+                size_t  a   = c.type->alignment();
+                size_t  rem = cur % a;
+                if (rem) cur += (a - rem);
+                StringResolver  sub(confBase + cur, confSz - cur, poolBase, poolSize);
+                sub.walk(c.type);
+                cur += sub.consumed();
             }
         }
 
-        if(auto curr = dynamic_cast<TypeArray*>(top))
+        // Walk every state row: rewrite each int64 prop offset to a host pointer
+        // into the prop-blobs section, and run the string resolver over the blob.
         {
-            uint32_t    size;
-            is.read(reinterpret_cast<char*>(&size), sizeof(size));
-            size = ntohl(size);
-
-            for(auto i = 0u; i < size; i++)
+            uint8_t*    rows     = data.data() + hdr.states.fileOffs;
+            auto const  numProps = hdr.schema.itemNmbr;
+            auto const  rowBytes = hdr.rowBytes;
+            for (uint64_t si = 0; si < hdr.states.itemNmbr; si++)
             {
-                type.push_front(curr->base);
-            }
-        }
-    }
-}
-
-void nameHelper(Type* type, std::string prefix, std::vector<std::string>& names)
-{
-    if(auto array = dynamic_cast<TypeArray*>(type))
-    {
-        auto    size    = array->size == 0 ? 1 : array->size;
-
-        names.push_back(prefix + "#size");
-
-        std::cout << prefix << "#size" << std::endl;
-        for(auto i = 0u; i < size; i++)
-        {
-            nameHelper(array->base, prefix + "[" + std::to_string(i) + "]", names);
-        }
-    }
-
-    else if(auto record = dynamic_cast<TypeRecord*>(type))
-    {
-        for(auto& item: record->body())
-        {
-            nameHelper(item.type, prefix + "." + item.name, names);
-        }
-    }
-    else
-    {
-        if(nullptr != dynamic_cast<TypeInteger*>(type))
-        {
-            names.push_back(prefix + ":integer");
-
-            std::cout << prefix << ":integer" << std::endl;
-        }
-        if(nullptr != dynamic_cast<TypeNumber*>(type))
-        {
-            names.push_back(prefix + ":number");
-
-            std::cout << prefix << ":number" << std::endl;
-        }
-        if(nullptr != dynamic_cast<TypeBoolean*>(type))
-        {
-            names.push_back(prefix + ":boolean");
-
-            std::cout << prefix << ":boolean" << std::endl;
-        }
-        if(nullptr != dynamic_cast<TypeString*>(type))
-        {
-            names.push_back(prefix + ":string");
-
-            std::cout << prefix << ":string" << std::endl;
-        }
-    }
-}
-
-std::vector<std::string>    names(Type* type, std::string name)
-{
-    std::vector<std::string>    names;
-
-    nameHelper(type, name, names);
-
-    return names;
-}
-
-void readCsv(Type* type, std::string name, std::string data)
-{
-    rapidcsv::Document  doc(name);
-
-    std::cout << std::endl;
-/*
-    auto cols = doc.GetColumnNames();
-
-    for(auto col: cols)
-    {
-        std::cout << col << std::endl;
-    }
-*/
-    //auto cols   = names(type, data);
-    auto rows   = doc.GetRowCount();
-
-    for(size_t row = 0; row < rows; row++)
-    {
-        std::deque<Type*>       types;
-        std::deque<std::string> names;
-        DataWriter             builder;
-
-        types.push_front(type);
-        names.push_front(data);
-
-        while(types.empty() == false)
-        {
-            auto    type    = types.front();    types.pop_front();
-            auto    name    = names.front();    names.pop_front();
-
-            if(dynamic_cast<TypeInteger*>(type))
-            {
-                int64_t     data    = doc.GetCell<int64_t>(name, row);
-                builder.integer(data);
-            }
-
-            if(dynamic_cast<TypeNumber*>(type))
-            {
-                double      data    = doc.GetCell<double>(name, row);
-                builder.number(data);
-            }
-
-            if(dynamic_cast<TypeBoolean*>(type))
-            {
-                std::string data    = doc.GetCell<std::string>(name, row);
-                bool        value   = false;
-                if(data == "true" || data == "yes" || data == "1")
-                    value   = true;
-                if(data == "false" || data == "no" || data == "0")
-                    value   = false;                    
-
-                builder.boolean(value);
-            }
-
-            if(dynamic_cast<TypeString*>(type))
-            {
-                std::string data    = doc.GetCell<std::string>(name, row);
-                builder.string(data);
-            }
-
-            if(auto curr = dynamic_cast<TypeRecord*>(type))
-            {
-                for(auto it = curr->body().rbegin(); it != curr->body().rend(); it ++)
+                uint8_t*    row = rows + si * rowBytes;
+                for (uint64_t pi = 0; pi < numProps; pi++)
                 {
-                    types.push_front(it->type);
-                    names.push_front(name + "." + it->name);
+                    uint8_t*    slot = row + sizeof(int64_t) + pi * sizeof(int64_t);
+                    int64_t     off  = 0;
+                    std::memcpy(&off, slot, sizeof(off));
+                    void*       host = nullptr;
+                    if (off != kNullOffset)
+                    {
+                        if (off < 0 || static_cast<uint64_t>(off) >= propSize)
+                            throw std::runtime_error("rdb: prop offset out of range");
+                        host = propBase + off;
+                        // Resolve any TypeString slots within this blob.
+                        Type*   t = props[pi].type;
+                        // The blob's size on disk is determined by walking the
+                        // type; the walker doesn't read past its end.
+                        StringResolver  sub(propBase + off, propSize - off,
+                                            poolBase, poolSize);
+                        sub.walk(t);
+                    }
+                    std::memcpy(slot, &host, sizeof(host));
                 }
             }
+        }
+    }
+};
 
-            if(auto curr = dynamic_cast<TypeArray*>(type))
+Reader::Reader(std::string const& path) : m_impl(std::make_unique<Impl>())
+{
+    std::ifstream in(path, std::ios::binary);
+    if (!in)
+        throw std::runtime_error(fmt::format("rdb: cannot open '{}'", path));
+    in.seekg(0, std::ios::end);
+    auto    size = in.tellg();
+    if (size < static_cast<std::streamoff>(sizeof(OnDiskHeader)))
+        throw std::runtime_error(fmt::format("rdb: '{}' is too small to be a .rdb file", path));
+    in.seekg(0, std::ios::beg);
+    m_impl->data.resize(static_cast<size_t>(size));
+    in.read(reinterpret_cast<char*>(m_impl->data.data()),
+            static_cast<std::streamsize>(m_impl->data.size()));
+    if (!in)
+        throw std::runtime_error(fmt::format("rdb: short read for '{}'", path));
+
+    m_impl->fixUp(path);
+}
+
+Reader::Reader(std::vector<std::uint8_t> bytes, std::string const& ctx)
+    : m_impl(std::make_unique<Impl>())
+{
+    m_impl->data = std::move(bytes);
+    m_impl->fixUp(ctx);
+}
+
+Reader::~Reader() = default;
+
+std::vector<PropDecl> const&    Reader::props() const { return m_impl->props; }
+std::vector<ConfDecl> const&    Reader::confs() const { return m_impl->confs; }
+
+void*   Reader::ptrFirst() const
+{
+    return m_impl->data.data() + m_impl->hdr.states.fileOffs;
+}
+
+void*   Reader::ptrLast() const
+{
+    if (m_impl->hdr.states.itemNmbr == 0) return nullptr;
+    return m_impl->data.data() + m_impl->hdr.states.fileOffs
+         + (m_impl->hdr.states.itemNmbr - 1) * m_impl->hdr.rowBytes;
+}
+
+void*   Reader::confPtr() const
+{
+    return m_impl->data.data() + m_impl->hdr.conf.fileOffs;
+}
+
+std::size_t     Reader::numStates() const { return m_impl->hdr.states.itemNmbr; }
+std::size_t     Reader::numProps()  const { return m_impl->hdr.schema.itemNmbr; }
+std::size_t     Reader::rowBytes()  const { return m_impl->hdr.rowBytes; }
+std::size_t     Reader::confSize()  const { return m_impl->hdr.conf.fileSize; }
+
+std::int64_t    Reader::time(std::size_t stateIdx) const
+{
+    if (stateIdx >= m_impl->hdr.states.itemNmbr)
+        throw std::runtime_error("rdb: state index out of range");
+    auto*       row = m_impl->data.data() + m_impl->hdr.states.fileOffs
+                    + stateIdx * m_impl->hdr.rowBytes;
+    int64_t     t   = 0;
+    std::memcpy(&t, row, sizeof(t));
+    return t;
+}
+
+void const*     Reader::propBlob(std::size_t stateIdx, std::size_t propIdx) const
+{
+    if (stateIdx >= m_impl->hdr.states.itemNmbr || propIdx >= m_impl->hdr.schema.itemNmbr)
+        throw std::runtime_error("rdb: index out of range");
+    auto*       row  = m_impl->data.data() + m_impl->hdr.states.fileOffs
+                     + stateIdx * m_impl->hdr.rowBytes;
+    void*       host = nullptr;
+    std::memcpy(&host,
+                row + sizeof(int64_t) + propIdx * sizeof(int64_t),
+                sizeof(host));
+    return host;
+}
+
+struct DataYamlPrinter
+    : Visitor<TypeBoolean, TypeInteger, TypeNumber, TypeString, TypeEnum, TypeStruct, TypeArray>
+{
+    std::ostream& os;
+    Type*          type;
+    uint8_t const* data;
+    size_t         indent;
+
+    DataYamlPrinter(std::ostream &os, Type *type, uint8_t const* d, size_t indent)
+        : os(os), type(type), data(d), indent(indent)
+    {
+    }
+
+    static std::ostream& render(std::ostream& os, Type *type, uint8_t const* data, size_t indent)
+    {
+        DataYamlPrinter v(os, type, data, indent);
+        type->accept(v);
+
+        return os;
+    }
+
+    static std::string ind(size_t n)
+    {
+        std::ostringstream ss;
+        for (size_t i = 0; i < n; i++) ss << ' ';
+
+        return ss.str();
+    }
+
+    void visit(TypeBoolean*) override
+    {
+        os << ((*reinterpret_cast<bool const*>(data)) ? "true" : "false");
+    }
+
+    void visit(TypeInteger*) override
+    {
+        os << *reinterpret_cast<int const*>(data);
+    }
+
+    void visit(TypeNumber*) override
+    {
+        os << *reinterpret_cast<double const*>(data);
+    }
+
+    void visit(TypeString*) override
+    {
+        os << *reinterpret_cast<char * const*>(data);
+    }
+
+    void visit(TypeEnum* e) override
+    {
+        int v = *reinterpret_cast<int const*>(data);
+        if (v >= 0 && (size_t)v < e->items.size())
+            os << e->items[v];
+        else
+            os << v;
+    }
+
+    void visit(TypeStruct* s) override
+    {
+        size_t curr = 0;
+        for (auto const& member : s->members)
+        {
+            auto align = member.data->alignment();
+
+            if (curr % align)
+                curr += align- (curr % align);
+
+            os << "\n" << ind(indent + 2) << "- " << member.name << ": ";
+
+            render(os, member.data, data + curr, indent + 4);
+
+            curr += member.data->size();
+        }
+    }
+
+    void visit(TypeArray* a) override
+    {
+        auto elemSize = a->type->size();
+
+        for (size_t i = 0; i < a->count; i++)
+        {
+            os << "\n" << ind(indent + 2) << "- ";
+
+            render(os,
+                   a->type,
+                   data + i * elemSize,
+                   indent + 4);
+        }
+    }
+};
+
+struct TypeYamlPrinter
+    : Visitor<TypeBoolean, TypeInteger, TypeNumber, TypeString, TypeEnum, TypeStruct, TypeArray>
+{
+    std::ostream&   os;
+    Type*           type;
+    size_t          indent;
+
+    TypeYamlPrinter(std::ostream& o, Type *type, size_t indent)
+        : os(o), type(type), indent(indent)
+    {
+    }
+
+    static std::string ind(size_t n)
+    {
+        std::ostringstream ss;
+        for (size_t i = 0; i < n; i++) ss << ' ';
+
+        return ss.str();
+    }
+
+    static std::ostream& render(std::ostream& os, Type *type, size_t indent)
+    {
+        TypeYamlPrinter v(os, type, indent);
+        type->accept(v);
+
+        return os;
+    }
+
+    void visit(TypeBoolean*)  override { os << "boolean"; }
+    void visit(TypeInteger*)  override { os << "integer"; }
+    void visit(TypeNumber*)   override { os << "number"; }
+    void visit(TypeString*)   override { os << "string"; }
+    void visit(TypeEnum* e)   override
+    {
+        os << "enum: " << "\n";
+        os << ind(indent + 2) << "items: ";
+        for (auto const& item : e->items)
+            os << "\n" << ind(indent + 4) << "- " << item;
+    }
+    void visit(TypeStruct* s) override
+    {
+        os << "struct" << "\n";
+
+        os << ind(indent + 0) << "fields:";
+
+        for (auto const& member : s->members)
+        {
+            os << "\n" << ind(indent + 2) << "- " << member.name << ": ";
+
+            render(os, member.data, indent + 4);
+        }
+    }
+
+    void visit(TypeArray* a) override
+    {
+        os << "array" << "\n";
+        os << ind(indent + 2) << "items: " << "\n";
+        os << ind(indent + 4) << "type:  "; render(os, a->type, indent + 4) << "\n";
+        os << ind(indent + 4) << "count: " << a->count << "\n";
+    }
+};
+
+void dump(std::string const& path, std::ostream& os)
+{
+    Reader r(path);
+
+    os << "rdb:\n";
+    os << "  path: "      << path          << "\n";
+    os << "  numStates: " << r.numStates() << "\n";
+    os << "  numProps: "  << r.numProps()  << "\n";
+    os << "  rowBytes: "  << r.rowBytes()  << "\n";
+
+    os << "schema:\n";
+    os << "  data:\n";
+    for (auto const& p : r.props())
+    {
+        os << "    - name: " << p.name << "\n";
+        os << "      type: ";
+        TypeYamlPrinter::render(os, p.type, 8) << "\n";
+    }
+    os << "  conf:";
+    for (auto const& c : r.confs())
+    {
+        os << "\n";
+        os << "    - name: " << c.name << "\n";
+        os << "      type: ";
+        TypeYamlPrinter::render(os, c.type, 8);
+    }
+    os << "\n";
+
+    os << "conf:\n";
+    {
+        auto* base = static_cast<uint8_t const*>(r.confPtr());
+        size_t cur = 0;
+
+        for (auto const& c : r.confs())
+        {
+            size_t a = c.type->alignment();
+            if (cur % a) cur += a - (cur % a);
+
+            os << "  " << c.name << ":";
+            DataYamlPrinter::render(os, c.type, base + cur, 2) << "\n";
+
+            cur += c.type->size();
+        }
+    }
+
+    os << "states:\n";
+    for (size_t si = 0; si < r.numStates(); si++)
+    {
+        os << "  - index: " << si << "\n";
+        os << "    time: "  << r.time(si) << "\n";
+        os << "    props:\n";
+
+        for (size_t pi = 0; pi < r.numProps(); pi++)
+        {
+            auto* blob = static_cast<uint8_t const*>(r.propBlob(si, pi));
+
+            os << "      " << r.props()[pi].name << ": ";
+
+            if (!blob)
             {
-                unsigned    size    = doc.GetCell<unsigned>(name + "#size", row);
-
-                for(auto i = 0u; i < size; i++)
-                {
-                    types.push_front(curr->base);
-                    names.push_front(name + "[" + std::to_string(size - i - 1) + "]");
-                }
-
-                builder.size(size);
+                os << "null\n";
+                continue;
             }
+
+            DataYamlPrinter::render(os, r.props()[pi].type, blob, 8);
+
+            os << "\n";
         }
-
-        auto data = builder.build();
-
-        printHex(data) << std::endl;
-        readData(type, data);
-
-/*
-        for(auto col: cols)
-        {
-            std::cout << doc.GetCell<std::string>(col, row) << " ";
-        }
-        std::cout << std::endl;
-*/
-
-    }
-
-}
-
-void    Writer::open(std::string filename)
-{
-    m_os.open(filename, std::ios_base::binary | std::ios_base::in | std::ios_base::trunc);
-
-    record(0x00010000, "referee");
-    record(0x00010001, "v1.0.0");
-}
-
-void    Writer::close()
-{
-    m_os.flush();
-    m_os.close();
-}
-
-
-void    Writer::record( uint32_t            info,
-                        std::string const&  data)
-{
-    uint32_t    buff32;
-
-    buff32  = htonl(info);
-    m_os.write(reinterpret_cast<char const*>(&buff32), sizeof(buff32));
-
-    buff32  = htonl(data.size());
-    m_os.write(reinterpret_cast<char const*>(&buff32), sizeof(buff32));
-
-    m_os.write(reinterpret_cast<char const*>(data.data()), data.size());
-}
-
-void    Writer::record( uint32_t            info,
-                        uint64_t            time,
-                        std::string const&  data)
-{
-    uint32_t    buff32;
-    uint64_t    buff64;
-
-    buff32  = htonl(info);
-    m_os.write(reinterpret_cast<char const*>(&buff32), sizeof(buff32));
-
-    buff32  = htonl(data.size() + sizeof(time));
-    m_os.write(reinterpret_cast<char const*>(&buff32), sizeof(buff32));
-
-    buff64  = htonll(time);
-    m_os.write(reinterpret_cast<char const*>(&buff64), sizeof(buff64));
-
-    m_os.write(reinterpret_cast<char const*>(data.data()), data.size());
-}
-
-void    encode(std::ostream& os, Type* const type, std::string prefix = "")
-{
-    if(nullptr != dynamic_cast<TypeInteger*>(type))
-        os << "\"type\": \"integer\"";
-
-    if(nullptr != dynamic_cast<TypeBoolean*>(type))
-        os << "\"type\": \"boolean\"";
-        
-    if(nullptr != dynamic_cast<TypeNumber*>(type))
-        os << "\"type\": \"number\"";
-
-    if(nullptr != dynamic_cast<TypeString*>(type))
-        os << "\"type\": \"string\"";
-
-    if(auto array = dynamic_cast<TypeArray*>(type))
-    {
-        os << "\"type\": \"array\", \"body\": {\"size\": "<< array->size << ", ";
-        encode(os, array->base, prefix + "    ");
-        os << "}";
-    }
-
-    if(auto record = dynamic_cast<TypeRecord*>(type))
-    {
-        os << "\"type\": \"record\", \"body\": [";
-
-        auto    suffix   = "\n";
-        for(auto& item: record->body())
-        {
-            os << suffix << prefix << "    {\"name\": \"" << item.name << "\", ";
-            encode(os, item.type, prefix + "    ");
-            os << "}";
-
-            suffix = ",\n";
-        }
-        os << "]";
     }
 }
 
-std::string Writer::encode( Type*   type)
-{
-    std::ostringstream  os;
-    os << "{";
-    referee::db::encode(os, type);
-    os << "}";
-
-    return os.str();
-}
-#define     INFO(type, ID)  (((type) << 16) | (ID))
-#define     ROOT        0x0001
-#define     DECL_TYPE   0x0002
-#define     DECL_PROP   0x0003
-#define     DECL_CONF   0x0004
-#define     PUSH_PROP   0x0005
-#define     PUSH_CONF   0x0006
-
-uint8_t Writer::declType(   Type*               type)
-{
-    std::string encoded = encode(type);
-
-    m_types.push_back(type);
-
-    record(INFO(DECL_TYPE, 0), encoded);
-
-    return  m_types.size();
-}
-
-uint8_t Writer::declConf(   uint8_t             type,
-                            std::string         name)
-{
-    m_confs.push_back(std::make_pair(name, type));
-
-    record(INFO(DECL_CONF, type), name);
-
-    return m_confs.size();
-}
-
-void    Writer::pushData(   uint8_t             conf,
-                            std::string const&  data)
-{
-    record(INFO(PUSH_CONF, conf), data);
-}
-                    
-uint8_t Writer::declProp(   uint8_t             type,
-                            std::string         name)
-{
-    m_props.push_back(std::make_pair(name, type));
-
-    record(INFO(DECL_PROP, type), name);
-
-    return m_props.size();
-}
-
-void    Writer::pushData(   uint8_t             prop,
-                            uint64_t            time,
-                            std::string const&  data)
-{
-    record(INFO(PUSH_PROP, prop), time, data);
-}
-
-void    readDB(std::string filename)
-{
-    std::ifstream   is(filename, std::ios_base::binary | std::ios_base::in);
-
-    std::vector<std::string>    prop2name;
-    std::vector<std::string>    conf2name;
-
-    conf2name.push_back("-");
-    prop2name.push_back("-");
-
-    while(is.eof() == false)
-    {
-        uint16_t    type;
-        uint32_t    info;
-        uint32_t    size;
-        uint64_t    time;
-        uint8_t     indx;
-        std::string data;
-        is.read(reinterpret_cast<char*>(&info), sizeof(info));
-        is.read(reinterpret_cast<char*>(&size), sizeof(size));
-
-        info    = ntohl(info);
-        size    = ntohl(size);
-        type    = info >> 16;
-        indx    = info & 0xff;
-
-
-        switch(type)
-        {
-            case ROOT:
-                data.resize(size);
-                is.read(reinterpret_cast<char*>(data.data()), size);
-                std::cout << data << std::endl;
-                break;
-            case DECL_TYPE:
-                data.resize(size);
-                is.read(reinterpret_cast<char*>(data.data()), size);
-                std::cout << "decl type: "  << data << std::endl;
-                break;
-            case DECL_PROP:
-                data.resize(size);
-                is.read(reinterpret_cast<char*>(data.data()), data.size());
-                std::cout << "decl prop: " << data << std::endl;
-                prop2name.push_back(data);
-                break;
-            case DECL_CONF:
-                data.resize(size);
-                is.read(reinterpret_cast<char*>(data.data()), size);
-                std::cout << "decl conf: "  << data << std::endl;
-                conf2name.push_back(data);
-                break;
-            case PUSH_PROP:
-                data.resize(size - sizeof(time));
-                is.read(reinterpret_cast<char*>(&time), sizeof(time));
-                time    = ntohll(time);
-                is.read(reinterpret_cast<char*>(data.data()), data.size());
-                std::cout << prop2name[indx] << " @ " << std::dec << std::setw(16) << std::setfill('0') << time << ":";
-                printHex(data) << std::endl;
-                break;
-            case PUSH_CONF:
-                data.resize(size);
-                is.read(reinterpret_cast<char*>(data.data()), data.size());
-                std::cout << prop2name[indx];
-                printHex(data) << std::endl;
-                break;
-            default:
-                std::exit(1);
-        }
-
-    }
-}
-
-}
+} // namespace referee::db

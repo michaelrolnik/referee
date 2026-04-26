@@ -34,27 +34,77 @@
 int main(int argc, char * argv[])
 {
     CLI::App    app("referee");
-    
-    std::string refFilename = "default";
+    app.require_subcommand(1);
+
     bool        flDebug     = false;
 
-    auto        compile = app.add_subcommand("compile", "Compile REF file");
-    compile->add_option( "reffile", refFilename, "REF file to parse")
+    app.add_flag("--debug", flDebug, "produce debug logs");
+
+    // compile subcommand: emits LLVM IR to stdout
+    std::string compileRef;
+    auto        compile = app.add_subcommand("compile", "Compile REF file to LLVM IR");
+    compile->add_option("reffile", compileRef, "REF file to compile")
+        ->required()
         ->check(CLI::ExistingFile);
-    
+
+    // execute subcommand
+    std::string runRef;
+    std::string runData;
+    std::string runConf;
+    auto        execute = app.add_subcommand(
+        "execute",
+        "Execute compiled REF specs against a CSV / YAML / RDB trace");
+    execute
+        ->add_option("reffile", runRef, "REF specification file")
+        ->required()
+        ->check(CLI::ExistingFile);
+    execute
+        ->add_option("datafile", runData,
+            "Trace file (.csv / .yml / .yaml / .rdb)")
+        ->required()
+        ->check(CLI::ExistingFile);
+    execute
+        ->add_option("--conf", runConf,
+            "Conf file (.csv / .yml / .yaml); not used when datafile is .rdb")
+        ->check(CLI::ExistingFile);
+
     try {
         app.parse(argc, argv);
 
         if(flDebug)
-        {
             spdlog::set_level(spdlog::level::debug);
-        }
 
         if(app.got_subcommand("compile"))
         {
-            std::ifstream   is(refFilename, std::ios_base::in);
+            std::ifstream   is(compileRef, std::ios_base::in);
+            if (!Referee::printIR(is, compileRef)) return 1;
+        }
+        else if(app.got_subcommand("execute"))
+        {
+            // Dispatch on the datafile extension: `.rdb` is the packed
+            // execute-ready slab; everything else goes through the CSV/YAML
+            // tabular reader.
+            auto    isRdb = runData.size() >= 4
+                         && runData.compare(runData.size() - 4, 4, ".rdb") == 0;
 
-            Referee::compile(is, refFilename);
+            std::ifstream   refStream(runRef, std::ios_base::in);
+            bool            allPass;
+            if (isRdb)
+            {
+                allPass = Referee::executeRdb(refStream, runRef, runData);
+            }
+            else
+            {
+                std::ifstream   dataStream(runData, std::ios_base::in);
+                std::ifstream   confStream;
+                if (!runConf.empty())
+                    confStream.open(runConf, std::ios_base::in);
+                allPass = Referee::execute(
+                    refStream, runRef,
+                    dataStream, runData,
+                    runConf.empty() ? nullptr : &confStream, runConf);
+            }
+            if (!allPass) return 1;
         }
     }
     catch (const CLI::ParseError &e)

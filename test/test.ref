@@ -1,4 +1,4 @@
-type State = struct {
+type State: struct {
     a:  boolean;
     b:  boolean;
     c:  boolean;

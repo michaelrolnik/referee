@@ -158,9 +158,9 @@ unsigned    TypeStruct::index(std::string name)
 }
 
 
-TypeArray::TypeArray(Type* type, unsigned size)
+TypeArray::TypeArray(Type* type, unsigned count)
     : type(type)
-    , size(size)
+    , count(count)
 {
 }
 

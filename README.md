@@ -14,12 +14,16 @@ In short: Referee connects human-readable requirement intent to executable verif
 - A typed AST and a set of semantic visitors (`canonic`, `negated`, `rewrite`, `typecalc`, `printer`, `csvHeaders`).
 - Lowering of temporal formulas (LTL/TPTL/MTL-flavoured, including strong/weak next `Xs`/`Xw`, bounded until/release, freeze variables, past operators) to **LLVM IR**, followed by standard LLVM optimization passes.
 - A JIT-based test harness (`test/logic.cpp`) that compiles REF files, JITs them against a synthetic trace (`state_t[]` + `conf_t`), and asserts that each requirement evaluates to `true` (pass) or `false` (fail) over that trace. See `test/logic/pass.ref` and `test/logic/fail.ref` for the intended execution model.
-- A CLI (`referee compile`) that emits LLVM IR for a given `.ref` file.
+- A CLI with two subcommands:
+  - `referee compile file.ref` — emits LLVM IR for a given `.ref` file.
+  - `referee execute file.ref trace.{csv,yaml,rdb} [--conf conf.{csv,yaml}]` — JIT-compiles the requirements and evaluates them against a trace, reporting `PASS`/`FAIL` per requirement (and exiting non-zero if any requirement fails). Column names in the CSV/YAML must match the layout produced by `csvHeaders` (e.g. `__time__`, `pos.x`, `limits[0]`, …); see `test/logic/data.csv` and `test/logic/conf.csv` for working examples. `.rdb` traces (see below) are read with no per-row processing — only pointer fix-up.
+- A companion `rdb` binary for packing CSV/YAML traces into the on-disk **RDB** format consumed directly by `referee execute`:
+  - `rdb build spec.ref trace.csv [--conf conf.csv] -o trace.rdb` — packs a CSV/YAML trace into a `.rdb` whose state-buffer section is byte-for-byte the layout the JIT consumes (see *Referee Database* below).
+  - `rdb dump trace.rdb` — pretty-prints the schema, conf, and per-state rows using the AST types embedded in the file.
 
 **What is missing**
 
-- **Log ingestion.** The Python version read system logs directly and fed them to the checks. Here, the compiled IR already expects a trace in a well-defined shape (timestamped state records plus a configuration blob), but the actual log/CSV reader that builds that trace from real system output is not implemented yet. The skeleton is visible in `core/visitors/csvHeaders.*` (deriving the expected column layout from declared `data` fields) and in the commented-out `rdb::Writer` section of `test/logic.cpp`.
-- **Runtime driver.** A standalone binary that streams records into the JIT-compiled requirement functions and reports pass/fail/violation locations — the current runtime lives only inside the gtest harness.
+- **Streaming / online ingestion.** `referee execute` currently materialises the whole trace before invoking the JIT functions (CSV/YAML are parsed top-to-bottom into per-state blobs; `.rdb` is read into a single buffer). A streaming driver that feeds records to the JIT-compiled requirement functions as they arrive (and reports violation locations live) is not implemented yet — the on-disk `.rdb` layout is already mmap-friendly, so this is a Reader-side change rather than a format change.
 - **VSCode / LSP plugin** for editing REF files with diagnostics, as envisioned in the original design.
 - **Product-specific model exporters/importers** to adapt arbitrary system logs into the canonical trace format.
 
@@ -191,7 +195,7 @@ A REF program does not describe a computation that produces outputs; it describe
 2. **A trace is an ordered list of states plus a configuration.** Each state carries a timestamp (implicitly exposed to REF as the `__time__` pseudo-identifier inside freeze scopes) and values for every declared `data` field. The configuration carries values for every declared `conf` field. The trace is assumed to be **finite**; strong/weak variants of the temporal operators exist specifically so requirements behave correctly at the end of that finite trace.
 3. **Every requirement statement becomes one function.** For a statement `R` at file position `P`, the compiler emits an LLVM function named after `P` with the signature `bool eval(const state_t* states, size_t n, const conf_t* conf)` (more precisely, a pointer to the first state and the current-index bookkeeping that the temporal operators need). That function returns `true` iff the trace satisfies `R`.
 4. **The module is optimized, then JIT-compiled.** `Referee::compile` runs a fixed pipeline of LLVM passes (instruction combining, reassociation, GVN, CFG simplification, loop strength reduction, loop data prefetch, plus a custom pass that lowers `llvm.smax/smin/umax/umin` intrinsics into `icmp`+`select` to keep the ORC JIT happy) and pins the module's data layout to the host so struct field offsets match the C ABI used by the driver.
-5. **Verification is just iteration.** The current test harness loads all requirement functions by name, calls each one against a synthetic trace built in C++, and reports pass/fail. A future runtime driver is expected to do the same against real logs ingested through `csvHeaders`-derived schemas.
+5. **Verification is just iteration.** The runtime driver loads every requirement function by name, calls each one against the trace, and reports pass/fail. Two front ends use this loop today: the gtest harness (`test/logic.cpp`) builds a synthetic trace in C++, while the `referee execute` CLI ingests a CSV trace whose column layout is the one `csvHeaders` derives from the `data` declarations (and, optionally, a single-row `conf.csv` for `conf` declarations).
 
 Because all requirements are evaluated over the same trace in the same module, any inconsistency between them becomes observable: a trace that satisfies one requirement may violate another, and the set of requirements is collectively checkable — not a collection of independent scripts.
 
@@ -202,7 +206,6 @@ The project is built with [Meson](https://mesonbuild.com/) and [Ninja](https://n
 ## Linux
 Install the following tools:
 ```bash
-sudo apt-get install antlr4
 sudo apt-get install clang-format
 sudo apt-get install g++
 sudo apt-get install gcc
@@ -211,11 +214,18 @@ sudo apt-get install libcli11-dev
 sudo apt-get install libfmt-dev
 sudo apt-get install libgtest-dev
 sudo apt-get install libspdlog-dev
+sudo apt-get install libyaml-cpp-dev
 sudo apt-get install llvm
 sudo apt-get install llvm-dev
 sudo apt-get install meson
 sudo apt-get install ninja-build
 ```
+
+> **Note on ANTLR4 version.** Ubuntu's `antlr4` package (installed via `apt-get install antlr4`) ships the 4.9.2 generator, which is too old for this project's grammar. The C++ runtime (`libantlr4-runtime-dev`) on Ubuntu Noble is 4.10, so download the matching generator jar and pass it to Meson:
+> ```bash
+> curl -L -o ~/antlr-4.10.1-complete.jar https://www.antlr.org/download/antlr-4.10.1-complete.jar
+> meson setup build -Dantlr4_jar=~/antlr-4.10.1-complete.jar
+> ```
 
 ## MacOS
 ```bash
@@ -248,8 +258,10 @@ ninja -C build
 ```
 
 Executables land in `build/`:
-- `build/referee` — the compiler CLI (`referee compile file.ref` emits LLVM IR).
-- `build/rdb` — the database/CSV helper CLI.
+- `build/referee` — the main CLI. Two subcommands:
+  - `build/referee compile file.ref` — emits LLVM IR for the given `.ref` file to stdout.
+  - `build/referee execute file.ref trace.{csv,yaml,rdb} [--conf conf.{csv,yaml}]` — JIT-compiles the requirements and evaluates them against the trace. Tabular `.csv` / `.yaml` inputs are parsed and re-encoded into the JIT's `state_t[]` buffer on the fly; `.rdb` inputs are *already* in that exact layout, so loading is just pointer fix-up (see *Referee Database* below). Prints one `PASS`/`FAIL` line per requirement and exits non-zero if any requirement fails. Working examples: `test/logic/pass.ref` + `test/logic/data.csv` + `test/logic/conf.csv`.
+- `build/rdb` — the RDB CLI: pack CSV/YAML traces into `.rdb` and pretty-print existing `.rdb` files.
 - `build/tests` — the GoogleTest suite.
 
 ### Overriding dependency locations
@@ -269,7 +281,166 @@ Or run the gtest binary directly — it resolves test-data paths via a compile-t
 ./build/tests
 ```
 
-## Code Coverage
+# Running referee
+
+`build/referee` is the main CLI and is driven through two subcommands, `compile` and `execute`. Pass `--help` or `<subcommand> --help` for the full option list:
+
+```bash
+./build/referee --help
+./build/referee compile --help
+./build/referee execute --help
+```
+
+## `referee compile` — emit LLVM IR
+
+Lower a `.ref` file to LLVM IR and write it to stdout. Useful for inspecting what the compiler generates, piping into `opt` / `llc`, or saving the IR for offline analysis.
+
+```bash
+./build/referee compile path/to/spec.ref            # IR to stdout
+./build/referee compile path/to/spec.ref > spec.ll  # IR to a file
+```
+
+The emitted IR contains one function per requirement statement, named after the source position (`<startRow>:<startCol> .. <endRow>:<endCol>`), and one `extern "C" debug(i64)` declaration the runtime uses to print debug values.
+
+## `referee execute` — JIT-compile and check a CSV trace
+
+Compile every requirement, JIT it, and evaluate it against a CSV trace.
+
+```bash
+./build/referee execute spec.ref data.csv [--conf conf.csv]
+```
+
+- **`spec.ref`** — the requirement source file.
+- **`data.csv`** — the trace. One row per state. The column layout must match what `csvHeaders` derives from the `data` declarations in `spec.ref`:
+  - the first column is `__time__` (per-row timestamp, integer-valued; the unit is whatever the spec uses);
+  - one column per leaf field of every `data` declaration — for `data pos : struct { x: number; y: number; };` you get `pos.x` and `pos.y`; for `data limits : integer[3];` you get `limits[0]`, `limits[1]`, `limits[2]`; nesting expands the obvious way (`grid[1][2].x`);
+  - enums are written as the bare member name (`ON`, `OFF`), booleans as `true`/`false` (or `1`/`0`), strings unquoted.
+- **`--conf conf.csv`** *(optional)* — a single-row CSV carrying values for every `conf` declaration. Same column-naming rules as `data.csv`. If the spec has no `conf` declarations, omit it; if it has them and you omit the file, the configuration is zero-initialised, which is rarely what you want.
+
+### Output
+
+One line per requirement, sorted by source position:
+
+```text
+<startRow>:<startCol> .. <endRow>:<endCol>      PASS
+<startRow>:<startCol> .. <endRow>:<endCol>      FAIL
+…
+```
+
+The process exits with status `0` if every requirement passed and `1` if any failed (or if a requirement function could not be resolved in the JIT, in which case the line is tagged `ERROR`). This makes `referee` directly usable in CI:
+
+```bash
+./build/referee execute spec.ref data.csv --conf conf.csv || echo "spec violated"
+```
+
+### Worked example
+
+The repo ships a complete pair of fixtures under `test/logic/`. They are the same inputs the gtest `LogicTest.Pass` / `LogicTest.Fail` cases use, so they are guaranteed to stay in sync with the language and runtime:
+
+```bash
+./build/referee execute test/logic/pass.ref test/logic/data.csv --conf test/logic/conf.csv
+./build/referee execute test/logic/fail.ref test/logic/data.csv --conf test/logic/conf.csv
+```
+
+The first command exits `0` (every requirement holds against the trace); the second exits `1` because a few requirements in `fail.ref` are deliberately written to contradict the recorded data. Expected output for `fail.ref` against this trace:
+
+```text
+39:0 .. 39:15                            FAIL
+41:0 .. 41:88                            FAIL
+47:0 .. 47:78                            FAIL
+48:0 .. 48:78                            FAIL
+```
+
+### Building your own trace
+
+The general recipe is:
+
+1. Write your `.ref` file with the `data` and `conf` declarations matching the signals in your log.
+2. Inspect the column layout the compiler will expect — for non-trivial structs/arrays the easiest path is to start from a CSV with just the `__time__` column plus one row of zeros, run `referee execute`, and let any column-not-found error tell you the next expected name. The same expansion is performed by `core/visitors/csvHeaders.cpp` if you'd rather read the rules in code.
+3. Produce your CSV with that header, one row per timestamped state, plus a one-row `conf.csv` if the spec uses `conf` declarations.
+4. Run `./build/referee execute spec.ref data.csv --conf conf.csv`.
+
+> **Limitation.** The driver currently reads the entire trace into memory and runs each requirement function across the whole trace. Streaming / online evaluation (consuming records as they arrive, reporting per-violation timestamps) is on the roadmap — see the *What is missing* section above.
+
+# Referee Database (RDB)
+
+`.rdb` is a packed binary format whose state-buffer section is *exactly* the `state_t[]` layout the JIT-compiled requirement functions consume:
+
+```c
+struct state_t {
+    int64_t  time;
+    void*    prop[numProps];   // one pointer per `data` declaration
+};
+```
+
+`referee execute spec.ref trace.rdb` does no per-row parsing. It `read()`s the file once, walks the embedded schema, and rewrites two kinds of `int64` disk offsets into host pointers in place:
+
+- each row's `prop[pi]` slot — an offset into the prop-blobs section (`-1` for null) — becomes a `void*` into the in-memory copy of the file;
+- each `TypeString` slot inside any blob — an offset into the string pool — becomes a `char const*` interned through `Strings::instance()`.
+
+After fix-up, `&states[0]` *is* the `state_t*` the JIT walks; `confPtr()` *is* the configuration pointer it reads. Nothing else is touched.
+
+## On-disk layout
+
+The file is a fixed-size header followed by five sections. Every section is described by a `Section { uint64 fileOffs; uint64 fileSize; uint64 itemNmbr }` record in the header, so a future writer can re-order or extend the layout without breaking readers.
+
+| Section       | Holds                                                                                                                                        | `itemNmbr`                  |
+| ------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------- |
+| `header`      | magic `"REF-RDB1"`, version, flags, the five `Section` records, and `rowBytes` (stride of `states`, equal to `8 + 8·numProps`)               | n/a                         |
+| `schema`      | tagged-binary tree of every `data` and `conf` AST type — primitives, enums (with item names), structs (with member names), fixed-size arrays | number of `data` decls       |
+| `conf`        | the concatenated, member-aligned conf blob — byte-identical to what `Loader::load` produces from `conf.csv` / `conf.yaml`                    | number of `conf` decls       |
+| `states`      | `itemNmbr × rowBytes` bytes; each row is `{ i64 time; i64 propOffs[numProps] }` on disk and `{ i64 time; void* prop[numProps] }` after load | number of state rows        |
+| `prop-blobs`  | the heterogeneous body pool the row pointers point into; each blob is per-prop-type aligned and byte-identical to `Loader::load` output     | 0 (variable shape)          |
+| `string-pool` | `\0`-terminated unique strings; offset 0 is reserved for the empty string                                                                    | 0 (variable shape)          |
+
+The first and last `states` rows are sentinels (zero blobs, time outside the data window), so a `.rdb` produced from N CSV rows has `numStates = N + 2` — identical to the in-memory layout `referee execute` builds for CSV/YAML traces.
+
+> **Why split `states` and `prop-blobs`?** The JIT iterates the trace by adding `rowBytes` to a `state_t*`, which only works if rows have a *uniform stride*. Prop blobs are heterogeneous (a string is 8 bytes; a struct of strings can be 80) and per-type aligned, so they live in their own section while `states` carries only the time + per-prop pointer table.
+
+> **Cross-process strings.** Host pointers into `Strings::instance()` aren't stable across processes, so writers store every `TypeString` slot as a pool offset and the reader walks the schema to re-intern them. Producer and consumer must therefore agree on the schema — the embedded one is checked structurally against the `.ref` at load time and a mismatch is a hard error.
+
+> **Large traces.** `referee::db::Reader` currently slurps the whole file into one `std::vector<uint8_t>`. For traces too large to fit in process memory, `mmap()` the file `MAP_PRIVATE` (or back it with shared memory if multiple consumers share the dataset) — the in-place pointer fix-up walk is identical either way; only the storage backing changes.
+
+## Producing `.rdb` files — `rdb build`
+
+```bash
+./build/rdb build spec.ref data.csv  --conf conf.csv  -o trace.rdb
+./build/rdb build spec.ref data.yaml --conf conf.yaml -o trace.rdb
+```
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `spec.ref` | yes | REF source file whose `data`/`conf` declarations define the binary schema. |
+| `data.{csv,yml,yaml}` | yes | Trace file. One row per timestamped state. Column names must match the layout `csvHeaders` derives from the `data` declarations (same rules as `referee execute`). |
+| `--conf conf.{csv,yml,yaml}` | no | Single-row configuration file for `conf` declarations. Omit if the spec has no `conf` declarations; the blob is zero-initialised when absent. |
+| `-o / --out trace.rdb` | yes | Output path for the packed `.rdb` file. |
+
+The CSV / YAML column schema is the same one `referee execute` accepts (see *Building your own trace* above). Both pipelines share the same `loader::Row` ingestor and `Loader::load` byte-layout, so a `.rdb` packed from CSV is **byte-identical** to one packed from equivalent YAML — the test suite asserts this in `Rdb.CsvAndYamlAgree`.
+
+## Consuming `.rdb` files — `referee execute`
+
+```bash
+./build/referee execute spec.ref trace.rdb
+```
+
+`--conf` is *not* used with `.rdb` inputs — the configuration is already inside the file. Output, exit code, and per-requirement formatting are identical to the CSV path; before invoking the JIT, the executor cross-checks the file's embedded schema against the `.ref`'s AST and refuses to run on a mismatch.
+
+## Inspecting `.rdb` files — `rdb dump`
+
+```bash
+./build/rdb dump trace.rdb
+```
+
+Pretty-prints a YAML document in this order:
+
+- `rdb:` — top-level block with `path`, `numStates`, `numProps`, and `rowBytes`.
+- `schema:` — nested `data:` and `conf:` lists; each entry has a `name` and a `type` rendered in YAML.
+- `conf:` — one `name: value` entry per `conf` declaration, decoded from the binary blob.
+- `states:` — one block per state row with `index`, `time`, and a `props:` map of decoded values (`null` for an unset slot).
+
+Useful for sanity-checking an `rdb build` result without re-running the JIT, and for diffing two `.rdb` files at a logical level rather than byte level.
+
+# Code Coverage
 
 Coverage is driven by `gcovr`. Install it first:
 

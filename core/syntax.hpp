@@ -24,9 +24,10 @@
 
 #pragma once
 
-#include "visitor.hpp"
 #include "position.hpp"
+#include "visitor.hpp"
 
+#include <assert.h>
 #include <map>
 #include <vector>
 
@@ -73,6 +74,9 @@ private:
 class Type
     : public Visitable<Base, Type>
 {
+public:
+    virtual size_t size()      = 0;
+    virtual size_t alignment() = 0;
 };
 
 class TypePrimitive
@@ -88,11 +92,43 @@ public:
     virtual unsigned    index(std::string name) = 0;
 };
 
-class TypeVoid    : public Visitable<TypePrimitive, TypeVoid> {};
-class TypeBoolean : public Visitable<TypePrimitive, TypeBoolean> {}; 
-class TypeInteger : public Visitable<TypePrimitive, TypeInteger> {}; 
-class TypeNumber  : public Visitable<TypePrimitive, TypeNumber> {}; 
-class TypeString  : public Visitable<TypePrimitive, TypeString> {}; 
+class TypeVoid    : public Visitable<TypePrimitive, TypeVoid>
+{
+public:
+    size_t size()      override { assert(!"void has no size");      return 0; }
+    size_t alignment() override { assert(!"void has no alignment"); return 0; }
+};
+
+class TypeBoolean : public Visitable<TypePrimitive, TypeBoolean>
+{
+public:
+    size_t size()      override { return 1; }
+    size_t alignment() override { return 1; }
+};
+
+class TypeInteger : public Visitable<TypePrimitive, TypeInteger>
+{
+public:
+    size_t size()      override { return 8; }
+    size_t alignment() override { return 8; }
+};
+
+class TypeNumber  : public Visitable<TypePrimitive, TypeNumber>
+{
+public:
+    size_t size()      override { return 8; }
+    size_t alignment() override { return 8; }
+};
+
+class TypeString  : public Visitable<TypePrimitive, TypeString>
+{
+public:
+    // Blob is a host pointer (char const*) interned via Strings::instance().
+    // The pointer is only valid for the lifetime of that singleton.
+    static_assert(sizeof(void*) == 8, "TypeString assumes 64-bit pointers");
+    size_t size()      override { return sizeof(void*); }
+    size_t alignment() override { return sizeof(void*); }
+};
 
 template<typename T>
 class Named
@@ -117,6 +153,9 @@ public:
     Type*       member(std::string name) override;
     unsigned    index(std::string name) override;
 
+    size_t size()      override { assert(!"context has no size");      return 0; }
+    size_t alignment() override { assert(!"context has no alignment"); return 0; }
+
 private:
     Module* const   m_module;
 };
@@ -132,6 +171,22 @@ public:
     Type*       member(std::string name) override;
     unsigned    index(std::string name) override;
 
+    size_t alignment() override {
+        size_t a = 1;
+        for (auto& m : members) a = std::max(a, m.data->alignment());
+        return a;
+    }
+
+    size_t size() override {
+        size_t align = alignment(), total = 0;
+        for (auto& m : members) {
+            size_t ma = m.data->alignment();
+            total = (total + ma - 1) / ma * ma;
+            total += m.data->size();
+        }
+        return (total + align - 1) / align * align;
+    }
+
 private:
     std::map<std::string, Type*>    m_name2type;
     std::map<std::string, unsigned> m_name2indx;
@@ -141,10 +196,21 @@ class TypeArray
     : public Visitable<Type, TypeArray>
 {
 public:
-    TypeArray(Type* type, unsigned size);
+    TypeArray(Type* type, unsigned count);
 
     Type* const     type;
-    unsigned const  size;   //  if size is 0, array is dynamic otherwise it's static
+    unsigned const  count;  //  if count is 0, array is dynamic otherwise it's static
+
+    size_t alignment() override {
+        if (count == 0) return 8;
+        return type->alignment();
+    }
+
+    size_t size() override {
+        if (count == 0) return 16; // {i16 length, padding, ptr}
+        size_t ea = type->alignment(), es = type->size();
+        return ((es + ea - 1) / ea * ea) * count;
+    }
 };
 
 class   TypeEnum
@@ -156,10 +222,13 @@ public:
     Type*       member(std::string name) override;
     unsigned    index(std::string name) override;
 
+    size_t size()      override { return 1; }
+    size_t alignment() override { return 1; }
+
     std::vector<std::string> const  items;
 private:
     std::map<std::string, unsigned> m_name2indx;
-};   
+};
 
 
 class Expr
@@ -679,8 +748,8 @@ class SpecResponseChain21
     : public Visitable<Spec, SpecResponseChain21>
 {
 public:    
-    SpecResponseChain21(Expr* S, Expr* T, Expr* P, Time* tST, Time* tTP, Expr* cPS, Expr* cTP)
-        : S(S), T(T), P(P), tST(tST), tTP(tTP), cST(tST), cTP(cTP)
+    SpecResponseChain21(Expr* S, Expr* T, Expr* P, Time* tST, Time* tTP, Expr* cST, Expr* cTP)
+        : S(S), T(T), P(P), tST(tST), tTP(tTP), cST(cST), cTP(cTP)
     {
     }
 
@@ -726,7 +795,7 @@ class SpecGlobally
 {
 public:
     SpecGlobally(Spec* spec)
-        : Visitable<SpecScoped, SpecGlobally>(spec)
+        : Visitable(spec)
     {
     }
 };
@@ -736,7 +805,7 @@ class SpecBefore
 {
 public:
     SpecBefore(Expr* arg, Spec* spec)
-        : Visitable<SpecScoped, SpecBefore>(spec)
+        : Visitable(spec)
         , arg(arg)
     {
     }
@@ -749,7 +818,7 @@ class SpecAfter
 {
 public:
     SpecAfter(Expr* arg, Spec* spec)
-        : Visitable<SpecScoped, SpecAfter>(spec)
+        : Visitable(spec)
         , arg(arg)
     {
     }
@@ -762,7 +831,7 @@ class SpecBetweenAnd
 {
 public:
     SpecBetweenAnd(Expr* lhs, Expr* rhs, Spec* spec)
-        : Visitable<SpecScoped, SpecBetweenAnd>(spec)
+        : Visitable(spec)
         , lhs(lhs)
         , rhs(rhs)
     {
@@ -777,7 +846,7 @@ class SpecAfterUntil
 {
 public:
     SpecAfterUntil(Expr* lhs, Expr* rhs, Spec* spec)
-        : Visitable<SpecScoped, SpecAfterUntil>(spec)
+        : Visitable(spec)
         , lhs(lhs)
         , rhs(rhs)
     {

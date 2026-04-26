@@ -1,18 +1,18 @@
 /*
  *  MIT License
- *  
+ *
  *  Copyright (c) 2022 Michael Rolnik
- *  
+ *
  *  Permission is hereby granted, free of charge, to any person obtaining a copy
  *  of this software and associated documentation files (the "Software"), to deal
  *  in the Software without restriction, including without limitation the rights
  *  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  *  copies of the Software, and to permit persons to whom the Software is
  *  furnished to do so, subject to the following conditions:
- *  
+ *
  *  The above copyright notice and this permission notice shall be included in all
  *  copies or substantial portions of the Software.
- *  
+ *
  *  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  *  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  *  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -24,269 +24,154 @@
 
 #pragma once
 
+// Referee Database (.rdb) — a packed binary trace file whose state-buffer
+// section is *exactly* the `state_t[]` layout that `Referee::execute` feeds
+// to JIT-compiled requirement functions:
+//
+//   struct state_t {
+//       int64_t  time;
+//       void*    prop[numProps];   //  one pointer per `data` declaration
+//   };
+//
+// Per-prop blobs live in their own section, byte-for-byte identical to what
+// `Loader::load` produces from CSV/YAML for the corresponding AST type. At
+// read time the only work performed is pointer fix-up:
+//
+//   * each row's `prop[pi]` (stored on disk as an int64 offset into the
+//     prop-blobs section, -1 for null) is rewritten in place to a host
+//     pointer into the in-memory copy of the file;
+//   * each `TypeString` slot inside a blob (stored on disk as an int64
+//     offset into the string pool, -1 for null) is rewritten in place to a
+//     `char const*` pointing at an interned string from `Strings::instance()`.
+//
+// After fix-up the buffer can be handed directly to a JIT-compiled spec —
+// `Referee::execute` does exactly that for `.rdb` inputs.
+//
+// NOTE on large traces: today `Reader` slurps the whole file into a single
+// `std::vector<uint8_t>`. For traces too large to fit in process memory the
+// file should be `mmap()`-ed `MAP_PRIVATE` (so the in-place pointer fix-ups
+// stay process-local instead of dirtying the on-disk image), or backed by
+// shared memory if multiple consumers share the dataset. The fix-up walk
+// itself is identical either way; only the storage backing changes.
+
+#include "syntax.hpp"
+
+#include <cstddef>
+#include <cstdint>
+#include <iosfwd>
+#include <memory>
 #include <string>
 #include <vector>
-#include <deque>
-#include <sstream>
-#include <fstream>
-#include <memory>
 
-/*
-class Database
+namespace referee::db
 {
-public:
-    Database();
 
-    void    add_record(uint16_t type, uint64_t timestamp, std::string const& data);
-    void    get_record();
-};
-
-class   Reader
+inline void alignBuffer(std::vector<std::uint8_t>& buf, std::size_t align)
 {
-public:
-    Reader(Database& database);
+    while (buf.size() % align) buf.push_back(0);
+}
 
-    Writer&         get_timestamp(  uint64_t&   data);
-    Writer&         get_integer(    int64_t&    data);
-    Writer&         get_boolean(    bool&       data);
-    Writer&         get_number(     double&     data);
-    Writer&         get_string(     std::string&data);
-    Writer&         get_size(       unsigned&   data); 
 
-    int64_t         get_integer();
-    bool            get_boolean();
-    double          get_number();
-    std::string     get_string();
-    unsigned        get_size(); 
-
-private:
-    Database&       m_database;
-};
-*/
-
-/*
-class   Writer
+/// One named slot in the schema (a `data` or `conf` declaration). The Type*
+/// must outlive the Writer / Reader that holds it; in practice it comes from
+/// either a parsed `::Module` (writer side) or a Reader-owned schema tree
+/// (reader side).
+struct PropDecl
 {
-public:
-    Writer(Database& database);
-
-    TypeBuilder     type();
-    void            data(   uint8_t             type,
-                            std::string const&  data);
-
-private:
-    Writer&         put_timestamp(  uint64_t    data);  // starts a new row
-    Writer&         put_integer(    int64_t     data);
-    Writer&         put_boolean(    bool        data);
-    Writer&         put_number(     double      data);
-    Writer&         put_string(     double      data);
-    Writer&         put_size(       unsigned    data);
-
-    void            add_type(Type&& type);
-
-private:
-    friend class    TypeBuilder;
-    
-private:
-    Database&   m_database;
-};
-*/
-
-namespace referee::db {
-
-class   Type
-{
-public:
-    virtual ~Type() = default;
-};
-
-class   TypeScalar
-    : public Type
-{
-public:
-    TypeScalar()    = default;
-};
-
-template<typename T>
-class   TypeScalarT
-    : public TypeScalar
-{
-public:
-    TypeScalarT()   = default;
-};
-
-using   TypeString  = TypeScalarT<std::string>;
-using   TypeInteger = TypeScalarT<uint64_t>;
-using   TypeNumber  = TypeScalarT<double>;
-using   TypeBoolean = TypeScalarT<bool>;
-
-class Name2Type
-{
-public:
-    Name2Type(std::string name, Type* type)
-        : name(name)
-        , type(type)
-    {
-    }
-
     std::string name;
-    Type* const type;
+    Type*       type = nullptr;
 };
+using ConfDecl = PropDecl;
 
-class   TypeRecord
-    : public Type
-{
-public:
-    TypeRecord(std::vector<Name2Type>   body)
-        : m_body(body)
-    {
-    }
+/// All prop blobs for a single state, indexed by prop. `blob_t[pi]` is the
+/// raw bytes `Loader::load` produces for `props[pi].type`; an empty inner
+/// vector means "null pointer for this slot".
+using blob_t = std::vector<std::vector<std::uint8_t>>;
 
-    std::vector<Name2Type> const&  body() {return m_body;}
-
-private:
-    std::vector<Name2Type>  m_body;
-};
-
-class   TypeArray
-    : public Type
-{
-public:
-    TypeArray(Type* base, unsigned size)
-        : base(base)
-        , size(size)
-    {
-    }
-
-    Type*       base;
-    unsigned    size;
-};   
-
-class   TypeBuilderRecord
-{
-public:
-    TypeBuilderRecord() = default;
-
-    using   Builder     = TypeBuilderRecord;
-
-    Builder&    integer(std::string name);
-    Builder&    number( std::string name);
-    Builder&    boolean(std::string name);
-    Builder&    string( std::string name);
-    Builder&    record( std::string name,
-                        TypeRecord* type);
-    Builder&    array(  std::string name,
-                        TypeArray*  type);
-    TypeRecord* build();
-
-private:
-    std::vector<Name2Type>  m_body;
-};
-
-class   TypeBuilderArray
-{
-public:
-    TypeBuilderArray()  = default;
-
-    using   Builder     = TypeBuilderArray;
-
-    Builder&    integer();
-    Builder&    number();
-    Builder&    boolean();
-    Builder&    string();
-    Builder&    size(   unsigned    size);
-    Builder&    record( TypeRecord* type);
-    Builder&    array(  TypeArray*  type);
-    TypeArray*  build();
-
-private:
-    Type*       m_body  = nullptr;
-    unsigned    m_size  = 0;
-};
-
-class DataWriter
-{
-public:
-    DataWriter();
-    DataWriter(Type* type);
-    ~DataWriter();
-
-    using   Writer  = DataWriter;
-
-    DataWriter& integer(int64_t     data);
-    DataWriter& number( double      data);
-    DataWriter& boolean(bool        data);
-    DataWriter& string( std::string const&
-                                    data);
-    DataWriter& size(   unsigned    size);
-    std::string build();
-
-    class Impl;
-
-private:
-    std::unique_ptr<Impl>   m_impl;
-};
-
-class DataReader
-{
-public:
-    DataReader( std::string const&  data);
-    DataReader( std::string const&  data,
-                Type*               type);
-    ~DataReader();
-
-    DataReader& integer(int64_t&    data);
-    DataReader& number( double&     data);
-    DataReader& boolean(bool&       data);
-    DataReader& string( std::string&data);
-    DataReader& size(   unsigned&   size);
-    void        done();
-
-    class Impl;
-
-private:
-    std::unique_ptr<Impl>   m_impl;
-};
-
+/// Build a .rdb file from a sequence of typed prop / conf blobs.
+///
+/// Typical use:
+///
+///     std::ofstream     os(path, std::ios::binary);
+///     referee::db::Writer w(os);
+///     w.setSchema(props, confs);
+///     w.setNumStates(numStates);              //  data rows + 2 sentinels
+///     w.setConfBlob(confBlob);
+///     for (size_t i = 0; i < numStates; i++)
+///         w.writeState(i, time[i], propBlobs[i]);
+///     w.finish();
+///
+/// `propBlobs[pi]` must be the exact bytes `Loader::load` produces for
+/// `props[pi].type`; the writer copies them verbatim.
 class Writer
 {
 public:
-    Writer() = default;
+    explicit Writer(std::ostream& os);
+    ~Writer();
 
-    void    open(std::string filename);
-    void    close();
+    Writer(Writer const&)            = delete;
+    Writer& operator=(Writer const&) = delete;
 
-    uint8_t declType(  Type*               type);
+    void    setSchema(std::vector<PropDecl> props,
+                      std::vector<ConfDecl> confs);
+    void    setNumStates(std::size_t numStates);
+    void    setConfBlob(std::vector<std::uint8_t> blob);
+    void    writeState(std::size_t  stateIdx,
+                       std::int64_t time,
+                       blob_t const& propBlobs);
+    void    finish();
 
-    uint8_t declConf(   uint8_t             type,
-                        std::string         name);
-    void    pushData(   uint8_t             prop,
-                        std::string const&  data);
-                        
-    uint8_t declProp(   uint8_t             type,
-                        std::string         name);
-
-    void    pushData(   uint8_t             func,
-                        uint64_t            time,
-                        std::string const&  data);
 private:
-    void    record(     uint32_t            info,
-                        std::string const&  data);
-    void    record(     uint32_t            info,
-                        uint64_t            time,
-                        std::string const&  data);
-
-    std::string 
-            encode(     Type*               type);
-private:
-    std::ofstream       m_os;
-    std::vector<Type*>  m_types;
-    std::vector<std::pair<std::string, uint8_t>>    m_confs;
-    std::vector<std::pair<std::string, uint8_t>>    m_props;
+    struct Impl;
+    std::unique_ptr<Impl>   m_impl;
 };
 
-void    readData(Type* main, std::string const& data);
-void    readDB(std::string filename);
+/// Open a .rdb file and prepare the in-memory state buffer for direct
+/// consumption by `Referee::execute`.
+class Reader
+{
+public:
+    /// Open `path`, slurp its bytes, and run pointer fix-up.
+    explicit Reader(std::string const& path);
 
+    /// Take ownership of an already-materialised `.rdb` buffer (e.g. one
+    /// produced by `referee::db::ingest(...)` writing to a stringstream)
+    /// and run pointer fix-up. `ctx` is used only in error messages.
+    explicit Reader(std::vector<std::uint8_t> bytes,
+                    std::string const& ctx = "<memory>");
 
-}
+    ~Reader();
+
+    Reader(Reader const&)            = delete;
+    Reader& operator=(Reader const&) = delete;
+
+    /// Schema introspection. The Type* returned via these PropDecls is owned
+    /// by the Reader and lives until it is destroyed.
+    std::vector<PropDecl> const&    props() const;
+    std::vector<ConfDecl> const&    confs() const;
+
+    /// Direct execute interface. After construction the slab is fully
+    /// fixed-up: `ptrFirst()` is `&state[0]`, `ptrLast()` is
+    /// `&state[numStates() - 1]`, `confPtr()` is the conf blob.
+    void*           ptrFirst()      const;
+    void*           ptrLast()       const;
+    void*           confPtr()       const;
+    std::size_t     numStates()     const;
+    std::size_t     numProps()      const;
+    std::size_t     rowBytes()      const;
+    std::size_t     confSize()      const;
+
+    /// Per-row helpers used by `rdb dump` and tests.
+    std::int64_t        time(std::size_t stateIdx) const;
+    void const*         propBlob(std::size_t stateIdx, std::size_t propIdx) const;
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl>   m_impl;
+};
+
+/// Pretty-print the contents of `path` to `os`, decoding each prop/conf blob
+/// using the schema embedded in the file.
+void    dump(std::string const& path, std::ostream& os);
+
+} // namespace referee::db

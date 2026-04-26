@@ -27,7 +27,6 @@
 #include "syntax.hpp"
 
 #include <map>
-#include <set>
 #include <string>
 
 class Module
@@ -35,25 +34,25 @@ class Module
 public:
     Module(std::string name);
 
-    void    addType(std::string name, Type* type);
-    void    addProp(std::string name, Type* data);
-    void    addConf(std::string name, Type* data);
+    void    addType(std::string const& name, Type* type);
+    void    addProp(std::string const& name, Type* data);
+    void    addConf(std::string const& name, Type* data);
 
-    Type*   getType(std::string name);
-    Type*   getProp(std::string name);
-    Type*   getConf(std::string name);
+    Type*   getType(std::string const& name);
+    Type*   getProp(std::string const& name);
+    Type*   getConf(std::string const& name);
 
-    bool    hasType(std::string name);
-    bool    hasData(std::string name);
-    bool    hasConf(std::string name);
+    bool    hasType(std::string const& name);
+    bool    hasData(std::string const& name);
+    bool    hasConf(std::string const& name);
 
-    std::vector<std::string>    getTypeNames()  {return m_typeNames;}
-    std::vector<std::string>    getPropNames()  {return m_propNames;}
-    std::vector<std::string>    getConfNames()  {return m_confNames;}
+    std::vector<std::string> const&  getTypeNames()  {return m_typeNames;}
+    std::vector<std::string> const&  getPropNames()  {return m_propNames;}
+    std::vector<std::string> const&  getConfNames()  {return m_confNames;}
 
-    void    pushContext(std::string name);
+    void    pushContext(std::string const& name);
     void    popContext();
-    bool    hasContext( std::string name);
+    bool    hasContext( std::string const& name);
 
     void    addExpr(    Expr*   expr);
     std::vector<Expr*> const&   getExprs();

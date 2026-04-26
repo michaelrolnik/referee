@@ -1,18 +1,18 @@
 /*
  *  MIT License
- *  
+ *
  *  Copyright (c) 2022 Michael Rolnik
- *  
+ *
  *  Permission is hereby granted, free of charge, to any person obtaining a copy
  *  of this software and associated documentation files (the "Software"), to deal
  *  in the Software without restriction, including without limitation the rights
  *  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  *  copies of the Software, and to permit persons to whom the Software is
  *  furnished to do so, subject to the following conditions:
- *  
+ *
  *  The above copyright notice and this permission notice shall be included in all
  *  copies or substantial portions of the Software.
- *  
+ *
  *  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  *  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  *  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -23,128 +23,65 @@
  */
 
 #include "database.hpp"
-#include "utils.hpp"
-
-#include <spdlog/spdlog.h>
-#include "spdlog/fmt/fmt.h"
-#include <spdlog/fmt/ostr.h>
+#include "ingest.hpp"
 
 #include <CLI/App.hpp>
-#include "CLI/Formatter.hpp"
-#include "CLI/Config.hpp"
+#include <CLI/Config.hpp>
+#include <CLI/Formatter.hpp>
 
 #include <iostream>
-
-using namespace referee::db;
+#include <stdexcept>
+#include <string>
 
 int main(int argc, char* argv[])
 {
-    CLI::App    app("referee");
-    
-    std::string refFilename = "default";
-    bool        fCsvHeaders = false;
-    bool        fLlvmTypes  = false;
+    CLI::App    app("rdb — referee database tool");
+    app.require_subcommand(1);
 
-    app.add_option( "--read",       refFilename,    "REF file to parse")
+    auto*   buildCmd = app.add_subcommand(
+        "build",
+        "Pack a CSV/YAML trace into a .rdb file using the schema in a .ref");
+    std::string     refFile;
+    std::string     dataFile;
+    std::string     confFile;
+    std::string     outFile;
+    buildCmd->add_option("ref",      refFile,
+        "REF source whose data/conf declarations define the schema")
+        ->required()->check(CLI::ExistingFile);
+    buildCmd->add_option("data",     dataFile,
+        "Trace file (.csv / .yml / .yaml)")
+        ->required()->check(CLI::ExistingFile);
+    buildCmd->add_option("--conf",   confFile,
+        "Optional configuration file (.csv / .yml / .yaml)")
         ->check(CLI::ExistingFile);
-    app.add_flag(   "--csv-headers",fCsvHeaders,    "Generate CSV headers");
-    app.add_flag(   "--llvm-types", fLlvmTypes,     "Dump LLVM types");
-    
-    try {
+    buildCmd->add_option("-o,--out", outFile,
+        "Output .rdb path")->required();
+
+    auto*   dumpCmd = app.add_subcommand(
+        "dump",
+        "Pretty-print a .rdb file using its embedded schema");
+    std::string     dumpFile;
+    dumpCmd->add_option("rdb", dumpFile, "Input .rdb path")
+        ->required()->check(CLI::ExistingFile);
+
+    try
+    {
         app.parse(argc, argv);
 
-        if(refFilename.empty() == false)
-        {
-            readDB(refFilename);
-        }
+        if (buildCmd->parsed())
+            referee::db::ingest(refFile, dataFile, confFile, outFile);
+        else if (dumpCmd->parsed())
+            referee::db::dump(dumpFile, std::cout);
     }
-    catch (const CLI::ParseError &e)
+    catch (CLI::ParseError const& e)
     {
         return app.exit(e);
     }
-    catch(std::exception& e)
+    catch (std::exception const& e)
     {
-        std::cerr << "exception: " << e.what() << std::endl;
+        std::cerr << "rdb: error: " << e.what() << "\n";
         return 1;
     }
-
-#if 0       
-        auto    type    = 
-            TypeBuilderRecord()
-                .integer("i")
-                .number("n")
-                .string("s")
-                .array("xyz", 
-                    TypeBuilderArray()
-                        .integer()
-                        .size(5)
-                        .build())
-                .record("rec", 
-                    TypeBuilderRecord()
-                        .boolean("b")
-                        .integer("c")
-                        .record("what", 
-                            TypeBuilderRecord()
-                                .integer("X")
-                                .build())
-                        .build())
-                .build();
-        print(type);
-
-        std::string     data    = 
-            DataWriter(type)
-                .integer(0x1234567890abcdef)
-                .number(0.5)
-                .string("hello")
-                .size(5)
-                    .integer(1)
-                    .integer(2)
-                    .integer(3)
-                    .integer(4)
-                    .integer(5)
-                .boolean(true)
-                .integer('what')
-                    .integer(0x777)
-            .build();
-
-        DataReader  reader(data, type);
-        int64_t     i;
-        double      n;
-        bool        b;
-        std::string s;
-        unsigned    size;
-
-        reader
-            .integer(i)
-            .number(n)
-            .string(s)
-            .size(size)
-                .integer(i)
-                .integer(i)
-                .integer(i)
-                .integer(i)
-                .integer(i)
-            .boolean(b)
-            .integer(i)
-                .integer(i)
-            .done();
-
-        printHex(data) << std::endl;
-
-        readData(type, data);
-
-        names(type, "abc");
-
-        readCsv(type, "../test.csv", "abc");
-    
-        Writer writer;
-        writer.open("xyw.rdb");
-        auto    typeID  = writer.declType(type);
-        auto    funcID  = writer.declProp(typeID, "data");
-        writer.pushData(funcID, 1, data);
-        writer.close();
-#endif
-        //readDB("xyw.rdb");
 
     return 0;
 }

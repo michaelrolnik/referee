@@ -295,7 +295,7 @@ void    CompileTypeImpl::visit(TypeArray*            type)
 
     elements.push_back(m_builder->getInt16Ty());
     auto    base    = Compile::make(m_context, m_module, type->type, m_name + "[]");
-    auto    size    = type->size;
+    auto    size    = type->count;
 
     if(size == 0)
     {

@@ -65,7 +65,7 @@ void    CsvHeadersImpl::visit(TypeArray*    type)
 
     while(auto array = dynamic_cast<TypeArray*>(curr))
     {
-        sizes.push_back(array->size);
+        sizes.push_back(array->count);
         curr    = array->type;
     }
 
@@ -113,5 +113,3 @@ std::vector<std::string>    CsvHeaders::make(std::string const& name, Type* type
 
     return impl.make(name, type);
 }
-
-
