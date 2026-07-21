@@ -865,10 +865,42 @@ std::any Antlr2AST::visitTypeAlias(     referee::refereeParser::TypeAliasContext
 
 std::any Antlr2AST::visitTypeArray(     referee::refereeParser::TypeArrayContext*   ctx)
 {
-    auto size = std::any_cast<Expr*>(ctx->size()->integer()->accept(this));
-    auto type = std::any_cast<Type*>(ctx->type()->accept(this));
+    //  `T[a][b]` is left-recursive, so the *last* dimension written is the
+    //  outermost parse node. Building straight from that would make `[b]` the
+    //  outer array -- the reverse of how C, C++ and Kotlin read the same
+    //  declaration, where `T[a][b]` is `a` arrays of `b`.
+    //
+    //  So walk down the spine collecting the sizes (which arrives last-written
+    //  first) and fold in that order, which puts the first-written dimension
+    //  outermost.
+    std::vector<unsigned>                       sizes;
+    referee::refereeParser::TypeContext*        base = nullptr;
 
-    return static_cast<Type*>(Factory<TypeArray>::create(type, dynamic_cast<ExprConstInteger*>(size)->value));
+    for(auto* cur = ctx; cur != nullptr; )
+    {
+        auto    size    = std::any_cast<Expr*>(cur->size()->integer()->accept(this));
+        sizes.push_back(dynamic_cast<ExprConstInteger*>(size)->value);
+
+        auto*   inner   = cur->type();
+        auto*   nested  = dynamic_cast<referee::refereeParser::TypeArrayContext*>(inner);
+
+        if(nested != nullptr)
+        {
+            cur     = nested;
+        }
+        else
+        {
+            base    = inner;
+            cur     = nullptr;
+        }
+    }
+
+    auto    type    = std::any_cast<Type*>(base->accept(this));
+
+    for(auto size: sizes)
+        type = Factory<TypeArray>::create(type, size);
+
+    return static_cast<Type*>(type);
 }
 
 std::any Antlr2AST::visitTypeEnum(      referee::refereeParser::TypeEnumContext*    ctx)

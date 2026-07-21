@@ -69,9 +69,14 @@ void    CsvHeadersImpl::visit(TypeArray*    type)
         curr    = array->type;
     }
 
+    //  `sizes` is collected outer-to-inner, but each pass prefixes a subscript
+    //  onto what the previous pass produced -- so the dimension handled last
+    //  ends up leftmost. Walk inner-to-outer so the outer dimension is the
+    //  leftmost subscript, matching how Loader names the same columns.
     auto headers    = CsvHeaders::make("", curr);
-    for(auto size: sizes)
+    for(auto it = sizes.rbegin(); it != sizes.rend(); ++it)
     {
+        auto size = *it;
         if(size == 0)
         {
             m_headers.push_back("#size");

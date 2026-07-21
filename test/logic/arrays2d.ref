@@ -1,0 +1,37 @@
+# Multi-dimensional arrays: dimension order, and the agreement between the
+# column names csvHeaders derives and the ones Loader actually reads.
+#
+# `integer[3][2]` is three arrays of two, as C, C++ and Kotlin read the same
+# declaration. The first subscript written is the outer one.
+#
+# Nothing exercised this before, which is how the two disagreed unnoticed:
+# csvHeaders emitted g[0..2][0..1] while Loader read g[0..1][0..2], so a
+# trace built from the documented headers loaded into the wrong slots.
+#
+# Each cell carries a value encoding its own subscripts (row*10 + column), so
+# a transposed or shifted mapping cannot pass by coincidence.
+
+data    g : integer[3][2];
+data    v : integer[3];
+
+# Every element reachable, at its own coordinates.
+G(g[0][0] ==  0);
+G(g[0][1] ==  1);
+G(g[1][0] == 10);
+G(g[1][1] == 11);
+G(g[2][0] == 20);
+G(g[2][1] == 21);
+
+# The outer dimension is the one written first: three rows of two, not two of
+# three. If the nesting were reversed these coordinates would not exist.
+G(g[2][1] == 21);
+
+# One dimension, for contrast.
+G(v[0] == 7);
+G(v[1] == 8);
+G(v[2] == 9);
+
+# Rows are homogeneous -- every row of a `[3][2]` has exactly two elements.
+# There is no way to express a ragged array, because the outer array's element
+# type is a single type shared by all rows.
+G(g[0][1] + g[1][1] + g[2][1] == 33);

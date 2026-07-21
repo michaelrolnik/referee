@@ -33,6 +33,7 @@
 #include "antlr2ast.hpp"
 #include "syntax.hpp"
 #include "visitors/loader.hpp"
+#include "visitors/csvHeaders.hpp"
 
 #include <cstdio>
 #include <cstring>
@@ -480,6 +481,45 @@ TEST(Rdb, ImportResolvedViaSearchPath)
     EXPECT_TRUE(allPass) << out.str();
 
     std::remove(rdbPath.c_str());
+}
+
+// Multi-dimensional arrays: the dimension order, and the agreement between the
+// column names csvHeaders derives and the ones Loader actually reads. No
+// fixture had a 2-D array before, which is how the two came to disagree
+// unnoticed -- csvHeaders emitted g[0..2][0..1] while Loader read
+// g[0..1][0..2], so a trace built from the documented headers loaded into the
+// wrong slots.
+TEST(Rdb, MultiDimensionalArrayLayout)
+{
+    auto    refPath = std::string(REFEREE_TEST_DATA_DIR) + "/arrays2d.ref";
+    auto    csvPath = std::string(REFEREE_TEST_DATA_DIR) + "/arrays2d.csv";
+    auto    rdbPath = tmpFile("arrays2d");
+
+    referee::db::ingest(refPath, csvPath, /*confPath=*/"", rdbPath);
+
+    std::ifstream       refIn(refPath);
+    std::ostringstream  out;
+    EXPECT_TRUE(Referee::executeRdb(refIn, refPath, rdbPath, out)) << out.str();
+
+    std::remove(rdbPath.c_str());
+}
+
+// The headers csvHeaders derives for a 2-D array must be exactly the ones the
+// trace carries, in order. This is the check that would have caught the
+// mismatch directly.
+TEST(CsvHeaders, MultiDimensionalOrder)
+{
+    std::istringstream  src("data g : integer[3][2];\n");
+    auto                schema = Referee::parseSchema(src, "<md>");
+
+    auto    cols = CsvHeaders::make("g", schema.ast->getProp("g"));
+
+    std::vector<std::string>    want = {
+        "g[0][0]", "g[0][1]",
+        "g[1][0]", "g[1][1]",
+        "g[2][0]", "g[2][1]",
+    };
+    EXPECT_EQ(cols, want);
 }
 
 // Operator precedence follows C++ / Kotlin. This pins the groupings, so the
