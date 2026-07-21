@@ -1,0 +1,29 @@
+# Arrays whose extent is not written in the specification.
+#
+# `T[]` says the size comes from the trace. It is fixed for a whole run, so
+# nothing downstream ever sees an unsized type: the LLVM type is a plain array,
+# .rdb rows stay fixed-size, and quantifiers still expand while the AST is
+# built. Only the direction of one data flow reverses -- normally the
+# specification determines the columns, and here the columns determine the
+# extent.
+#
+# This file is run against two traces of different sizes, and must hold for
+# both, which is the whole point of leaving the extent out.
+
+data    v : integer[];
+data    g : integer[][];
+
+# The extent is addressable, which is what makes a requirement able to talk
+# about a size it did not write down.
+v.count > 0;
+g.count > 0;
+g[0].count == 2;
+
+# Quantifiers range over however many elements the trace turned out to have.
+all x in v: x > 0;
+some x in v: x == 1;
+all row in g: all p in row: p > 0;
+all _, i in v: i < v.count;
+
+# The first element is always 1 in both traces; the last is v.count.
+v[0] == 1;

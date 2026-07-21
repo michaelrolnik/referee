@@ -52,19 +52,89 @@ std::int64_t    timeAt(loader::Row& doc, std::size_t row)
 namespace referee::db
 {
 
+//  Read array extents off a trace's flattened column names. `readings[0]`,
+//  `readings[1]`, … means three elements; `g[0][1]` contributes to both
+//  dimensions. Reported per declaration, outermost dimension first, which is
+//  the order the subscripts are written in.
+Referee::Sizes  inferSizes(loader::Row const& doc)
+{
+    std::map<std::string, std::vector<unsigned>>    out;
+
+    for (auto const& col : doc.columnNames())
+    {
+        auto    open = col.find('[');
+        if (open == std::string::npos)
+            continue;
+
+        //  The declaration is everything before the first subscript; a struct
+        //  field under an array (`path.pts[0].x`) keeps its dotted prefix, and
+        //  only the leading name identifies the declaration.
+        auto    name = col.substr(0, open);
+        auto    dot  = name.find('.');
+        if (dot != std::string::npos)
+            name = name.substr(0, dot);
+
+        auto&   dims = out[name];
+
+        std::size_t pos = open;
+        for (unsigned dim = 0; pos < col.size() && col[pos] == '['; dim++)
+        {
+            auto    close = col.find(']', pos);
+            if (close == std::string::npos)
+                break;
+
+            unsigned    index = 0;
+            try         { index = std::stoul(col.substr(pos + 1, close - pos - 1)); }
+            catch (...) { break; }
+
+            if (dims.size() <= dim)
+                dims.resize(dim + 1, 0);
+            dims[dim] = std::max(dims[dim], index + 1);
+
+            pos = close + 1;
+        }
+    }
+
+    return out;
+}
+
+
 void    ingest(std::istream&        refIn,   std::string const& refName,
                std::istream&        dataIn,  std::string const& dataName,
                std::istream*        confIn,  std::string const& confName,
                std::ostream&        out,
                std::vector<std::string> const& includePaths)
 {
-    // 1. Schema: cheap AST-only parse of the REF stream.
-    auto    schema      = Referee::parseSchema(refIn, refName, includePaths);
-    auto*   astModule   = schema.ast;
+    // 1. Open the trace first. Normally the specification determines the
+    //    columns; where an array is declared `T[]` the direction reverses and
+    //    the columns determine its extent, so the document has to be in hand
+    //    before the schema can be finished.
+    std::string refSrc{std::istreambuf_iterator<char>(refIn),
+                       std::istreambuf_iterator<char>()};
+    auto        doc     = loader::Row::open(dataIn, dataName);
 
-    // 2. Build the in-memory blob set for each state, exactly the way
-    //    Referee::execute would have done from the same inputs.
-    auto    doc         = loader::Row::open(dataIn, dataName);
+    // 2. Schema: cheap AST-only parse. Parsed once to learn which arrays are
+    //    unsized, then again with the extents read off the column names --
+    //    re-parsing rather than patching types, since a Type is immutable once
+    //    built and shared through the Factory.
+    Referee::Sizes  sizes;
+    {
+        std::istringstream  probe(refSrc);
+        Referee::Schema     first;
+        try
+        {
+            first = Referee::parseSchema(probe, refName, includePaths);
+        }
+        catch (std::exception const&)
+        {
+            //  Unsized arrays make the first parse fail; infer, then retry.
+            sizes = referee::db::inferSizes(*doc);
+        }
+    }
+
+    std::istringstream  refForSchema(refSrc);
+    auto    schema      = Referee::parseSchema(refForSchema, refName, includePaths, sizes);
+    auto*   astModule   = schema.ast;
 
     //  Computed props (`data x = expr`) are deliberately absent from the .rdb:
     //  nothing in the trace file backs them, and their values are a function of

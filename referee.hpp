@@ -26,6 +26,7 @@
 
 #include <iostream>
 #include <memory>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -77,9 +78,14 @@ public:
     /// found next to the file that imported it. `name` is used as the root
     /// file's own path, so relative imports resolve against its directory and
     /// requirement labels are recorded relative to it.
+    /// Extents for arrays declared `T[]`, keyed by declaration name and
+    /// ordered outermost-first. See `Antlr2AST::Sizes`.
+    using Sizes = std::map<std::string, std::vector<unsigned>>;
+
     static Compiled compile(std::istream& is, std::string name,
                             llvm::DataLayout const* dataLayout = nullptr,
-                            std::vector<std::string> const& includePaths = {});
+                            std::vector<std::string> const& includePaths = {},
+                            Sizes const& sizes = {});
 
     /// Convenience wrapper around `compile()` that prints the resulting IR
     /// to `os`. Catches and reports exceptions to stderr. Returns true on
@@ -120,7 +126,8 @@ public:
         Schema& operator=(Schema const&) = delete;
     };
     static Schema   parseSchema(std::istream& is, std::string name,
-                                std::vector<std::string> const& includePaths = {});
+                                std::vector<std::string> const& includePaths = {},
+                                Sizes const& sizes = {});
 
     /// One trace to check, and whether it is expected to violate the
     /// specification. A corpus of traces that *must* be rejected is how a

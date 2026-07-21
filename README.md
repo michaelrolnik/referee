@@ -112,6 +112,26 @@ reqs/two.ref:5:0 .. 5:10                 PASS
 
 The qualification is load-bearing, not cosmetic: the last two requirements sit at the same line and column in different files, and would otherwise collide into one name.
 
+#### Arrays sized by the trace
+
+An array may be declared without an extent, in which case it is taken from the trace:
+
+```text
+data readings : integer[];      // however many the trace carries
+data grid     : integer[][];    // both dimensions
+```
+
+The same specification then holds against traces of different sizes, which is the point of leaving it out. `readings.count` still answers, so a requirement can talk about a size it did not write down.
+
+This is cheap because the extent is fixed for a **whole run**, not per record: the trace is opened before the specification is compiled, so nothing downstream ever sees an unsized type. The generated code, the `.rdb` layout and the quantifier expansion are all exactly as they would be had the number been written in the file.
+
+Two consequences worth knowing:
+
+- **Compiling needs a trace.** `referee compile spec.ref` on a specification with an unsized array has nothing to take the extent from, and says so rather than guessing.
+- **A corpus must agree.** Several traces in one invocation are checked against the specification compiled for the *first* of them, so a trace with a different extent is rejected by the schema check rather than read into the wrong shape.
+
+Extents are read off the flattened column names — `readings[0]`, `readings[1]`, … — so a trace whose columns are complete describes its own shape.
+
 #### Quantifiers
 
 A requirement over an array can range over its elements instead of naming each one:
@@ -199,7 +219,7 @@ The type grammar supports:
 - **Primitive types:** `boolean`, `integer` (64-bit signed), `number` (floating point), `string`.
 - **Enumerations:** `enum { A, B, ... }` — a finite set of named values referenced as `T.A`, `T.B`. Enums are nominal: two enum types with the same members are distinct.
 - **Structures:** `struct { field1: T1; field2: T2; ... }` — record types with named, typed fields. Nesting is allowed (`struct { inner: struct { ... }; }`).
-- **Arrays:** `T[N]`, which may be stacked to form multi-dimensional arrays `T[N][M]`. Array sizes are statically known. Dimensions read as they do in C, C++ and Kotlin: `integer[3][2]` is **three** arrays of **two**, the first subscript written is the outer one, and `g[2][1]` is the last element. Rows are homogeneous — the outer array's element type is a single type, so every row of a `T[N][M]` has exactly `M` elements and a ragged array cannot be expressed.
+- **Arrays:** `T[N]`, which may be stacked to form multi-dimensional arrays `T[N][M]`. Writing `T[]` leaves the extent out of the specification and takes it from the trace instead — see *Arrays sized by the trace* below. Dimensions read as they do in C, C++ and Kotlin: `integer[3][2]` is **three** arrays of **two**, the first subscript written is the outer one, and `g[2][1]` is the last element. Rows are homogeneous — the outer array's element type is a single type, so every row of a `T[N][M]` has exactly `M` elements and a ragged array cannot be expressed.
 - **Named type references:** any previously-declared `type Name : ...` can be used wherever a type is expected, anywhere more complex types are built (struct fields, array elements, other aliases).
 
 ```text

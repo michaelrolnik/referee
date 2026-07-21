@@ -644,6 +644,67 @@ TEST(Rdb, Quantifiers)
     std::remove(rdbPath.c_str());
 }
 
+// An array declared `T[]` takes its extent from the trace. The same
+// specification must therefore hold against traces of different sizes, which
+// is the point of leaving the extent out.
+TEST(Rdb, LoadSizedArrays)
+{
+    auto    ref = std::string(REFEREE_TEST_DATA_DIR) + "/loadsized.ref";
+
+    for (auto const* trace : {"/loadsized.csv", "/loadsized_small.csv"})
+    {
+        auto                csv = std::string(REFEREE_TEST_DATA_DIR) + trace;
+        std::ifstream       in(ref);
+        std::ostringstream  out;
+        EXPECT_TRUE(Referee::executeAll(in, ref, {{csv, false}}, "", out))
+            << trace << ": " << out.str();
+    }
+
+    // And through a packed .rdb, whose schema records the extent that was
+    // fixed when it was built.
+    auto    rdb = tmpFile("loadsized") + ".rdb";
+    referee::db::ingest(ref, std::string(REFEREE_TEST_DATA_DIR) + "/loadsized.csv",
+                        "", rdb);
+    {
+        std::ifstream       in(ref);
+        std::ostringstream  out;
+        EXPECT_TRUE(Referee::executeAll(in, ref, {{rdb, false}}, "", out)) << out.str();
+    }
+    std::remove(rdb.c_str());
+}
+
+// Compiling an unsized specification with nothing to take the extent from is
+// an error that says so, rather than a crash or a silent zero.
+TEST(Rdb, UnsizedArrayNeedsATrace)
+{
+    std::istringstream  src("data v : integer[];\nv.count > 0;\n");
+    try
+    {
+        Referee::parseSchema(src, "<unsized>");
+        ADD_FAILURE() << "expected an unsized array with no trace to be rejected";
+    }
+    catch (std::exception const& e)
+    {
+        EXPECT_NE(std::string(e.what()).find("could not be taken from the trace"),
+                  std::string::npos) << e.what();
+    }
+}
+
+// A corpus is compiled once, against the extents of its first trace, so traces
+// that disagree are reported rather than read into the wrong shape.
+TEST(Rdb, CorpusMustAgreeOnExtents)
+{
+    auto    ref   = std::string(REFEREE_TEST_DATA_DIR) + "/loadsized.ref";
+    auto    big   = std::string(REFEREE_TEST_DATA_DIR) + "/loadsized.csv";
+    auto    small = std::string(REFEREE_TEST_DATA_DIR) + "/loadsized_small.csv";
+
+    std::ifstream       in(ref);
+    std::ostringstream  out;
+    EXPECT_THROW(
+        Referee::executeAll(in, ref, {{big, false}, {small, false}}, "", out),
+        std::exception);
+}
+
 // `xs.count` is the element count, and an array has no other member.
 TEST(Rdb, ArrayCountDiagnostics)
 {

@@ -28,6 +28,9 @@
 #include <string>
 #include <vector>
 
+#include "referee.hpp"
+#include "loaders/row.hpp"
+
 namespace referee::db
 {
 
@@ -45,6 +48,10 @@ namespace referee::db
 /// (`.csv` vs `.yaml`) and for error messages.
 /// `includePaths` are forwarded to the schema parse, so a spec that pulls its
 /// `data`/`conf` declarations in via `import` packs the same as an inline one.
+/// Array extents read off a trace's flattened column names, for a
+/// specification that leaves them out. Outermost dimension first.
+Referee::Sizes  inferSizes(loader::Row const& doc);
+
 void    ingest(std::istream&        refIn,   std::string const& refName,
                std::istream&        dataIn,  std::string const& dataName,
                std::istream*        confIn,  std::string const& confName,

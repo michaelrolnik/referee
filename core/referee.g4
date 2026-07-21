@@ -365,7 +365,11 @@ mmbrList    : (ID ':' type ';')*
 index       : integer
             ;
 
+//  An empty size means the extent is not written in the specification and is
+//  taken from the trace instead. It is fixed for a whole run, so nothing
+//  downstream ever sees an unsized type.
 size        : integer
+            |
             ;
 
 type        : 'struct' '{' mmbrList '}'                         # TypeStruct

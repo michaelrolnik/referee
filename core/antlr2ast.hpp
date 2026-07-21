@@ -31,6 +31,7 @@
 #include "position.hpp"
 #include "module.hpp"
 
+#include <map>
 #include <memory>
 #include <set>
 #include <string>
@@ -79,9 +80,16 @@ public:
     //  relative to this file.  `searchPaths` are consulted, in order, when the
     //  relative lookup misses.  Both may be empty, which disables imports that
     //  are not resolvable from the process working directory.
+    //  Extents for arrays declared `T[]`, keyed by the declaration's name and
+    //  ordered outermost-first. Supplied by whoever already knows the shape of
+    //  the trace, which is possible because the trace is opened before the
+    //  specification is compiled.
+    using Sizes = std::map<std::string, std::vector<unsigned>>;
+
     Antlr2AST(std::string name,
               std::string path = "",
-              std::vector<std::string> searchPaths = {});
+              std::vector<std::string> searchPaths = {},
+              Sizes sizes = {});
     ~Antlr2AST();
 
     std::any visitDeclImport(   referee::refereeParser::DeclImportContext*      ctx) override;
@@ -224,6 +232,9 @@ private:
     std::vector<std::unique_ptr<ParsedFile>>    m_parsed;
 
     std::vector<std::string>    m_searchPaths;
+    Sizes                       m_sizes;
+    std::string                 m_declName;     //  declaration being typed
+    unsigned                    m_declDim = 0;  //  which of its dimensions
     std::string                 m_rootDir;      //  directory of the root .ref
     std::string                 m_currentDir;   //  directory of the file being visited
     char const*                 m_currentFile   = nullptr;  //  label, relative to root

@@ -192,7 +192,8 @@ Referee::Compiled::~Compiled()                                      = default;
 
 Referee::Compiled   Referee::compile(std::istream& is, std::string name,
                                      llvm::DataLayout const* dataLayout,
-                                     std::vector<std::string> const& includePaths)
+                                     std::vector<std::string> const& includePaths,
+                                     Sizes const& sizes)
 {
     Compiled    out;
 
@@ -258,7 +259,7 @@ Referee::Compiled   Referee::compile(std::istream& is, std::string name,
     static std::atomic<unsigned>    s_uniq{0};
     auto    uniqName    = name + "#compile:" + std::to_string(s_uniq.fetch_add(1));
 
-    out.astOwner    = std::make_unique<Antlr2AST>(uniqName, name, includePaths);
+    out.astOwner    = std::make_unique<Antlr2AST>(uniqName, name, includePaths, sizes);
     auto*   tree    = parser.program();
     if (errors.any())
         throw std::runtime_error(errors.summary(name));
@@ -284,7 +285,8 @@ Referee::Schema& Referee::Schema::operator=(Schema&&) noexcept  = default;
 Referee::Schema::~Schema()                                      = default;
 
 Referee::Schema     Referee::parseSchema(std::istream& is, std::string name,
-                                         std::vector<std::string> const& includePaths)
+                                         std::vector<std::string> const& includePaths,
+                                         Sizes const& sizes)
 {
     Schema  out;
     antlr4::ANTLRInputStream    input(is);
@@ -305,7 +307,7 @@ Referee::Schema     Referee::parseSchema(std::istream& is, std::string name,
     static std::atomic<unsigned>    s_uniq{0};
     auto    uniqName    = name + "#schema:" + std::to_string(s_uniq.fetch_add(1));
 
-    out.astOwner    = std::make_unique<Antlr2AST>(uniqName, name, includePaths);
+    out.astOwner    = std::make_unique<Antlr2AST>(uniqName, name, includePaths, sizes);
     auto*   tree    = parser.program();
     if (errors.any())
         throw std::runtime_error(errors.summary(name));
@@ -349,7 +351,8 @@ struct JitWithSpecs
 };
 
 JitWithSpecs    buildJitFromRef(std::istream& refStream, std::string const& refName,
-                                std::vector<std::string> const& includePaths)
+                                std::vector<std::string> const& includePaths,
+                                Referee::Sizes const& sizes)
 {
     JitWithSpecs    out;
 
@@ -381,7 +384,7 @@ JitWithSpecs    buildJitFromRef(std::istream& refStream, std::string const& refN
             throw std::runtime_error("Failed to define debug symbol");
     }
 
-    auto    built = Referee::compile(refStream, refName, &out.jit->getDataLayout(), includePaths);
+    auto    built = Referee::compile(refStream, refName, &out.jit->getDataLayout(), includePaths, sizes);
     out.astOwner  = std::move(built.astOwner);
     out.astModule = built.ast;
 
@@ -500,6 +503,30 @@ namespace {
 // and dispatch every requirement against the Reader's already-fixed-up
 // state buffer. The single backend used by both `Referee::execute` (after
 // ingesting CSV/YAML into an in-memory `.rdb`) and `Referee::executeRdb`.
+// The extents an already-packed trace carries, so a specification that leaves
+// them out can be compiled against it. The .rdb schema stores concrete
+// TypeArray counts, so this is a read rather than an inference.
+Referee::Sizes  sizesFromSchema(std::vector<referee::db::PropDecl> const& props)
+{
+    Referee::Sizes  out;
+
+    for (auto const& prop : props)
+    {
+        std::vector<unsigned>   dims;
+        for (auto* t = prop.type; ; )
+        {
+            auto* array = dynamic_cast<TypeArray*>(t);
+            if (array == nullptr) break;
+            dims.push_back(array->count);
+            t = array->type;
+        }
+        if (!dims.empty())
+            out[prop.name] = std::move(dims);
+    }
+
+    return out;
+}
+
 // Run an already-compiled specification against one trace. Split out from
 // runAgainstRdb so a batch pays for the compile once: it is by far the larger
 // cost (~700ms for a 233-requirement spec, against ~0.12ms per trace row), so
@@ -604,7 +631,10 @@ bool    runAgainstRdb(std::istream&            refStream,
                       std::ostream&            os,
                       std::vector<std::string> const& includePaths)
 {
-    auto    js  = buildJitFromRef(refStream, refName, includePaths);
+    //  Any array the specification left unsized takes its extent from the
+    //  trace, which is why the trace is opened before this is called.
+    auto    js  = buildJitFromRef(refStream, refName, includePaths,
+                                  sizesFromSchema(rdb.props()));
     return runOneTrace(js, rdb, os);
 }
 
@@ -775,12 +805,21 @@ bool    Referee::executeAll(std::istream& refStream, std::string refName,
     std::string refSrc{std::istreambuf_iterator<char>(refStream),
                        std::istreambuf_iterator<char>()};
 
+    //  The first trace is opened before compiling, because an array the
+    //  specification declares `T[]` takes its extent from the trace. Every
+    //  later trace is checked against the schema that fixed, so a corpus whose
+    //  traces disagree on an extent is reported rather than silently
+    //  misread.
+    auto    first = openTrace(refSrc, refName, traces.front().path,
+                              confPath, includePaths);
+
     //  Compile once. This is the reason the loop is here rather than in the
     //  caller: it is the dominant cost and it does not depend on the trace.
     JitWithSpecs    js;
     {
         std::istringstream  refForJit(refSrc);
-        js = buildJitFromRef(refForJit, refName, includePaths);
+        js = buildJitFromRef(refForJit, refName, includePaths,
+                             sizesFromSchema(first->props()));
     }
 
         auto    atLeast = [&](Detail want) {
@@ -803,12 +842,18 @@ bool    Referee::executeAll(std::istream& refStream, std::string refName,
     std::vector<Outcome>    outcomes;
     bool                    everyTraceOk = true;
 
-    for (auto const& trace : traces)
+    for (std::size_t ti = 0; ti < traces.size(); ti++)
     {
-        auto    rdb = openTrace(refSrc, refName, trace.path, confPath, includePaths);
+        auto const& trace = traces[ti];
+
+        //  The first was opened above to fix any unsized extents.
+        auto    owned = ti == 0 ? nullptr
+                                : openTrace(refSrc, refName, trace.path,
+                                            confPath, includePaths);
+        auto&   rdb   = ti == 0 ? *first : *owned;
 
         std::ostringstream  perTrace;
-        bool                allPass = runOneTrace(js, *rdb, perTrace);
+        bool                allPass = runOneTrace(js, rdb, perTrace);
         auto                report  = perTrace.str();
 
         //  When the trace names the requirements it is meant to violate, each

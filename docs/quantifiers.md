@@ -1,6 +1,6 @@
 # Design: bounded quantifiers over arrays
 
-**Status:** implemented, except where noted. `all` / `some` / `none` / `one`, `at least N` / `at most N` and the `.count` pseudo-member are in; everything under *arrays whose size is not in the `.ref`* is not.
+**Status:** implemented, except where noted. `all` / `some` / `none` / `one`, `at least N` / `at most N` and the `.count` pseudo-member are in; load-sized arrays are in too. Only the per-state-varying case remains unbuilt.
 **Scope:** `all` / `some` / `none` / `one`, plus `at least N` / `at most N`, quantifying over the elements of an array.
 
 ## The problem
@@ -168,7 +168,7 @@ Errors worth reporting at the quantifier rather than after expansion, so the mes
 
 There are two different things "unknown array size" can mean, and they differ enormously in cost. It is worth separating them before either is attempted.
 
-### Sized at load time — cheap, and mostly already possible
+### Sized at load time — implemented
 
 The size is not written in the `.ref`, but it is **fixed for a whole run** and known once the trace has been read:
 

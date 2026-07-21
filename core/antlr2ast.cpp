@@ -71,9 +71,11 @@ struct Antlr2AST::ParsedFile
     std::unique_ptr<referee::refereeParser>         parser;
 };
 
-Antlr2AST::Antlr2AST(std::string name, std::string path, std::vector<std::string> searchPaths)
+Antlr2AST::Antlr2AST(std::string name, std::string path,
+                     std::vector<std::string> searchPaths, Sizes sizes)
     : module(Factory<Module>::create(name))
     , m_searchPaths(std::move(searchPaths))
+    , m_sizes(std::move(sizes))
 {
     if (!path.empty())
     {
@@ -326,7 +328,11 @@ Position    Antlr2AST::position(antlr4::ParserRuleContext* rule)
 std::any Antlr2AST::visitDeclConf(      referee::refereeParser::DeclConfContext*    ctx)
 {
     auto    name    = ctx->confID()->getText();
+
+    m_declName      = name;
+    m_declDim       = 0;
     auto    type    = ctx->type()->accept(this);
+    m_declName.clear();
 
     module->addConf(name, std::any_cast<Type*>(type));
 
@@ -338,7 +344,13 @@ std::any Antlr2AST::visitDeclConf(      referee::refereeParser::DeclConfContext*
 std::any Antlr2AST::visitDeclDataTyped( referee::refereeParser::DeclDataTypedContext* ctx)
 {
     auto    name    = ctx->dataID()->getText();
+
+    //  visitTypeArray needs to know whose type it is building, so an unsized
+    //  dimension can be looked up.
+    m_declName      = name;
+    m_declDim       = 0;
     auto    type    = ctx->type()->accept(this);
+    m_declName.clear();
 
     module->addProp(name, std::any_cast<Type*>(type));
 
@@ -1007,8 +1019,16 @@ std::any Antlr2AST::visitTypeArray(     referee::refereeParser::TypeArrayContext
 
     for(auto* cur = ctx; cur != nullptr; )
     {
-        auto    size    = std::any_cast<Expr*>(cur->size()->integer()->accept(this));
-        sizes.push_back(dynamic_cast<ExprConstInteger*>(size)->value);
+        if(cur->size()->integer() != nullptr)
+        {
+            auto    size = std::any_cast<Expr*>(cur->size()->integer()->accept(this));
+            sizes.push_back(dynamic_cast<ExprConstInteger*>(size)->value);
+        }
+        else
+        {
+            //  Marked for resolution below; the extent comes from the trace.
+            sizes.push_back(0);
+        }
 
         auto*   inner   = cur->type();
         auto*   nested  = dynamic_cast<referee::refereeParser::TypeArrayContext*>(inner);
@@ -1026,8 +1046,26 @@ std::any Antlr2AST::visitTypeArray(     referee::refereeParser::TypeArrayContext
 
     auto    type    = std::any_cast<Type*>(base->accept(this));
 
-    for(auto size: sizes)
-        type = Factory<TypeArray>::create(type, size);
+    //  `sizes` arrives last-written-first; declaration order is its reverse.
+    //  An unsized dimension takes its extent from the table, by position.
+    auto    known   = m_sizes.find(m_declName);
+    for(std::size_t k = 0; k < sizes.size(); k++)
+    {
+        auto    declPos = sizes.size() - 1 - k;     //  outermost is 0
+
+        if(sizes[k] == 0)
+        {
+            if(known == m_sizes.end() || declPos >= known->second.size())
+                throw Exception(position(ctx),
+                    "the size of '" + (m_declName.empty() ? std::string("<array>") : m_declName)
+                    + "' is not given here and could not be taken from the trace"
+                      " -- write the extent, or supply a trace to take it from");
+
+            sizes[k] = known->second[declPos];
+        }
+
+        type = Factory<TypeArray>::create(type, sizes[k]);
+    }
 
     return static_cast<Type*>(type);
 }
