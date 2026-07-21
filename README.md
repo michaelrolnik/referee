@@ -626,6 +626,22 @@ referee execute spec.ref run-*.csv --conf conf.csv
 
 This matters more than it sounds. Compilation is a fixed cost — roughly 700 ms for a 233-requirement specification — while checking is about 0.12 ms per trace row. Twenty small traces one invocation at a time take ~13.7 s; the same twenty in one invocation take ~1.1 s, and the gap widens with the corpus.
 
+### Naming a requirement
+
+A requirement may be given a stable name, written `@name` before it:
+
+```text
+@door_closes_in_2s
+globally, if door.OPENED, then in response door.CLOSED within 2 seconds;
+
+@"late-alarm-check"                 # quoted, so the name may contain hyphens
+G(alarm => F(ack));
+```
+
+The name replaces the source position as the requirement's label — in the report, and in the generated function. That is the point: a corpus of traces can then say which requirement each one is meant to violate, and go on being right when the specification is edited and every line moves. Names must be unique across the whole program, imports included.
+
+Unnamed requirements keep their `[file:]row:col .. row:col` label, so nothing existing changes.
+
 ### Declaring what a trace should do
 
 A specification that passes everything it is shown may be correct, or may be vacuous — a requirement mistyped into triviality passes exactly as convincingly as one that holds. The defence is a corpus of traces that *must* be rejected:
@@ -646,6 +662,33 @@ Traces given bare, or under `--success`, must satisfy every requirement. Traces 
 | `--failure` | all requirements hold | **unexpected pass** |
 
 The last row is the one that earns the feature. A trace that was supposed to be rejected and no longer is means the specification has stopped catching what that trace demonstrates — usually because a requirement was weakened or a signal renamed. It is reported distinctly from an ordinary failure, because it means something different: not "the system misbehaved" but "the specification no longer notices".
+
+### A corpus in a file
+
+A command line outgrows a real corpus quickly, so the same thing can be committed as a manifest:
+
+```text
+# suite.txt — what each trace is meant to demonstrate
+good/nominal.csv      passes
+bad/stuck-valve.csv   fails   door-closes-in-2s
+bad/late-alarm.yml    fails   late-alarm-check, alarm-within-5s
+```
+
+```bash
+referee execute spec.ref --suite suite.txt
+```
+
+Paths are relative to the manifest, so a suite moves as a unit.
+
+Naming the requirements after `fails` is what makes the corpus honest. A bare `fails` is satisfied by the trace violating **anything** — including something nobody intended, like a mistyped column or an unrelated requirement added later. The check stays green while what it was protecting has quietly stopped being tested. Naming them catches that:
+
+```text
+bad_a.csv  expected failure  FAIL  WRONG REQUIREMENT
+    expected to violate b-always-holds, but it held
+    a_always_holds                           FAIL
+```
+
+The trace did fail — just not for the reason it exists to demonstrate.
 
 ### Output detail
 

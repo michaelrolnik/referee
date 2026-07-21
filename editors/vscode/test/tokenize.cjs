@@ -68,6 +68,8 @@ const expectations = process.argv[3] ? JSON.parse(process.argv[3]) : [
   ['at', 'keyword.control.pattern'],
   ['least', 'keyword.control.pattern'],
   ['in', 'keyword.control.pattern'],
+  ['door_closes_in_2s', 'entity.name.function.requirement'],
+  ['"late-alarm-check"', 'entity.name.function.requirement'],
 ];
 const found = new Map();
 

@@ -95,6 +95,11 @@ int main(int argc, char * argv[])
         ->add_option("--failure", runFailure,
             "Traces that must violate the specification")
         ->check(CLI::ExistingFile);
+    std::string                 runSuite;
+    execute
+        ->add_option("--suite", runSuite,
+            "Manifest of traces and what each is expected to do")
+        ->check(CLI::ExistingFile);
     execute
         ->add_option("-v,--verbose", runVerbose,
             "0 = closing summary only, 1 = a line per trace, 2 = requirements too")
@@ -119,6 +124,8 @@ int main(int argc, char * argv[])
         else if(app.got_subcommand("execute"))
         {
             std::vector<Referee::Trace>     traces;
+            if (!runSuite.empty())
+                traces = Referee::readSuite(runSuite);
             for (auto const& p : runData)    traces.push_back({p, false});
             for (auto const& p : runSuccess) traces.push_back({p, false});
             for (auto const& p : runFailure) traces.push_back({p, true});

@@ -29,9 +29,18 @@ grammar referee;
 program     : (statement ';')* EOF
             ;
 
-statement   : declaraion
-            | expression
-            | specPattern
+//  A requirement may be given a stable name, so a corpus of traces can say
+//  which requirement each one is meant to violate without referring to a line
+//  number that moves whenever the file is edited.
+//
+//  Spelled with a bare '@' rather than a keyword: reserving a word like `id`
+//  would take it away as a signal name. No ambiguity with the freeze operator,
+//  which needs an identifier to its left and so cannot begin a statement.
+statement   : reqName? (declaraion | expression | specPattern)
+            ;
+
+reqName     : '@' ID
+            | '@' string
             ;
 
 declaraion  : declType

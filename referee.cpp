@@ -27,6 +27,7 @@
 #include <fmt/format.h>
 
 #include <atomic>
+#include <filesystem>
 #include <iostream>
 
 #include "antlr4-runtime/antlr4-runtime.h"
@@ -413,7 +414,11 @@ JitWithSpecs    buildJitFromRef(std::istream& refStream, std::string const& refN
         }
         entries.push_back({std::move(file), row, col, std::move(name)});
     }
-    std::sort(entries.begin(), entries.end(), [](FuncEntry const& a, FuncEntry const& b) {
+    // Stable, because a named requirement has no position to sort by: its
+    // label replaced the position entirely. Named requirements therefore all
+    // compare equal here and must keep the order the module emitted them in,
+    // which is the order they were written.
+    std::stable_sort(entries.begin(), entries.end(), [](FuncEntry const& a, FuncEntry const& b) {
         if (a.file != b.file) return a.file < b.file;
         return a.row != b.row ? a.row < b.row : a.col < b.col;
     });
@@ -685,6 +690,76 @@ std::unique_ptr<referee::db::Reader>    openTrace(std::string const&  refSrc,
 
 } // namespace
 
+std::vector<Referee::Trace>     Referee::readSuite(std::string const& manifestPath)
+{
+    std::ifstream   in(manifestPath);
+    if (!in)
+        throw std::runtime_error(fmt::format("cannot open suite '{}'", manifestPath));
+
+    auto            dir = std::filesystem::path(manifestPath).parent_path();
+    std::vector<Trace>  traces;
+    std::string     line;
+    unsigned        lineNo = 0;
+
+    auto    trim = [](std::string s) {
+        auto b = s.find_first_not_of(" \t");
+        auto e = s.find_last_not_of(" \t");
+        return b == std::string::npos ? std::string() : s.substr(b, e - b + 1);
+    };
+
+    while (std::getline(in, line))
+    {
+        lineNo++;
+        auto    hash = line.find('#');
+        if (hash != std::string::npos)
+            line = line.substr(0, hash);
+        line = trim(line);
+        if (line.empty())
+            continue;
+
+        std::istringstream  fields(line);
+        std::string         path, verb;
+        if (!(fields >> path >> verb))
+            throw std::runtime_error(fmt::format(
+                "{}:{}: expected '<trace> passes|fails [requirements…]'",
+                manifestPath, lineNo));
+
+        Trace   trace;
+        //  Relative to the manifest, so a suite is movable as a unit.
+        trace.path = std::filesystem::path(path).is_absolute()
+                   ? path
+                   : (dir.empty() ? std::filesystem::path(path) : dir / path).string();
+
+        if      (verb == "passes")  trace.expectFailure = false;
+        else if (verb == "fails")   trace.expectFailure = true;
+        else
+            throw std::runtime_error(fmt::format(
+                "{}:{}: expected 'passes' or 'fails', got '{}'",
+                manifestPath, lineNo, verb));
+
+        std::string rest;
+        std::getline(fields, rest);
+        for (auto& c : rest)
+            if (c == ',') c = ' ';
+        std::istringstream  names(rest);
+        std::string         name;
+        while (names >> name)
+            trace.violates.push_back(name);
+
+        if (!trace.violates.empty() && !trace.expectFailure)
+            throw std::runtime_error(fmt::format(
+                "{}:{}: '{}' passes, so it cannot also be required to violate anything",
+                manifestPath, lineNo, path));
+
+        traces.push_back(std::move(trace));
+    }
+
+    if (traces.empty())
+        throw std::runtime_error(fmt::format("suite '{}' lists no traces", manifestPath));
+
+    return traces;
+}
+
 bool    Referee::executeAll(std::istream& refStream, std::string refName,
                             std::vector<Trace> const& traces,
                             std::string const& confPath,
@@ -714,11 +789,15 @@ bool    Referee::executeAll(std::istream& refStream, std::string refName,
 
     struct Outcome
     {
-        std::string path;
-        bool        expectFailure;
-        bool        allPass;
-        std::string detail;
-        bool        ok() const  { return allPass != expectFailure; }
+        std::string                 path;
+        bool                        expectFailure;
+        bool                        allPass;
+        std::string                 detail;
+        std::vector<std::string>    missing;    //  named, expected to fail, did not
+        bool    ok() const
+        {
+            return allPass != expectFailure && missing.empty();
+        }
     };
 
     std::vector<Outcome>    outcomes;
@@ -730,8 +809,29 @@ bool    Referee::executeAll(std::istream& refStream, std::string refName,
 
         std::ostringstream  perTrace;
         bool                allPass = runOneTrace(js, *rdb, perTrace);
+        auto                report  = perTrace.str();
 
-        outcomes.push_back({trace.path, trace.expectFailure, allPass, perTrace.str()});
+        //  When the trace names the requirements it is meant to violate, each
+        //  has to actually be among the violations. Otherwise the corpus
+        //  quietly stops testing what it was written for the moment the trace
+        //  starts failing for some other reason.
+        std::vector<std::string>    missing;
+        for (auto const& want : trace.violates)
+        {
+            bool    found = false;
+            std::istringstream  lines(report);
+            std::string         line;
+            while (std::getline(lines, line))
+            {
+                if (line.find("FAIL") == std::string::npos) continue;
+                if (line.compare(0, want.size(), want) == 0) { found = true; break; }
+            }
+            if (!found)
+                missing.push_back(want);
+        }
+
+        outcomes.push_back({trace.path, trace.expectFailure, allPass,
+                            std::move(report), std::move(missing)});
         everyTraceOk = everyTraceOk && outcomes.back().ok();
     }
 
@@ -753,8 +853,10 @@ bool    Referee::executeAll(std::istream& refStream, std::string refName,
     for (auto const& o : outcomes)
     {
         char const* observed = o.allPass ? "PASS" : "FAIL";
-        char const* verdict  = o.ok() ? "ok"
-                             : o.expectFailure ? "UNEXPECTED PASS" : "FAILED";
+        char const* verdict  = o.ok()               ? "ok"
+                             : !o.missing.empty()   ? "WRONG REQUIREMENT"
+                             : o.expectFailure      ? "UNEXPECTED PASS"
+                                                    : "FAILED";
 
         //  At Summary only misbehaviour is worth a line; the closing tally
         //  covers the rest.
@@ -771,6 +873,9 @@ bool    Referee::executeAll(std::istream& refStream, std::string refName,
         bool    wantAll     = atLeast(Detail::Requirements);
         bool    wantFailed  = !o.ok() && !o.allPass;
 
+        for (auto const& m : o.missing)
+            os << "    expected to violate " << m << ", but it held\n";
+
         if (wantAll || wantFailed)
         {
             std::istringstream  lines(o.detail);
@@ -782,9 +887,10 @@ bool    Referee::executeAll(std::istream& refStream, std::string refName,
             }
         }
 
-        if (o.ok())                 good++;
-        else if (o.expectFailure)   surprises++;
-        else                        bad++;
+        if (o.ok())                     good++;
+        else if (!o.missing.empty())    bad++;
+        else if (o.expectFailure)       surprises++;
+        else                            bad++;
     }
 
     os << fmt::format("\n{} trace{}: {} ok", traces.size(),

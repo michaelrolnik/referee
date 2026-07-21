@@ -483,6 +483,76 @@ TEST(Rdb, ImportResolvedViaSearchPath)
     std::remove(rdbPath.c_str());
 }
 
+// A requirement written with `@name` is labelled by that name instead of its
+// source position, which is what lets a corpus refer to it across edits.
+TEST(Rdb, NamedRequirements)
+{
+    auto    ref  = std::string(REFEREE_TEST_DATA_DIR) + "/suite/spec.ref";
+    auto    csv  = std::string(REFEREE_TEST_DATA_DIR) + "/suite/good.csv";
+
+    std::ifstream       in(ref);
+    std::ostringstream  out;
+    EXPECT_TRUE(Referee::executeAll(in, ref, {{csv, false}}, "", out)) << out.str();
+
+    auto    report = out.str();
+    EXPECT_NE(report.find("a_always_holds"), std::string::npos) << report;
+    EXPECT_NE(report.find("b-always-holds"), std::string::npos) << report;
+    // An unnamed requirement keeps its position.
+    EXPECT_NE(report.find(" .. "),           std::string::npos) << report;
+}
+
+// A name identifies one requirement across the whole program, imports
+// included; two sharing one would collide into a single generated function.
+TEST(Rdb, DuplicateRequirementNamesRejected)
+{
+    std::istringstream  src("data a : boolean;\n@dup\nG(a);\n@dup\nG(!a);\n");
+    try
+    {
+        Referee::parseSchema(src, "<dupname>");
+        ADD_FAILURE() << "expected duplicate requirement names to be rejected";
+    }
+    catch (std::exception const& e)
+    {
+        EXPECT_NE(std::string(e.what()).find("duplicate requirement name"),
+                  std::string::npos) << e.what();
+    }
+}
+
+// A corpus read from a manifest, each trace saying which requirement it is
+// meant to violate.
+TEST(Rdb, SuiteManifest)
+{
+    auto    ref   = std::string(REFEREE_TEST_DATA_DIR) + "/suite/spec.ref";
+    auto    good  = std::string(REFEREE_TEST_DATA_DIR) + "/suite/suite.txt";
+    auto    wrong = std::string(REFEREE_TEST_DATA_DIR) + "/suite/wrong.txt";
+
+    {
+        auto    traces = Referee::readSuite(good);
+        ASSERT_EQ(traces.size(), 3u);
+        EXPECT_FALSE(traces[0].expectFailure);
+        EXPECT_TRUE (traces[1].expectFailure);
+        ASSERT_EQ(traces[1].violates.size(), 1u);
+        EXPECT_EQ(traces[1].violates[0], "a_always_holds");
+
+        std::ifstream       in(ref);
+        std::ostringstream  out;
+        EXPECT_TRUE(Referee::executeAll(in, ref, traces, "", out,
+                                        Referee::Detail::Traces)) << out.str();
+    }
+
+    // The point of naming requirements: a trace that fails for the wrong
+    // reason is a failure, where a bare "fails" would have called it fine.
+    {
+        auto                traces = Referee::readSuite(wrong);
+        std::ifstream       in(ref);
+        std::ostringstream  out;
+        EXPECT_FALSE(Referee::executeAll(in, ref, traces, "", out,
+                                         Referee::Detail::Traces)) << out.str();
+        EXPECT_NE(out.str().find("WRONG REQUIREMENT"), std::string::npos) << out.str();
+        EXPECT_NE(out.str().find("but it held"),       std::string::npos) << out.str();
+    }
+}
+
 // A specification is compiled once and checked against several traces, each
 // declared to pass or to fail. The exit-code contract is that every trace must
 // behave as declared -- including the case that earns the feature, where a

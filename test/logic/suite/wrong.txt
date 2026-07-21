@@ -1,0 +1,4 @@
+# Deliberately claims the wrong requirement: bad_a.csv does fail, but it
+# violates a_always_holds, not b-always-holds. A corpus that only said "fails"
+# would call this fine.
+bad_a.csv   fails   b-always-holds

@@ -2543,10 +2543,15 @@ void Compile::make(llvm::LLVMContext* context, llvm::Module* module, Module* ref
     module->getOrInsertGlobal("__prop__", propPtrType);
 
     auto    exprs   = refmod->getExprs();
-    for(auto expr: exprs)
+    for(std::size_t ei = 0; ei < exprs.size(); ei++)
     {
+        auto    expr        = exprs[ei];
         auto    pos         = expr->where();
-        auto    funcName    = pos.text();
+        //  A requirement written with `@name` is labelled by that name, so an
+        //  external corpus can refer to it without depending on where it sits
+        //  in the file.
+        auto    named       = refmod->getExprName(ei);
+        auto    funcName    = named.empty() ? pos.text() : named;
         auto    funcType    = llvm::FunctionType::get(builder->getInt1Ty(), {propPtrType, propPtrType, confPtrType}, false);
         auto    funcBody    = llvm::Function::Create(funcType, llvm::Function::ExternalLinkage, funcName, module);
         auto    funcArgs    = funcBody->args().begin();
@@ -2575,10 +2580,12 @@ void Compile::make(llvm::LLVMContext* context, llvm::Module* module, Module* ref
     }
 
     auto    specs   = refmod->getSpecs();
-    for(auto spec: specs)
+    for(std::size_t si = 0; si < specs.size(); si++)
     {
+        auto    spec        = specs[si];
         auto    pos         = spec->where();
-        auto    funcName    = pos.text();
+        auto    named       = refmod->getSpecName(si);
+        auto    funcName    = named.empty() ? pos.text() : named;
         auto    funcType    = llvm::FunctionType::get(builder->getInt1Ty(), {propPtrType, propPtrType, confPtrType}, false);
         auto    funcBody    = llvm::Function::Create(funcType, llvm::Function::ExternalLinkage, funcName, module);
         auto    funcArgs    = funcBody->args().begin();

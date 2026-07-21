@@ -915,13 +915,23 @@ std::any Antlr2AST::visitProgram(       referee::refereeParser::ProgramContext* 
 
 std::any Antlr2AST::visitStatement(     referee::refereeParser::StatementContext*   ctx)
 {
+    //  `@name` labels the requirement in place of its source position.
+    std::string     reqName;
+    if(auto* named = ctx->reqName())
+    {
+        reqName = named->ID() ? named->ID()->getText()
+                              : named->string()->getText();
+        if(!named->ID())
+            reqName = reqName.substr(1, reqName.size() - 2);     //  strip quotes
+    }
+
     if (ctx->expression())
     {
         auto    expr    = std::any_cast<Expr*>(ctx->expression()->accept(this));
         
         TypeCalc::make(module, expr);
 
-        module->addExpr(expr);
+        module->addExpr(expr, reqName);
 /*
         std::cout << Color::Modifier(Color::FG_GREEN);
         Printer::output(std::cout, expr) << std::endl;
@@ -945,7 +955,7 @@ std::any Antlr2AST::visitStatement(     referee::refereeParser::StatementContext
 
         TypeCalc::make(module, spec);
 
-        module->addSpec(spec);
+        module->addSpec(spec, reqName);
 #if 0      
         std::cout << Color::Modifier(Color::FG_GREEN);
         Printer::output(std::cout, spec) << std::endl;

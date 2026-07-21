@@ -1,0 +1,6 @@
+# What each trace in this corpus is meant to demonstrate.
+# Paths are relative to this file, so the suite moves as a unit.
+
+good.csv    passes
+bad_a.csv   fails   a_always_holds
+bad_b.csv   fails   b-always-holds

@@ -32,3 +32,7 @@ at least 2 x  in v: x > 2;
 at most  2 x  in v: x > 2;
 all      x, i in v: x * 10 == w[i];
 all      _, i in v: w[i] > v[i];
+@door_closes_in_2s
+G(a || !a);
+@"late-alarm-check"
+G(b || !b);

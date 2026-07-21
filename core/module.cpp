@@ -167,14 +167,44 @@ bool    Module::hasContext(std::string const& name)
     return std::find(m_context.begin(), m_context.end(), name) != m_context.end();
 }
 
-void    Module::addExpr(    Expr*   expr)
+//  A requirement name has to be unique across the whole program, imports
+//  included: it replaces the source position as the requirement's identity, so
+//  two requirements sharing one would collide into a single generated function
+//  and a single, ambiguous report line -- exactly the problem file-qualified
+//  positions were introduced to solve.
+void    Module::noteName(std::string const& name)
 {
-    m_exprs.push_back(expr);
+    if(name.empty())
+        return;
+
+    if(!m_reqNames.insert(name).second)
+        throw std::runtime_error(
+            "duplicate requirement name '@" + name + "'"
+            " -- a name identifies one requirement across the whole program");
 }
 
-void    Module::addSpec(    Spec*   spec)
+void    Module::addExpr(    Expr*   expr, std::string name)
 {
+    noteName(name);
+    m_exprs.push_back(expr);
+    m_exprNames.push_back(std::move(name));
+}
+
+std::string const&  Module::getExprName(std::size_t index) const
+{
+    return m_exprNames[index];
+}
+
+void    Module::addSpec(    Spec*   spec, std::string name)
+{
+    noteName(name);
     m_specs.push_back(spec);
+    m_specNames.push_back(std::move(name));
+}
+
+std::string const&  Module::getSpecName(std::size_t index) const
+{
+    return m_specNames[index];
 }
 
 std::vector<Expr*> const&   Module::getExprs()

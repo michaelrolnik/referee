@@ -130,6 +130,13 @@ public:
     {
         std::string path;
         bool        expectFailure = false;
+
+        /// Which requirements this trace must violate, by `@name` or by
+        /// label. Empty means "some requirement, any of them" -- the weaker
+        /// claim, satisfied by the trace failing for a reason nobody intended.
+        /// Naming them is what keeps a corpus honest: a trace that starts
+        /// failing for a different reason is then a failure, not a pass.
+        std::vector<std::string>    violates;
     };
 
     /// How much to print. The exit code carries the verdict either way, so
@@ -140,6 +147,19 @@ public:
         Traces       = 1,   ///< a line per trace, saying what it did
         Requirements = 2,   ///< the requirement table for every trace too
     };
+
+    /// Read a corpus from a manifest: one trace per line, saying what it is
+    /// meant to do. Paths are resolved relative to the manifest, so a suite
+    /// can be committed and moved as a unit.
+    ///
+    ///     # comments and blank lines are ignored
+    ///     good/nominal.csv      passes
+    ///     bad/stuck-valve.csv   fails
+    ///     bad/late-alarm.yml    fails  door-closes-in-2s, alarm-within-5s
+    ///
+    /// A bare `fails` is the weak claim -- satisfied by the trace violating
+    /// anything at all. Naming requirements after it is the useful form.
+    static std::vector<Trace>   readSuite(std::string const& manifestPath);
 
     /// Compile the specification once and check every trace with it.
     ///

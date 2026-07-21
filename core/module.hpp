@@ -27,6 +27,7 @@
 #include "syntax.hpp"
 
 #include <map>
+#include <set>
 #include <string>
 
 class Module
@@ -60,11 +61,16 @@ public:
     void    popContext();
     bool    hasContext( std::string const& name);
 
-    void    addExpr(    Expr*   expr);
+    //  `name` is the optional `@name` a requirement was written with. It
+    //  becomes the requirement's label in place of its source position, which
+    //  is what lets an external corpus refer to it across edits.
+    void    addExpr(    Expr*   expr, std::string name = "");
     std::vector<Expr*> const&   getExprs();
+    std::string const&          getExprName(std::size_t index) const;
 
-    void    addSpec(    Spec*   spec);
+    void    addSpec(    Spec*   spec, std::string name = "");
     std::vector<Spec*> const&   getSpecs();
+    std::string const&          getSpecName(std::size_t index) const;
 
 private:
     std::map<std::string, Type*>    m_name2type;
@@ -73,6 +79,11 @@ private:
     std::map<std::string, Type*>    m_name2conf;
     std::vector<Expr*>              m_exprs;
     std::vector<Spec*>              m_specs;
+    std::vector<std::string>        m_exprNames;    //  parallel to m_exprs
+    std::vector<std::string>        m_specNames;    //  parallel to m_specs
+    std::set<std::string>           m_reqNames;     //  for duplicate detection
+
+    void    noteName(std::string const& name);
     std::vector<std::string>        m_context;
 
     std::vector<std::string>        m_propNames;  // ALL props in decl order → __prop_t slot layout

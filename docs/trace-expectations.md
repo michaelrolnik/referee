@@ -1,6 +1,6 @@
 # Design: trace expectations
 
-**Status:** implemented. Whole-trace expectations and multi-trace checking are in; per-requirement expectations and a manifest file are not.
+**Status:** implemented — whole-trace and per-requirement expectations, multi-trace checking, named requirements and the suite manifest.
 **Scope:** `referee execute spec.ref --success good1.csv good2.csv --failure bad1.csv bad2.csv`, exiting 0 when every trace behaved as declared.
 
 ## The problem
@@ -85,11 +85,11 @@ It is not free, though: labels move when the specification is edited. A requirem
 globally, if door.OPENED, then in response door.CLOSED within 2 seconds;
 ```
 
-which is a larger language change and should not be bundled in. It is worth knowing that per-requirement expectations push towards it.
+which is what was built. It is spelled with a bare `@` rather than a keyword: reserving a word like `id` would have taken it away as a signal name, and `data id : integer;` is a plausible declaration. There is no ambiguity with the freeze operator, which needs an identifier to its left and so cannot begin a statement. Names must be unique across the whole program, imports included, since a name replaces the source position as the requirement's identity.
 
-### Recommendation
+### What was built
 
-Build whole-trace expectations first, via `--success` / `--failure`, because they are cheap and immediately useful. Design the report so a per-requirement form can be added without changing the exit-code contract. Treat named requirements as the eventual answer to label brittleness rather than trying to avoid the brittleness now.
+Named requirements first, then expectations keyed on the names, so the corpus never referred to a line number. A trace that fails for a requirement other than the one it names is reported as `WRONG REQUIREMENT` and fails the run — which is the case a bare `fails` would have called fine.
 
 ## Report
 

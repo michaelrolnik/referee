@@ -3,17 +3,39 @@
   "name": "REF",
   "scopeName": "source.ref",
   "patterns": [
-    { "include": "#comments" },
-    { "include": "#strings" },
-    { "include": "#declarations" },
-    { "include": "#temporal-operators" },
-    { "include": "#pattern-vocabulary" },
-    { "include": "#time-units" },
-    { "include": "#types" },
-    { "include": "#constants" },
-    { "include": "#freeze" },
-    { "include": "#operators" },
-    { "include": "#identifiers" }
+    {
+      "include": "#comments"
+    },
+    {
+      "include": "#strings"
+    },
+    {
+      "include": "#declarations"
+    },
+    {
+      "include": "#temporal-operators"
+    },
+    {
+      "include": "#pattern-vocabulary"
+    },
+    {
+      "include": "#time-units"
+    },
+    {
+      "include": "#types"
+    },
+    {
+      "include": "#constants"
+    },
+    {
+      "include": "#freeze"
+    },
+    {
+      "include": "#operators"
+    },
+    {
+      "include": "#identifiers"
+    }
   ],
   "repository": {
     "comments": {
@@ -34,7 +56,6 @@
         }
       ]
     },
-
     "strings": {
       "comment": "STRING in referee.g4 is a restricted character set; anything outside it will not lex, so flag it rather than colouring it as a valid string",
       "patterns": [
@@ -51,43 +72,55 @@
         }
       ]
     },
-
     "declarations": {
       "patterns": [
         {
           "comment": "import \"path.ref\";",
           "match": "\\b(import)\\b",
           "captures": {
-            "1": { "name": "keyword.control.import.ref" }
+            "1": {
+              "name": "keyword.control.import.ref"
+            }
           }
         },
         {
           "comment": "type Name : ...  -- introduces a type name",
           "match": "\\b(type)\\s+([A-Za-z_][A-Za-z0-9_]*)",
           "captures": {
-            "1": { "name": "keyword.other.declaration.ref" },
-            "2": { "name": "entity.name.type.ref" }
+            "1": {
+              "name": "keyword.other.declaration.ref"
+            },
+            "2": {
+              "name": "entity.name.type.ref"
+            }
           }
         },
         {
           "comment": "data Name : T;  or  data Name = expr;",
           "match": "\\b(data)\\s+([A-Za-z_][A-Za-z0-9_]*)",
           "captures": {
-            "1": { "name": "keyword.other.declaration.ref" },
-            "2": { "name": "variable.other.signal.ref" }
+            "1": {
+              "name": "keyword.other.declaration.ref"
+            },
+            "2": {
+              "name": "variable.other.signal.ref"
+            }
           }
         },
         {
           "comment": "conf Name : T;",
           "match": "\\b(conf)\\s+([A-Za-z_][A-Za-z0-9_]*)",
           "captures": {
-            "1": { "name": "keyword.other.declaration.ref" },
-            "2": { "name": "variable.other.constant.ref" }
+            "1": {
+              "name": "keyword.other.declaration.ref"
+            },
+            "2": {
+              "name": "variable.other.constant.ref"
+            }
           }
         }
       ]
     },
-
     "temporal-operators": {
       "comment": "Reserved operator names. Each requires a '(' or a '[' time bound, which keeps a stray capital from being highlighted as an operator.",
       "patterns": [
@@ -105,7 +138,6 @@
         }
       ]
     },
-
     "time-bound": {
       "patterns": [
         {
@@ -114,13 +146,16 @@
           "begin": "\\[",
           "end": "\\]",
           "patterns": [
-            { "include": "#constants" },
-            { "include": "#identifiers" }
+            {
+              "include": "#constants"
+            },
+            {
+              "include": "#identifiers"
+            }
           ]
         }
       ]
     },
-
     "pattern-vocabulary": {
       "comment": "Dwyer specification-pattern words. These are reserved in the lexer, so they cannot be used as identifiers -- highlighting them makes that visible.",
       "patterns": [
@@ -139,7 +174,6 @@
         }
       ]
     },
-
     "time-units": {
       "patterns": [
         {
@@ -148,7 +182,6 @@
         }
       ]
     },
-
     "types": {
       "patterns": [
         {
@@ -162,7 +195,6 @@
         }
       ]
     },
-
     "constants": {
       "patterns": [
         {
@@ -192,15 +224,30 @@
         }
       ]
     },
-
     "freeze": {
       "patterns": [
+        {
+          "comment": "@name labelling a requirement -- distinct from the freeze operator, which needs an identifier to its left",
+          "match": "(?<![A-Za-z0-9_])(@)([A-Za-z_][A-Za-z0-9_]*|\"[^\"]*\")",
+          "captures": {
+            "1": {
+              "name": "keyword.operator.requirement-name.ref"
+            },
+            "2": {
+              "name": "entity.name.function.requirement.ref"
+            }
+          }
+        },
         {
           "comment": "name@( ... ) binds the current state to `name`",
           "match": "\\b([A-Za-z_][A-Za-z0-9_]*)\\s*(@)",
           "captures": {
-            "1": { "name": "variable.parameter.freeze.ref" },
-            "2": { "name": "keyword.operator.freeze.ref" }
+            "1": {
+              "name": "variable.parameter.freeze.ref"
+            },
+            "2": {
+              "name": "keyword.operator.freeze.ref"
+            }
           }
         },
         {
@@ -209,7 +256,6 @@
         }
       ]
     },
-
     "operators": {
       "patterns": [
         {
@@ -247,14 +293,15 @@
         }
       ]
     },
-
     "identifiers": {
       "patterns": [
         {
           "comment": "Member access on a signal: `lock.ON`, `pos.x`. Enum members are reached through the signal, never through the type.",
           "match": "\\b([A-Za-z_][A-Za-z0-9_]*)\\s*(?=\\.)",
           "captures": {
-            "1": { "name": "variable.other.ref" }
+            "1": {
+              "name": "variable.other.ref"
+            }
           }
         },
         {

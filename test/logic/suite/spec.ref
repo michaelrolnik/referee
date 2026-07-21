@@ -1,0 +1,14 @@
+# Requirements given stable names, so a corpus can say which one each trace is
+# meant to violate without naming a line that moves whenever the file is edited.
+
+data    a : boolean;
+data    b : boolean;
+
+@a_always_holds
+G(a);
+
+@"b-always-holds"           # quoted, so the name may contain hyphens
+G(b);
+
+# Unnamed requirements keep their source position as their label.
+G(a || !a);
