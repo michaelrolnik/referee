@@ -387,6 +387,48 @@ TEST(Rdb, ExprDataChainedDependencies)
 // *contains* a freeze is still eligible. expr_freeze.ref pins both directions,
 // including a negative that only holds if the inner operator was never
 // precomputed.
+// Time-bounded operators on the linear lowering, over an irregularly spaced
+// trace. Covers conf-valued bounds against their literal equivalents, one-sided
+// bounds on the past operators (which used to crash the compiler), degenerate
+// windows bottoming out at the strong/weak base value, and bounded operators
+// nested inside other temporal operators.
+TEST(Rdb, BoundedTemporalOperators)
+{
+    auto    refPath  = std::string(REFEREE_TEST_DATA_DIR) + "/bounded.ref";
+    auto    csvPath  = std::string(REFEREE_TEST_DATA_DIR) + "/bounded.csv";
+    auto    confPath = std::string(REFEREE_TEST_DATA_DIR) + "/bounded_conf.csv";
+    auto    rdbPath  = tmpFile("bounded");
+
+    referee::db::ingest(refPath, csvPath, confPath, rdbPath);
+
+    std::ifstream       refIn(refPath);
+    std::ostringstream  out;
+    bool                allPass = Referee::executeRdb(refIn, refPath, rdbPath, out);
+    EXPECT_TRUE(allPass) << out.str();
+
+    std::remove(rdbPath.c_str());
+}
+
+// A `conf` field is read through the pointer computed for it, not through
+// whatever pointer happened to be current. Reading the second and third fields
+// is the part that matters: an offset mistake is invisible with a single conf.
+TEST(Rdb, ConfFieldsReadAtCorrectOffsets)
+{
+    auto    refPath  = std::string(REFEREE_TEST_DATA_DIR) + "/conf_fields.ref";
+    auto    csvPath  = std::string(REFEREE_TEST_DATA_DIR) + "/conf_fields.csv";
+    auto    confPath = std::string(REFEREE_TEST_DATA_DIR) + "/conf_fields_conf.csv";
+    auto    rdbPath  = tmpFile("conf-fields");
+
+    referee::db::ingest(refPath, csvPath, confPath, rdbPath);
+
+    std::ifstream       refIn(refPath);
+    std::ostringstream  out;
+    bool                allPass = Referee::executeRdb(refIn, refPath, rdbPath, out);
+    EXPECT_TRUE(allPass) << out.str();
+
+    std::remove(rdbPath.c_str());
+}
+
 TEST(Rdb, ExprFreezeNotBuffered)
 {
     auto    refPath = std::string(REFEREE_TEST_DATA_DIR) + "/expr_freeze.ref";

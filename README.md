@@ -12,7 +12,7 @@ In short: Referee connects human-readable requirement intent to executable verif
 
 - A REF language front end: lexer, parser, and grammar (`core/referee.g4`) covering typed declarations (`type`, `data`, `conf`), structs, enums, arrays, and Dwyer-style property specification patterns (e.g. `globally, ...`, `before ..., ... eventually holds after N milliseconds`, `between ... and ..., it is always the case that ...`).
 - A typed AST and a set of semantic visitors (`canonic`, `negated`, `rewrite`, `typecalc`, `printer`, `csvHeaders`).
-- Lowering of temporal formulas (LTL/TPTL/MTL-flavoured, including strong/weak next `Xs`/`Xw`, bounded until/release, freeze variables, past operators) to **LLVM IR**, followed by standard LLVM optimization passes. Unbounded `Us`/`Uw`/`Rs`/`Rw`/`Ss`/`Sw`/`Ts`/`Tw` are lowered to a single linear pass over the trace rather than the naive nested scan — see *Temporal lowering* below.
+- Lowering of temporal formulas (LTL/TPTL/MTL-flavoured, including strong/weak next `Xs`/`Xw`, bounded until/release, freeze variables, past operators) to **LLVM IR**, followed by standard LLVM optimization passes. `Us`/`Uw`/`Rs`/`Rw`/`Ss`/`Sw`/`Ts`/`Tw` are lowered to linear passes over the trace rather than the naive nested scan, bounded forms included — see *Temporal lowering* below.
 - **Computed signals** (`data Name = expression;`) — named derived signals, including temporal ones, evaluated once per state for the whole trace by a generated `__prepare__` pass and then read like any other signal. See *Computed signals* below.
 - A JIT-based test harness (`test/logic.cpp`) that compiles REF files, JITs them against a synthetic trace (`state_t[]` + `conf_t`), and asserts that each requirement evaluates to `true` (pass) or `false` (fail) over that trace. See `test/logic/pass.ref` and `test/logic/fail.ref` for the intended execution model.
 - A CLI with two subcommands:
@@ -24,7 +24,6 @@ In short: Referee connects human-readable requirement intent to executable verif
 
 **What is missing**
 
-- **Linear lowering for time-bounded operators.** The unbounded temporal operators compile to a single pass over the trace; the bounded forms still use the `O(N²)` nested scan. This is a gap in the implementation rather than a limit of the approach — bounded operators with loop-invariant bounds reduce to the same linear scan via a "next decisive index" array and two monotone pointers. See *Temporal lowering* below.
 - **Streaming / online ingestion.** `referee execute` currently materialises the whole trace before invoking the JIT functions (CSV/YAML are parsed top-to-bottom into per-state blobs; `.rdb` is read into a single buffer). A streaming driver that feeds records to the JIT-compiled requirement functions as they arrive (and reports violation locations live) is not implemented yet — the on-disk `.rdb` layout is already mmap-friendly, so this is a Reader-side change rather than a format change.
 - **VSCode / LSP plugin** for editing REF files with diagnostics, as envisioned in the original design.
 - **Product-specific model exporters/importers** to adapt arbitrary system logs into the canonical trace format.
@@ -243,18 +242,23 @@ The binary temporal operators come in two families that are duals of each other,
 
 For the **unbounded** operators the compiler emits that recurrence directly as a single linear pass over the trace into a `bool[numStates]` buffer, then each use of the operator becomes an array load. Evaluating a requirement containing `k` distinct unbounded temporal operators therefore costs `O(k·N)` rather than the `O(N²)` of a nested scan, and a sub-formula shared between operators is computed once.
 
-**Bounded** operators (`G[0:2500](a)`, `Us[1000:3000](a, c)`, …) still use the nested-scan lowering, but only because the linear version is not implemented yet — not because they are inherently quadratic. The recurrence above genuinely does not apply to them (`timeLo`/`timeHi` derive from the timestamp at the *evaluation point*, so `val[i]` and `val[i+1]` are quantified over different windows and the sub-result is not reusable), but a different linear formulation does:
-
-Because timestamps increase strictly, the states the scan examines at evaluation point `i` form a contiguous index range `[S(i), E(i)]`, and the scan's answer is the outcome at the first *decisive* index in that range — the first `j` with `rhs[j] == rhsV` or `lhs[j] == lhsV` — or `endV` if there is none. So with
+**Bounded** operators (`G[0:2500](a)`, `Us[1000:3000](a, c)`, …) are also lowered linearly, by a different route. The recurrence above does not apply to them — `timeLo`/`timeHi` derive from the timestamp at the *evaluation point*, so `val[i]` and `val[i±1]` are quantified over different windows and the neighbour's result is not a reusable sub-result. What does carry over is that timestamps increase strictly, so the states the scan examines at evaluation point `i` form a contiguous index range `[S(i), E(i)]`, and its answer is the outcome at the first *decisive* index in that range — the first `j` with `rhs[j] == rhsV` or `lhs[j] == lhsV`. Decisiveness depends only on `j`, never on `i`, so one pass serves every evaluation point:
 
 ```text
-nextDec[j] = smallest k >= j that is decisive        // one backward scan, O(N)
-val[i]     = nextDec[S(i)] <= E(i) ? outcome(nextDec[S(i)]) : endV
+decIdx[j] = nearest decisive index from j, in the scan direction   // one pass
+val[i]    = decIdx[S(i)] within E(i) ? outcome(decIdx[S(i)]) : endV
 ```
 
-and `S(i)`, `E(i)` advanced by two monotone pointers, the whole operator is O(N). This subsumes the unbounded case as `S(i) = i`, `E(i) = numStates-2`, so it would replace the current recurrence rather than sit alongside it.
+Both window ends move monotonically with `i`, so one forward-only pointer each covers the whole trace, giving two linear passes in place of the nested scan. Expressing the ends as "last index whose timestamp is `<= X`" rather than searching outward from `i` keeps each pointer a plain walk:
 
-The condition is that the bounds be **loop-invariant** — literals, or expressions over `conf` only. The grammar admits an arbitrary expression there, and a bound that reads a `data` signal or a frozen state makes the window non-monotone in `i`, which breaks the two-pointer scan; such operators would stay on the nested scan.
+```text
+UR:  S(i) = max(q, i),  q = last index with t[q] <= t[i]+lo
+     E(i) = e,          e = last index <= N-2 with t[e] < t[i]+hi
+ST:  S(i) = min(p, i),  p = first index with t[p] >= t[i]-lo
+     E(i) = f,          f = first index with t[f] >  t[i]-hi
+```
+
+The requirement is that the bounds be **loop-invariant** — literals, or expressions over `conf`. The grammar admits an arbitrary expression there, and a bound reading a `data` signal or a frozen state makes the window non-monotone in `i`, which breaks the pointer walk; those operators stay on the nested scan. `test/logic/bounded.ref` exercises the whole matrix over an irregularly spaced trace.
 
 **Freeze (`@`) bodies** are excluded from the buffered path regardless. A buffer is indexed by state, which is only meaningful for an operator whose value is a function of the state index, and inside a freeze an operator that names the frozen state denotes different things at different evaluation points. An operator that merely *contains* a freeze is still eligible — it is evaluated once per state like any other — so `Us(t@(...), b)` is buffered while a temporal operator nested under that `t@` is not.
 

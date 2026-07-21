@@ -1,0 +1,9 @@
+__time__,a,b,c
+0,true,false,true
+1000,true,true,false
+2000,false,true,true
+3000,true,false,true
+4000,true,true,false
+6000,false,true,true
+6500,true,true,true
+9000,true,false,false

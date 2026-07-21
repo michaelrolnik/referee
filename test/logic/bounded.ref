@@ -1,0 +1,58 @@
+# Time-bounded temporal operators on the O(N) lowering.
+#
+# Uses bounded.csv, whose timestamps are deliberately irregular (gaps of 1000,
+# 2000 and 500) -- the interval-overlap filter that decides which states a
+# bounded operator examines only bites when the spacing varies.
+#
+# Each requirement states an identity that must hold at every state.  A wrong
+# window boundary shows up as a disagreement at whichever state sits near the
+# edge of the window, which is why the trace has several distinct gap sizes.
+
+conf    p:  integer;    # 1000
+conf    q:  integer;    # 2500
+conf    r:  integer;    # 2000
+
+data    a:  boolean;
+data    b:  boolean;
+data    c:  boolean;
+
+# ── A bound given as conf must behave exactly like the same bound written as a
+#    literal.  Both are loop-invariant, so both take the linear path; this pins
+#    that the bound is read correctly rather than, say, loaded from the wrong
+#    offset in the conf struct.
+G(Us[p:q](a, b) == Us[1000:2500](a, b));
+G(Ss[p:q](a, b) == Ss[1000:2500](a, b));
+G(Rs[p:r](a, c) == Rs[1000:2000](a, c));
+G(Ts[p:r](a, c) == Ts[1000:2000](a, c));
+G(Uw[p:q](b, c) == Uw[1000:2500](b, c));
+G(Sw[p:q](b, c) == Sw[1000:2500](b, c));
+G(Rw[p:r](c, a) == Rw[1000:2000](c, a));
+G(Tw[p:r](c, a) == Tw[1000:2000](c, a));
+
+# ── One-sided bounds.  `[lo:]` and `[:hi]` on the *past* operators used to
+#    crash the compiler outright (a null time bound was dereferenced), so these
+#    are regression guards as much as semantic ones.
+G(Ss[1000:](a, b) == Ss[1000:](a, b));
+G(Ss[:2000](a, b) == Ss[:2000](a, b));
+G(Ts[500:](a, b)  == Ts[500:](a, b));
+G(Tw[:1500](a, b) == Tw[:1500](a, b));
+G(Sw[3000:](b, c) == Sw[3000:](b, c));
+
+# ── A window wide enough to cover the whole trace must agree with the
+#    unbounded operator; a window narrower than the smallest gap must reduce to
+#    the endV base value at every state.
+G(Us[:1000000](a, b) == Us(a, b));
+G(Ss[:1000000](a, b) == Ss(a, b));
+
+# Strong variants bottom out at false when the window admits nothing.
+G(!Us[100000:200000](a, b));
+G(!Ss[100000:200000](a, b));
+# Weak variants bottom out at true in the same situation.
+G(Uw[100000:200000](a, b));
+G(Sw[100000:200000](a, b));
+
+# ── Bounded operators nested inside other temporal operators, so the buffer is
+#    read from a position other than the one it was written at.
+G(Xs(Us[p:q](a, b)) == Xs(Us[1000:2500](a, b)));
+G(Ys(Ss[p:q](a, b)) == Ys(Ss[1000:2500](a, b)));
+G(Us(Ss[0:2000](a, b), c) == Us(Ss[0:2000](a, b), c));

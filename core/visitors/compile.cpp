@@ -102,6 +102,49 @@ bool hasFreeContext(Expr* expr, std::set<std::string> const& bound)
     return false;
 }
 
+//  Is `expr` loop-invariant -- the same value at every state?
+//
+//  This is the eligibility test for the *bounded* buffered lowering, which
+//  advances its window with a monotone pointer.  That only works if the window
+//  endpoints move monotonically with the evaluation point, which in turn needs
+//  the bound itself to be a constant of the trace.  Literals and `conf` values
+//  qualify; anything reading a `data` signal or a frozen state does not, and
+//  such operators stay on the nested scan.
+bool isLoopInvariant(Expr* expr)
+{
+    if (!expr) return true;
+
+    if (dynamic_cast<ExprData*>(expr))      return false;   //  varies per state
+    if (dynamic_cast<ExprAt*>(expr))        return false;   //  freezes a state
+    if (dynamic_cast<ExprConf*>(expr))      return true;    //  constant for the run
+
+    if (auto* ctx = dynamic_cast<ExprContext*>(expr))
+        return ctx->name == "__conf__";
+
+    if (auto* ternary = dynamic_cast<ExprTernary*>(expr))
+    {
+        return isLoopInvariant(ternary->lhs)
+            && isLoopInvariant(ternary->mhs)
+            && isLoopInvariant(ternary->rhs);
+    }
+
+    if (auto* binary = dynamic_cast<ExprBinary*>(expr))
+        return isLoopInvariant(binary->lhs) && isLoopInvariant(binary->rhs);
+
+    if (auto* unary = dynamic_cast<ExprUnary*>(expr))
+        return isLoopInvariant(unary->arg);
+
+    return true;    //  constants and other nullary leaves
+}
+
+//  Both bounds of a time window must be loop-invariant for the window to slide
+//  monotonically.  An absent bound is trivially invariant.
+bool hasLoopInvariantTime(Time* time)
+{
+    if (!time) return true;
+    return isLoopInvariant(time->lo) && isLoopInvariant(time->hi);
+}
+
 void collectTemporals(Expr* expr, std::vector<Expr*>& temporals)
 {
     if (!expr) return;
@@ -331,6 +374,25 @@ struct CompileExprImpl
                                               llvm::Value* lhsV,
                                               llvm::Value* endV,
                                               bool         isUR);
+    llvm::Value*    compileTemporalLoopBounded(Temporal<ExprBinary>* expr,
+                                               llvm::Value* rhsV,
+                                               llvm::Value* lhsV,
+                                               llvm::Value* endV,
+                                               bool         isUR);
+    llvm::Value*    timeAtIndex(llvm::Value* idx);
+    void            emitDecisivePass(Temporal<ExprBinary>* expr,
+                                     llvm::Value* rhsV,
+                                     llvm::Value* lhsV,
+                                     bool         isUR,
+                                     llvm::Value* decV,
+                                     llvm::Value* decI,
+                                     llvm::Value* nm2);
+    llvm::Value*    emitMonotoneWalk(llvm::Value*             init,
+                                     llvm::Value*             bound,
+                                     bool                     probeIsNext,
+                                     llvm::Value*             limit,
+                                     llvm::CmpInst::Predicate keepPred,
+                                     std::string const&       name);
 
     //  Buffers are only valid in blocks dominated by the one they were built
     //  in.  Callers that emit several independent loop nests into the same
@@ -584,8 +646,12 @@ void    CompileExprImpl::visit(ExprConf*         expr)
 
     if(dynamic_cast<TypePrimitive*>(expr->type()))
     {
+        //  Load through confPtr, not m_value: make() restores m_value once the
+        //  sub-expression is built, so by here it holds whatever was current
+        //  before this node -- null at the start of a function, and some
+        //  unrelated pointer in the middle of one.
         auto    fieldType   = Compile::make(m_context, m_module, expr->type(), expr->name);
-        m_value = m_builder->CreateLoad(fieldType, m_value, false, "val_" + expr->name);
+        m_value = m_builder->CreateLoad(fieldType, confPtr, false, "val_" + expr->name);
     }
     else
     {
@@ -1433,14 +1499,20 @@ void    CompileExprImpl::ST(Temporal<ExprBinary>*   expr,
     m_builder->CreateCondBr(frstLEprev, bbOuter, bbTail);
 
     //  outer
+    //
+    //  Scanning backwards, the far end of the window is timeLo (= now - hi),
+    //  so it is timeLo that bounds how far back the scan may go -- mirroring
+    //  UR, where the far end is timeHi.  Each guard must test the very
+    //  pointer it dereferences: with only one of `[lo:]` / `[:hi]` given the
+    //  other is null, and testing the wrong one crashes the compiler.
     m_builder->SetInsertPoint(bbOuter);
-    if(timeHi)
+    if(timeLo)
     {
         auto    currT           = getTime(curr, "curr->__time__");
         auto    timeLoLEcurrT   = m_builder->CreateICmpSLE(timeLo, currT, "timeLo <= currT");
         m_builder->CreateCondBr(timeLoLEcurrT, bbInner, bbTail);
     }
-    else if(timeLo)
+    else if(timeHi)
     {
         m_builder->CreateBr(bbInner);
     }
@@ -1454,10 +1526,10 @@ void    CompileExprImpl::ST(Temporal<ExprBinary>*   expr,
     auto    currT   = getTime(curr, "curr->__time__");
     auto    prevT   = getTime(prev, "prev->__time__");
 
-    auto    lo      = timeHi
+    auto    lo      = timeLo
                     ? m_builder->CreateSelect(m_builder->CreateICmpSLT(prevT, timeLo), timeLo, prevT)
                     : prevT;
-    auto    hi      = timeLo
+    auto    hi      = timeHi
                     ? m_builder->CreateSelect(m_builder->CreateICmpSLT(timeHi, currT), timeHi, currT)
                     : currT;
 
@@ -1490,14 +1562,16 @@ void    CompileExprImpl::ST(Temporal<ExprBinary>*   expr,
     m_builder->CreateBr(bbWhile);
 
     //  tail
+    //  bbOuter only branches here when it emitted the conditional above, i.e.
+    //  when timeLo exists -- keep this in step with that guard.
     m_builder->SetInsertPoint(bbTail);
-    auto    result  = m_builder->CreatePHI(m_boolType, timeHi ? 4 : 3, "result");
+    auto    result  = m_builder->CreatePHI(m_boolType, timeLo ? 4 : 3, "result");
 
     //  link
     result->addIncoming(lhsV, bbLhsLo);
     result->addIncoming(rhsV, bbRhsLo);
     result->addIncoming(endV, bbWhile);
-    if(timeHi)
+    if(timeLo)
         result->addIncoming(endV, bbOuter);
 
     curr->addIncoming(curr0, bbEntry);
@@ -1961,11 +2035,14 @@ void CompileExprImpl::compileTemporalLoops(Expr* rootExpr)
         if (m_temporalBuffers.count(expr)) continue;
         if (hasFreeContext(expr, {})) continue;
 
-        //  Bounded operators (with a time window) require time-interval filtering
-        //  logic that the original O(N²) UR/ST loops handle correctly.  Only
-        //  pre-compile the unbounded (no time) form into an O(N) buffer.
-        auto* temporal = dynamic_cast<Temporal<ExprBinary>*>(expr);
-        if (temporal && temporal->time != nullptr) continue;
+        //  A bounded operator slides its window with a monotone pointer, which
+        //  needs the bounds to be constants of the trace.  A bound reading a
+        //  `data` signal or a frozen state makes the window non-monotone, and
+        //  such operators stay on the nested scan.
+        auto* temporal  = dynamic_cast<Temporal<ExprBinary>*>(expr);
+        bool  isBounded = temporal && temporal->time != nullptr;
+
+        if (isBounded && !hasLoopInvariantTime(temporal->time)) continue;
 
         //  (rhsV, lhsV, endV) must mirror the corresponding visit() call site
         //  exactly -- those are the authority on each operator's semantics.
@@ -1988,7 +2065,9 @@ void CompileExprImpl::compileTemporalLoops(Expr* rootExpr)
         else if (dynamic_cast<ExprTw*>(expr)) {isUR = false; rhsV = m_F; lhsV = m_T; endV = m_T;}
         else                                  continue;
 
-        m_temporalBuffers[expr] = compileTemporalLoopInline(expr, rhsV, lhsV, endV, isUR);
+        m_temporalBuffers[expr] = isBounded
+            ? compileTemporalLoopBounded(temporal, rhsV, lhsV, endV, isUR)
+            : compileTemporalLoopInline(expr, rhsV, lhsV, endV, isUR);
     }
 }
 
@@ -2142,6 +2221,257 @@ llvm::Value* CompileExprImpl::compileTemporalLoopInline(Expr*        expr,
     }
 
     return buffer;
+}
+
+//  Emit the O(N) lowering for one *bounded* U/R/S/T node.
+//
+//  The recurrence used for the unbounded operators does not apply here: the
+//  window is anchored at the evaluation point, so val[i] and val[i+-1] are
+//  quantified over different windows and the neighbour's result is not a
+//  reusable sub-result.  What does hold is that the nested scan, at evaluation
+//  point i, examines a *contiguous* range of states -- timestamps increase
+//  strictly, so the window's two conditions each cut the index line once --
+//  and returns the outcome at the first decisive state in that range, where
+//  "decisive" (rhs==rhsV, else lhs==lhsV) depends only on the state, not on i.
+//
+//  So with
+//      dec[j]  = outcome at j, and decIdx[j] = nearest decisive index from j
+//                in the scan direction (one pass, since dec[] ignores i)
+//      S(i), E(i) = the ends of the examined range
+//  the answer is decIdx[S(i)] if that lands within E(i), else endV.
+//
+//  Both ends move monotonically with i (the window is anchored at t[i], which
+//  increases), so a single pointer each covers the whole trace -- giving two
+//  linear passes in place of the nested scan.  Working the ends out in terms
+//  of "last index whose timestamp is <= X" rather than searching from i keeps
+//  each pointer a plain forward walk:
+//
+//      UR:  S(i) = max(q, i),  q = last index with t[q] <= t[i]+lo
+//           E(i) = e,          e = last index <= N-2 with t[e] < t[i]+hi
+//      ST:  S(i) = min(p, i),  p = first index with t[p] >= t[i]-lo
+//           E(i) = f,          f = first index with t[f] >  t[i]-hi
+//
+//  An absent bound drops its constraint (S(i)=i / E(i)=the far end).
+llvm::Value* CompileExprImpl::compileTemporalLoopBounded(Temporal<ExprBinary>* expr,
+                                                         llvm::Value* rhsV,
+                                                         llvm::Value* lhsV,
+                                                         llvm::Value* endV,
+                                                         bool         isUR)
+{
+    auto    i64     = m_builder->getInt64Ty();
+    auto    i1      = m_builder->getInt1Ty();
+    auto    frst    = m_frst.back();
+    auto    last    = m_last.back();
+
+    auto    K       = [&](std::int64_t v) { return llvm::ConstantInt::getSigned(i64, v); };
+
+    auto    diff    = m_builder->CreatePtrDiff(m_propType, last, frst, "diff");
+    auto    n       = m_builder->CreateAdd(diff, K(1), "numStates");
+    auto    nm1     = m_builder->CreateSub(n, K(1), "n-1");
+    auto    nm2     = m_builder->CreateSub(n, K(2), "n-2");
+
+    auto    decV    = m_builder->CreateAlloca(i1,  n, "decV");
+    auto    decI    = m_builder->CreateAlloca(i64, n, "decI");
+    auto    buffer  = m_builder->CreateAlloca(i1,  n, "temp_buf");
+
+    //  Time bounds are loop-invariant (checked before we get here), so emit
+    //  them once, outside every loop.
+    llvm::Value*    loV = expr->time->lo ? make(expr->time->lo) : nullptr;
+    llvm::Value*    hiV = expr->time->hi ? make(expr->time->hi) : nullptr;
+
+    //  `none` is an index the range test can never accept, so a lookup landing
+    //  on it falls through to endV.  Its decV slot is still loaded (then
+    //  discarded by the select) and so must hold something defined.
+    auto    none    = isUR ? nm1 : K(0);
+    m_builder->CreateStore(none, m_builder->CreateGEP(i64, decI, none));
+    m_builder->CreateStore(endV, m_builder->CreateGEP(i1,  decV, none));
+    m_builder->CreateStore(endV, m_builder->CreateGEP(i1,  buffer, K(0)));
+    m_builder->CreateStore(endV, m_builder->CreateGEP(i1,  buffer, nm1));
+
+    emitDecisivePass(expr, rhsV, lhsV, isUR, decV, decI, nm2);
+
+    //  ── Per evaluation point: locate the window, then chase decIdx ──────────
+    auto    bbHead  = llvm::BasicBlock::Create(*m_context, "winHead", m_function);
+    auto    bbBody  = llvm::BasicBlock::Create(*m_context, "winBody", m_function);
+    auto    bbNext  = llvm::BasicBlock::Create(*m_context, "winNext", m_function);
+    auto    bbExit  = llvm::BasicBlock::Create(*m_context, "winExit", m_function);
+
+    auto    bbEntry = m_builder->GetInsertBlock();
+    m_builder->CreateBr(bbHead);
+
+    m_builder->SetInsertPoint(bbHead);
+    auto    i       = m_builder->CreatePHI(i64, 2, "i");
+    auto    aCur    = m_builder->CreatePHI(i64, 2, "aCur");
+    auto    bCur    = m_builder->CreatePHI(i64, 2, "bCur");
+    m_builder->CreateCondBr(m_builder->CreateICmpSLE(i, nm2, "i <= n-2"), bbBody, bbExit);
+
+    m_builder->SetInsertPoint(bbBody);
+    auto    ti      = timeAtIndex(i);
+    //  UR anchors the window forward from t[i], ST backward from it.
+    auto    aBound  = loV ? (isUR ? m_builder->CreateAdd(ti, loV, "t+lo")
+                                  : m_builder->CreateSub(ti, loV, "t-lo"))
+                          : nullptr;
+    auto    bBound  = hiV ? (isUR ? m_builder->CreateAdd(ti, hiV, "t+hi")
+                                  : m_builder->CreateSub(ti, hiV, "t-hi"))
+                          : nullptr;
+
+    //  Near end.  UR extends forward past every t[q] <= t[i]+lo, so it probes
+    //  q+1; ST steps up while t[p] < t[i]-lo, so it probes p itself.
+    auto    a       = emitMonotoneWalk(aCur, aBound, /*probeIsNext=*/isUR, nm1,
+                                       isUR ? llvm::CmpInst::ICMP_SLE : llvm::CmpInst::ICMP_SLT,
+                                       "a");
+    //  Far end.
+    auto    b       = emitMonotoneWalk(bCur, bBound, /*probeIsNext=*/isUR, nm2,
+                                       isUR ? llvm::CmpInst::ICMP_SLT : llvm::CmpInst::ICMP_SLE,
+                                       "b");
+
+    //  The scan starts at the evaluation point, so the near end is clamped
+    //  against i; the far end stands on its own.
+    llvm::Value*    sIdx = i;
+    if (aBound)
+    {
+        auto    takeA = isUR ? m_builder->CreateICmpSGT(a, i, "a > i")
+                             : m_builder->CreateICmpSLT(a, i, "a < i");
+        sIdx = m_builder->CreateSelect(takeA, a, i, "S");
+    }
+    auto    eIdx    = bBound ? b : (isUR ? nm2 : K(1));
+
+    auto    k       = m_builder->CreateLoad(i64, m_builder->CreateGEP(i64, decI, sIdx), "k");
+    auto    hit     = isUR ? m_builder->CreateICmpSLE(k, eIdx, "k <= E")
+                           : m_builder->CreateICmpSGE(k, eIdx, "k >= E");
+    auto    kVal    = m_builder->CreateLoad(i1, m_builder->CreateGEP(i1, decV, k), "kVal");
+    m_builder->CreateStore(m_builder->CreateSelect(hit, kVal, endV, "val"),
+                           m_builder->CreateGEP(i1, buffer, i));
+    m_builder->CreateBr(bbNext);
+
+    m_builder->SetInsertPoint(bbNext);
+    auto    iStep   = m_builder->CreateAdd(i, K(1), "i+1");
+    m_builder->CreateBr(bbHead);
+
+    i->addIncoming(K(1),  bbEntry);
+    i->addIncoming(iStep, bbNext);
+    //  Both pointers only ever move forward, so they are carried across
+    //  evaluation points -- that is what makes the two walks amortised O(1)
+    //  per state rather than a rescan each time.  They start at 0: index 0 is
+    //  a legitimate answer meaning "the window reaches past the start of the
+    //  trace", which for ST is how an empty window is expressed.
+    aCur->addIncoming(K(0), bbEntry);
+    aCur->addIncoming(a,    bbNext);
+    bCur->addIncoming(isUR ? K(0) : K(1), bbEntry);
+    bCur->addIncoming(b,    bbNext);
+
+    m_builder->SetInsertPoint(bbExit);
+    return buffer;
+}
+
+//  Load the timestamp of the state at `idx`, counting from the first state.
+llvm::Value*    CompileExprImpl::timeAtIndex(llvm::Value* idx)
+{
+    return getTime(m_builder->CreateGEP(m_propType, m_frst.back(), idx), "t");
+}
+
+//  Fill decV[j] with the outcome at j and decI[j] with the nearest decisive
+//  index at or beyond j in the scan direction.  Neither depends on the
+//  evaluation point, which is what lets one pass serve every point.
+void    CompileExprImpl::emitDecisivePass(Temporal<ExprBinary>*  expr,
+                                          llvm::Value*           rhsV,
+                                          llvm::Value*           lhsV,
+                                          bool                   isUR,
+                                          llvm::Value*           decV,
+                                          llvm::Value*           decI,
+                                          llvm::Value*           nm2)
+{
+    auto    i64     = m_builder->getInt64Ty();
+    auto    i1      = m_builder->getInt1Ty();
+    auto    K       = [&](std::int64_t v) { return llvm::ConstantInt::getSigned(i64, v); };
+
+    auto    bbHead  = llvm::BasicBlock::Create(*m_context, "decHead", m_function);
+    auto    bbBody  = llvm::BasicBlock::Create(*m_context, "decBody", m_function);
+    auto    bbNext  = llvm::BasicBlock::Create(*m_context, "decNext", m_function);
+    auto    bbExit  = llvm::BasicBlock::Create(*m_context, "decExit", m_function);
+
+    //  Walk away from the sentinel so each slot can chain off its neighbour.
+    auto    start   = isUR ? nm2 : K(1);
+    auto    bbEntry = m_builder->GetInsertBlock();
+    m_builder->CreateBr(bbHead);
+
+    m_builder->SetInsertPoint(bbHead);
+    auto    j       = m_builder->CreatePHI(i64, 2, "j");
+    auto    cont    = isUR ? m_builder->CreateICmpSGE(j, K(1), "j >= 1")
+                           : m_builder->CreateICmpSLE(j, nm2,  "j <= n-2");
+    m_builder->CreateCondBr(cont, bbBody, bbExit);
+
+    m_builder->SetInsertPoint(bbBody);
+    m_curr.push_back(m_builder->CreateGEP(m_propType, m_frst.back(), j));
+    auto    rhs     = make(expr->rhs);
+    auto    lhs     = make(expr->lhs);
+    m_curr.pop_back();
+
+    auto    rhsHit  = m_builder->CreateICmpEQ(rhs, rhsV, "rhsHit");
+    auto    lhsHit  = m_builder->CreateICmpEQ(lhs, lhsV, "lhsHit");
+    auto    isDec   = m_builder->CreateOr(rhsHit, lhsHit, "isDec");
+    m_builder->CreateStore(m_builder->CreateSelect(rhsHit, rhsV, lhsV, "outcome"),
+                           m_builder->CreateGEP(i1, decV, j));
+
+    auto    nbr     = isUR ? m_builder->CreateAdd(j, K(1), "j+1")
+                           : m_builder->CreateSub(j, K(1), "j-1");
+    auto    chain   = m_builder->CreateLoad(i64, m_builder->CreateGEP(i64, decI, nbr), "chain");
+    m_builder->CreateStore(m_builder->CreateSelect(isDec, j, chain, "nearest"),
+                           m_builder->CreateGEP(i64, decI, j));
+    m_builder->CreateBr(bbNext);
+
+    m_builder->SetInsertPoint(bbNext);
+    auto    jStep   = isUR ? m_builder->CreateSub(j, K(1), "j-1")
+                           : m_builder->CreateAdd(j, K(1), "j+1");
+    m_builder->CreateBr(bbHead);
+
+    j->addIncoming(start, bbEntry);
+    j->addIncoming(jStep, bbNext);
+
+    m_builder->SetInsertPoint(bbExit);
+}
+
+//  Advance a monotone index while the probed state's timestamp still satisfies
+//  `keepPred` against `bound`, and leave the insert point after the walk.
+//  A null bound means the constraint is absent and the index does not move.
+//
+//  The probe is clamped into range before the load, so the iteration that
+//  discovers it has run off the trace cannot read past it; `inRange` then
+//  discards the value it read.
+llvm::Value*    CompileExprImpl::emitMonotoneWalk(llvm::Value*             init,
+                                                  llvm::Value*             bound,
+                                                  bool                     probeIsNext,
+                                                  llvm::Value*             limit,
+                                                  llvm::CmpInst::Predicate keepPred,
+                                                  std::string const&       name)
+{
+    if (!bound)
+        return init;
+
+    auto    i64     = m_builder->getInt64Ty();
+    auto    bbHead  = llvm::BasicBlock::Create(*m_context, name + "Head", m_function);
+    auto    bbDone  = llvm::BasicBlock::Create(*m_context, name + "Done", m_function);
+
+    auto    bbPre   = m_builder->GetInsertBlock();
+    m_builder->CreateBr(bbHead);
+
+    m_builder->SetInsertPoint(bbHead);
+    auto    p       = m_builder->CreatePHI(i64, 2, name);
+    auto    pNext   = m_builder->CreateAdd(p, llvm::ConstantInt::getSigned(i64, 1), name + "+1");
+    auto    probe   = probeIsNext ? pNext : p;
+    auto    inRange = m_builder->CreateICmpSLE(probe, limit, name + " in range");
+    auto    safe    = m_builder->CreateSelect(inRange, probe,
+                                              llvm::ConstantInt::getSigned(i64, 0));
+    auto    keep    = m_builder->CreateCmp(keepPred, timeAtIndex(safe), bound, name + " keep");
+    auto    go      = m_builder->CreateAnd(inRange, keep, "adv" + name);
+    auto    bbEnd   = m_builder->GetInsertBlock();
+    m_builder->CreateCondBr(go, bbHead, bbDone);
+
+    p->addIncoming(init,  bbPre);
+    p->addIncoming(pNext, bbEnd);
+
+    m_builder->SetInsertPoint(bbDone);
+    return p;
 }
 
 llvm::Value*    CompileExprImpl::make(Expr* expr)

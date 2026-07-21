@@ -1,0 +1,25 @@
+# Every `conf` field must be read from its own offset in the conf struct.
+#
+# A single conf declaration cannot catch an offset mistake, because field 0 is
+# at offset 0 either way. Four fields with distinct values do: reading through
+# the wrong pointer yields another field's value, or crashes outright when the
+# pointer is the null one that a fresh function starts with.
+
+conf    p:  integer;
+conf    q:  integer;
+conf    r:  integer;
+conf    s:  integer;
+
+data    a:  boolean;
+
+G(p == 11);
+G(q == 22);
+G(r == 33);
+G(s == 44);
+
+# All four in one expression, so the reads are interleaved rather than each
+# starting from a fresh function -- the buggy version loaded through whatever
+# pointer was left over from the previous sub-expression, which only shows up
+# once several conf reads share a requirement.
+G((p < q) && (q < r) && (r < s));
+G((p == 11) && (q == 22) && (r == 33) && (s == 44));
