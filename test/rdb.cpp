@@ -482,9 +482,8 @@ TEST(Rdb, ImportResolvedViaSearchPath)
     std::remove(rdbPath.c_str());
 }
 
-// Operator precedence, which is not C's. The README documents the actual
-// binding order; this pins it, so changing the grammar to conventional
-// precedence fails here and forces the prose to be revisited with it.
+// Operator precedence follows C++ / Kotlin. This pins the groupings, so the
+// grammar and the precedence table in the README cannot drift apart.
 TEST(Rdb, OperatorPrecedenceMatchesDocumentation)
 {
     auto    refPath = std::string(REFEREE_TEST_DATA_DIR) + "/precedence.ref";

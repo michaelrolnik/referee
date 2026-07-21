@@ -104,26 +104,32 @@ expression  : sign? integer                                     # ExprConst
             | '!' expression                                    # ExprNot
             | '-' expression                                    # ExprNeg
 
-            | expression '+'   expression                       # ExprAdd
-            | expression '-'   expression                       # ExprSub
+            //  Precedence is the order of these alternatives, tightest first.
+            //  It follows C++ / Kotlin: multiplicative, additive, relational,
+            //  equality, ^, &&, ||.  Implication and biconditional have no C++
+            //  equivalent and sit where logic conventionally puts them, looser
+            //  than || and tighter than the conditional.
             | expression '*'   expression                       # ExprMul
             | expression '/'   expression                       # ExprDiv
             | expression '%'   expression                       # ExprMod
 
-            | expression '||'  expression                       # ExprOr
-            | expression '&&'  expression                       # ExprAnd
-            | expression '^'   expression                       # ExprXor
-            | expression '=>'  expression                       # ExprImp
-            | expression '<=>' expression                       # ExprEqu
+            | expression '+'   expression                       # ExprAdd
+            | expression '-'   expression                       # ExprSub
+
+            | expression '<'   expression                       # ExprLt
+            | expression '<='  expression                       # ExprLe
+            | expression '>'   expression                       # ExprGt
+            | expression '>='  expression                       # ExprGe
 
             | expression '=='  expression                       # ExprEq
             | expression '!='  expression                       # ExprNe
 
-            | expression '<'   expression                       # ExprLt
-            | expression '<='  expression                       # ExprLe
+            | expression '^'   expression                       # ExprXor
+            | expression '&&'  expression                       # ExprAnd
+            | expression '||'  expression                       # ExprOr
 
-            | expression '>'   expression                       # ExprGt
-            | expression '>='  expression                       # ExprGe
+            | expression '=>'  expression                       # ExprImp
+            | expression '<=>' expression                       # ExprEqu
 
             | expression '?' expression ':' expression          # ExprTer
 

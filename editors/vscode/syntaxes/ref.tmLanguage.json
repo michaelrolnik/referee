@@ -208,7 +208,7 @@
     "operators": {
       "patterns": [
         {
-          "comment": "Implication and biconditional bind looser than the logical operators but tighter than the comparisons -- see the precedence table in the README, which is not C's",
+          "comment": "Implication and biconditional bind looser than || and tighter than the conditional; the rest follows C++ / Kotlin",
           "name": "keyword.operator.logical.implication.ref",
           "match": "<=>|=>"
         },

@@ -3,8 +3,5 @@
 data problem : boolean;
 data alarm   : boolean;
 
-// A problem must be followed by an alarm within 5 seconds.
-// The inner comparison must be parenthesised: `&&` binds tighter than `<=`
-// (see the precedence table above), so without the parentheses this parses as
-// `(alarm && __time__ - t.__time__) <= 5` and fails to type-check.
-G(problem => t@(F(alarm && (__time__ - t.__time__ <= 5))));
+// A problem must be followed by an alarm within 5 seconds
+G(problem => t@(F(alarm && __time__ - t.__time__ <= 5)));

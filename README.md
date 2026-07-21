@@ -169,24 +169,21 @@ Enum members are reached **through the signal**, not through the type: `lock.ON`
 
 REF expressions combine the familiar C-family operator set with dedicated temporal operators. Outside of the temporal layer, the non-temporal expression language is what requirement authors use most of the time.
 
-**Operators, from tightest to loosest binding.** This ordering is *not* C's, in three ways that change what an unparenthesised expression means:
-
-- `+` and `-` bind **tighter** than `*`, `/` and `%`, so `2 + 3 * 4` is `(2 + 3) * 4` — 20, not 14.
-- `||` binds **tighter** than `&&`, so `a || b && c` is `(a || b) && c`.
-- The logical operators bind **tighter** than the comparisons, so `a && x <= 5` is `(a && x) <= 5`, which does not type-check.
-
-Parenthesise anything mixing these categories; the compiler will reject the type error in the common cases, but `2 + 3 * 4` is well-typed and silently means something other than it looks like.
+**Operators, from tightest to loosest binding.** The ordering follows C++ and Kotlin, which agree on all of these: multiplicative, additive, relational, equality, `^`, `&&`, `||`. `=>` and `<=>` have no C++ equivalent and sit where logic conventionally puts them — looser than `||`, tighter than the conditional. So `2 + 3 * 4` is 14, `a || b && c` is `a || (b && c)`, and `a && x <= 5` needs no parentheses.
 
 
 | Category    | Operators                                  | Notes                                            |
 | ----------- | ------------------------------------------ | ------------------------------------------------ |
 | Postfix     | `.field`, `[index]`                        | Member access and array indexing.                |
 | Unary       | `!`, `-`                                   | Logical negation and arithmetic negation.        |
-| Additive    | `+`, `-`                                   | **Binds tighter than `*` / `/` / `%`.**           |
 | Multiplicative | `*`, `/`, `%`                           | `%` is integer modulo.                           |
-| Logical     | `\|\|`, `&&`, `^`                          | All one level, `\|\|` tightest. `^` is logical XOR. |
+| Additive    | `+`, `-`                                   |                                                  |
+| Relational  | `<`, `<=`, `>`, `>=`                       |                                                  |
+| Equality    | `==`, `!=`                                 | Works on booleans, numbers, strings, enums.      |
+| Logical XOR | `^`                                        | Logical, not bitwise.                            |
+| Logical AND | `&&`                                       |                                                  |
+| Logical OR  | `\|\|`                                      |                                                  |
 | Implication | `=>`, `<=>`                                | Material implication and biconditional.          |
-| Comparison  | `==`, `!=`, `<`, `<=`, `>`, `>=`           | **Looser than the logical operators.**            |
 | Ternary     | `cond ? then : else`                       | Selects between two values of the same type.     |
 | Grouping    | `(...)`                                    |                                                  |
 
@@ -212,11 +209,8 @@ All temporal operators optionally accept a **time bound** `[lo:hi]`, `[:hi]`, or
 A **freeze variable** `name@(... expression ...)` binds the current state to `name`, so subexpressions can reference data at that frozen point — e.g. `x@(F(x.abc.a == 3))` means "there is a future state whose `abc.a` equals the value `abc.a` had at the freeze point". A special `__time__` identifier refers to the current timestamp.
 
 ```text
-// A problem must be followed by an alarm within 5 seconds.
-// The inner comparison must be parenthesised: `&&` binds tighter than `<=`
-// (see the precedence table above), so without the parentheses this parses as
-// `(alarm && __time__ - t.__time__) <= 5` and fails to type-check.
-G(problem => t@(F(alarm && (__time__ - t.__time__ <= 5))));
+// A problem must be followed by an alarm within 5 seconds
+G(problem => t@(F(alarm && __time__ - t.__time__ <= 5)));
 ```
 
 ### Specification Patterns

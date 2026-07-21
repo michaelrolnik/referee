@@ -1,9 +1,12 @@
 # Operator precedence, pinned.
 #
-# The grammar's binding order is not C's, and the README documents it as such.
-# These requirements state the groupings the documentation claims, so the two
-# cannot drift apart: if the grammar is ever changed to conventional
-# precedence, this file fails and the prose has to be revisited with it.
+# REF follows C++ / Kotlin: multiplicative, then additive, then relational,
+# then equality, then ^, then &&, then ||. Implication and biconditional have
+# no C++ equivalent and sit where logic conventionally puts them -- looser than
+# || and tighter than the conditional.
+#
+# These requirements state the groupings, so the grammar and the precedence
+# table in the README cannot drift apart.
 
 type State : enum { ON, OFF };
 
@@ -12,19 +15,31 @@ data    b       : boolean;
 data    c       : boolean;
 data    lock    : State;
 
-# `+`/`-` bind tighter than `*`/`/`/`%`, so this groups as (2 + 3) * 4.
-(2 + 3 * 4) == 20;
-(10 - 2 * 5) == 40;
+# ── Arithmetic ───────────────────────────────────────────────────────────────
+# `*` binds tighter than `+`, so this groups as 2 + (3 * 4).
+(2 + 3 * 4) == 14;
+(10 - 2 * 5) == 0;
+(1 + 8 / 4) == 3;
+(7 - 6 % 4) == 5;
 
-# `||` binds tighter than `&&`, so this groups as (a || b) && c.
-# With a=true, b=false, c=false: (true || false) && false = false,
-# whereas C's grouping a || (b && c) would give true.
-(a || b && c) == false;
+# ── Logical ──────────────────────────────────────────────────────────────────
+# `&&` binds tighter than `||`, so this groups as a || (b && c).
+# With a=true, b=false, c=false that is true; the other grouping gives false.
+(a || b && c) == true;
 
-# The logical operators bind tighter than the comparisons. Written without
-# parentheses `a && 1 == 1` would group as `(a && 1) == 1` and fail to type
-# check, so the comparison has to be parenthesised to mean what it looks like.
-a && (1 == 1);
+# ── Comparison against logical ───────────────────────────────────────────────
+# Comparisons bind tighter than `&&` and `||`, so these need no parentheses.
+a && 1 == 1;
+a || 1 != 1;
+1 < 2 && 3 > 2;
+a && 2 + 3 * 4 == 14;
+
+# ── Implication is looser than || ────────────────────────────────────────────
+# Reads as (a || b) => (a || b), which holds whatever the operands are.
+a || b => a || b;
+
+# ── Unary binds tightest ─────────────────────────────────────────────────────
+(-3 + 5) == 2;
 
 # Enum members are reached through the signal, never through the type.
 lock.ON;
