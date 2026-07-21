@@ -1107,6 +1107,20 @@ void    CompileExprImpl::visit(ExprLt*           expr)
 void    CompileExprImpl::visit(ExprMmbr*         expr)
 {
     auto    exprType    = expr->type();
+
+    //  `xs.count` -- the element count is fixed when the AST is built, so it
+    //  becomes a literal rather than a load. Answered before make(expr->arg),
+    //  which would otherwise emit a pointer to an array nobody reads.
+    if(auto* array = dynamic_cast<TypeArray*>(expr->arg->type()))
+    {
+        if(expr->mmbr == "count")
+        {
+            m_value = llvm::ConstantInt::getSigned(m_builder->getInt64Ty(),
+                                                   array->count);
+            return;
+        }
+    }
+
     auto    basePtr     = make(expr->arg);
     auto    baseType    = Compile::make(m_context, m_module, expr->arg->type(), expr->mmbr);
 

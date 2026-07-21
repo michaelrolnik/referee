@@ -300,7 +300,25 @@ void    TypeCalcImpl::visit(ExprLt*                 expr)
 
 void    TypeCalcImpl::visit(ExprMmbr*               expr)
 {
-    auto    base    = dynamic_cast<TypeComposite*>(make(expr->arg));
+    auto    argType = make(expr->arg);
+
+    //  `xs.count` is the number of elements. An array is not a composite, so
+    //  this has to be answered before the cast below rejects it. The count is
+    //  known here, so it lowers to a literal -- see the matching case in
+    //  CompileExprImpl.
+    if(auto* array = dynamic_cast<TypeArray*>(argType))
+    {
+        if(expr->mmbr == "count")
+        {
+            m_type = typeInteger;
+            return;
+        }
+
+        throw Exception(expr->where(),
+            "an array has no member '" + expr->mmbr + "'; did you mean 'count'?");
+    }
+
+    auto    base    = dynamic_cast<TypeComposite*>(argType);
 
     if(base == nullptr)
     {

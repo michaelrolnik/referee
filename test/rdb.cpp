@@ -644,6 +644,37 @@ TEST(Rdb, Quantifiers)
     std::remove(rdbPath.c_str());
 }
 
+// `xs.count` is the element count, and an array has no other member.
+TEST(Rdb, ArrayCountDiagnostics)
+{
+    struct Case { char const* src; char const* want; };
+
+    Case    cases[] = {
+        {"data v : integer[4];\nv.size == 4;\n",   "did you mean 'count'"},
+        {"data v : integer[4];\nv.length == 4;\n", "no member 'length'"},
+    };
+
+    int     n = 0;
+    for (auto const& c : cases)
+    {
+        std::istringstream  src(c.src);
+        try
+        {
+            Referee::parseSchema(src, "<count" + std::to_string(n++) + ">");
+            ADD_FAILURE() << "expected a rejection for: " << c.src;
+        }
+        catch (std::exception const& e)
+        {
+            EXPECT_NE(std::string(e.what()).find(c.want), std::string::npos) << e.what();
+        }
+    }
+
+    // A struct field called `count` is unaffected -- the member is resolved by
+    // the type of what it is applied to.
+    std::istringstream  ok("data s : struct { count : integer; };\ns.count == 7;\n");
+    EXPECT_NO_THROW(Referee::parseSchema(ok, "<countfield>"));
+}
+
 // A quantifier expands during AST construction, so nothing downstream ever
 // sees one. Rejections therefore have to name the quantifier itself.
 TEST(Rdb, QuantifierDiagnostics)

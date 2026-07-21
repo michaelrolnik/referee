@@ -54,6 +54,21 @@ G(all p in g[0]: p > 0);
 all p in g[0]: G(p > 0);
 !(all p in g[0]: F(p > 1));
 
+# ── an array's element count, addressable from a requirement ─────────────────
+# Known when the AST is built, so it lowers to a literal -- no load, no state
+# access. Without it a requirement cannot constrain the extent at all, which
+# matters most for arrays whose size is not written in the .ref.
+v.count == 4;
+w.count == 4;
+g.count == 3;                   # the outer dimension
+g[0].count == 2;                # the inner one
+v.count == w.count;
+
+# Usable wherever an integer is, including as a quantifier body.
+all _, i in v: i < v.count;
+all _, i in v: i >= 0 && i < v.count;
+G(v.count == 4);
+
 # ── inside a computed signal ─────────────────────────────────────────────────
 data any_big = some x in v: x > 3;
 G(any_big);

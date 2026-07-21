@@ -14,7 +14,7 @@ In short: Referee connects human-readable requirement intent to executable verif
 - A typed AST and a set of semantic visitors (`canonic`, `negated`, `rewrite`, `typecalc`, `printer`, `csvHeaders`).
 - Lowering of temporal formulas (LTL/TPTL/MTL-flavoured, including strong/weak next `Xs`/`Xw`, bounded until/release, freeze variables, past operators) to **LLVM IR**, followed by standard LLVM optimization passes. `Us`/`Uw`/`Rs`/`Rw`/`Ss`/`Sw`/`Ts`/`Tw` are lowered to linear passes over the trace rather than the naive nested scan, bounded forms included — see *Temporal lowering* below.
 - **`import`** — split a specification across files: shared definition files, or one index file pulling in a directory of small requirement files. Resolved relative to the importing file plus `-I` search paths, imported once per real path, with file-qualified requirement labels. See *Splitting a specification across files* below.
-- **Bounded quantifiers** over array elements — `all` / `some` / `none` / `one`, plus `at least N` / `at most N`. See *Quantifiers* below; the design notes are in `docs/quantifiers.md`.
+- **Bounded quantifiers** over array elements — `all` / `some` / `none` / `one`, plus `at least N` / `at most N` — and `xs.count` for the element count. See *Quantifiers* below; the design notes are in `docs/quantifiers.md`.
 - **Computed signals** (`data Name = expression;`) — named derived signals, including temporal ones, evaluated once per state for the whole trace by a generated `__prepare__` pass and then read like any other signal. See *Computed signals* below.
 - A JIT-based test harness (`test/logic.cpp`) that compiles REF files, JITs them against a synthetic trace (`state_t[]` + `conf_t`), and asserts that each requirement evaluates to `true` (pass) or `false` (fail) over that trace. See `test/logic/pass.ref` and `test/logic/fail.ref` for the intended execution model.
 - A CLI with two subcommands:
@@ -153,6 +153,20 @@ G(all p in xs: P(p));       // at every state, every element satisfies P
 Because array sizes are known at compile time, a quantifier expands while the AST is built — `all` to a conjunction, `some` to a disjunction, the counted forms to a sum of indicators compared against the bound. Nothing reaches the temporal layer, so there is no runtime cost and no change to the trace format. A quantifier may also appear in a computed signal (`data any_big = some x in v: x > 3;`).
 
 The domain must be an array of known size; quantifying over anything else is rejected at the quantifier itself.
+
+**An array's element count** is available as `xs.count`:
+
+```text
+data limits : integer[4];
+data grid   : integer[3][2];
+
+limits.count == 4;
+grid.count == 3;            // the outer dimension
+grid[0].count == 2;         // the inner one
+all _, i in limits: i < limits.count;
+```
+
+It is known when the AST is built, so it lowers to a literal — no load, no state access. `count` is resolved by the type it is applied to, so a struct field of the same name is unaffected, and an array has no other member.
 
 #### Computed signals
 

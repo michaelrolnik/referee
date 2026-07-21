@@ -1,6 +1,6 @@
 # Design: bounded quantifiers over arrays
 
-**Status:** implemented, except where noted. `all` / `some` / `none` / `one` and `at least N` / `at most N` are in; the array-size pseudo-member and everything under *arrays whose size is not in the `.ref`* are not.
+**Status:** implemented, except where noted. `all` / `some` / `none` / `one`, `at least N` / `at most N` and the `.count` pseudo-member are in; everything under *arrays whose size is not in the `.ref`* is not.
 **Scope:** `all` / `some` / `none` / `one`, plus `at least N` / `at most N`, quantifying over the elements of an array.
 
 ## The problem
@@ -249,7 +249,7 @@ This also composes with the quantifiers rather than competing with them. Quantif
 
 ### Choosing the name
 
-`.size`, `.length` and `.count` all parse identically; the choice is readability against a maintenance trap.
+`.count` was chosen. `.size`, `.length` and `.count` all parse identically; the choice was readability against a maintenance trap.
 
 `Type::size()` already exists in the implementation and means **size in bytes**. Naming the language feature `.size` puts two different meanings of the word one keystroke apart, in a file where a maintainer implementing this would be reading both. `.count` matches `TypeArray::count` exactly, which is the field the value comes from.
 

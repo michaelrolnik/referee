@@ -296,6 +296,11 @@
     "identifiers": {
       "patterns": [
         {
+          "comment": "xs.count -- an array's element count, resolved by the base type",
+          "name": "support.variable.property.ref",
+          "match": "(?<=\\.)count\\b"
+        },
+        {
           "comment": "Member access on a signal: `lock.ON`, `pos.x`. Enum members are reached through the signal, never through the type.",
           "match": "\\b([A-Za-z_][A-Za-z0-9_]*)\\s*(?=\\.)",
           "captures": {
