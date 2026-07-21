@@ -162,33 +162,38 @@ conf grid   : Matrix;
 
 Member access uses `.` (`lock.ON`, `pos.x`, `xyz.limits`) and array indexing uses `[...]` (`xyz.limits[2]`, `grid[1][2].x`). Accesses nest in the obvious way, so `data abc : struct { x: integer[2][3]; };` permits `abc.x[1][2]`.
 
-Enum members are referenced via their type (`State.ON`, `Door.CLOSED`). Comparing a `data` signal to an enum constant (`lock == State.ON`) is the primary way to turn raw signals into booleans inside requirements; a data declaration whose type is already `enum` also supports the short form `lock.ON`, which is syntactic sugar for "the current value of `lock` is `ON`".
+Enum members are reached **through the signal**, not through the type: `lock.ON` reads as "the current value of `lock` is `ON`" and is the form requirements use to turn a raw signal into a boolean. Writing the member against the type instead (`State.ON`, or `lock == State.ON`) is *not* accepted — the parser resolves the head of a dotted name as a signal, so a type name there fails to resolve.
 
 ### Expressions
 
 REF expressions combine the familiar C-family operator set with dedicated temporal operators. Outside of the temporal layer, the non-temporal expression language is what requirement authors use most of the time.
 
-**Operators (from tightest to loosest binding, roughly C-like):**
+**Operators, from tightest to loosest binding.** This ordering is *not* C's, in three ways that change what an unparenthesised expression means:
+
+- `+` and `-` bind **tighter** than `*`, `/` and `%`, so `2 + 3 * 4` is `(2 + 3) * 4` — 20, not 14.
+- `||` binds **tighter** than `&&`, so `a || b && c` is `(a || b) && c`.
+- The logical operators bind **tighter** than the comparisons, so `a && x <= 5` is `(a && x) <= 5`, which does not type-check.
+
+Parenthesise anything mixing these categories; the compiler will reject the type error in the common cases, but `2 + 3 * 4` is well-typed and silently means something other than it looks like.
+
 
 | Category    | Operators                                  | Notes                                            |
 | ----------- | ------------------------------------------ | ------------------------------------------------ |
 | Postfix     | `.field`, `[index]`                        | Member access and array indexing.                |
 | Unary       | `!`, `-`                                   | Logical negation and arithmetic negation.        |
+| Additive    | `+`, `-`                                   | **Binds tighter than `*` / `/` / `%`.**           |
 | Multiplicative | `*`, `/`, `%`                           | `%` is integer modulo.                           |
-| Additive    | `+`, `-`                                   |                                                  |
-| Relational  | `<`, `<=`, `>`, `>=`                       |                                                  |
-| Equality    | `==`, `!=`                                 | Works on booleans, numbers, strings, enums.      |
-| Logical AND | `&&`                                       |                                                  |
-| Logical OR  | `\|\|`, `^`                                | `^` is logical XOR.                              |
+| Logical     | `\|\|`, `&&`, `^`                          | All one level, `\|\|` tightest. `^` is logical XOR. |
 | Implication | `=>`, `<=>`                                | Material implication and biconditional.          |
+| Comparison  | `==`, `!=`, `<`, `<=`, `>`, `>=`           | **Looser than the logical operators.**            |
 | Ternary     | `cond ? then : else`                       | Selects between two values of the same type.     |
 | Grouping    | `(...)`                                    |                                                  |
 
 `=>` and `<=>` are first-class operators, not macros: `p => q` is exactly `!p || q`, and `p <=> q` is `p == q` restricted to booleans, but writing them with the logical spelling makes requirement intent immediately readable ("whenever `p`, then `q`").
 
-**Types in expressions.** Arithmetic mixes `integer` and `number`, with the usual widening to `number`. Comparisons are homogeneous — you can compare two integers, two numbers, two strings, two booleans, or two values of the same enum type, but not, say, an enum against a string. The ternary operator requires both arms to have a common type. These rules are enforced by the `typecalc` visitor before LLVM IR is generated, so type errors surface at compile time.
+**Types in expressions.** Arithmetic mixes `integer` and `number`, with the usual widening to `number`, and comparisons widen the same way — `i < n` with `i : integer` and `n : number` is fine. Otherwise comparisons are homogeneous: two strings, two booleans, or two values of the same enum type, but not, say, an integer against a string. The ternary operator requires both arms to have a common type. These rules are enforced by the `typecalc` visitor before LLVM IR is generated, so type errors surface at compile time.
 
-**Literals in expressions.** Besides the usual numeric literals described above, enum constants are written as `TypeName.MemberName`, which is the only form the parser accepts for enums; there is no implicit coercion from strings or integers.
+**Literals in expressions.** Besides the usual numeric literals described above, an enum-valued signal is tested by naming the member on the signal — `lock.ON`, `door.CLOSED`. There is no implicit coercion from strings or integers, and no way to write a bare enum constant detached from a signal.
 
 Temporal operators come in both **future** and **past** flavours, and most come in **strong** and **weak** variants to give well-defined semantics on finite traces:
 
@@ -199,15 +204,18 @@ Temporal operators come in both **future** and **past** flavours, and most come 
 | `Xs(p)` / `Xw(p)` | `Ys(p)` / `Yw(p)` | strong/weak next / yesterday |
 | `Us(p, q)` / `Uw(p, q)` | `Ss(p, q)` / `Sw(p, q)` | strong/weak until / since |
 | `Rs(p, q)` / `Rw(p, q)` | `Ts(p, q)` / `Tw(p, q)` | strong/weak release / triggered |
-| `I(p)` / `I(p, n)` | — | integral (sum of time `p` held, optionally per-unit `n`) |
+| `I(v)` / `I(c, v)` | — | integral of a **numeric** signal `v` over time; the two-argument form integrates `v` only while the boolean `c` holds |
 
 All temporal operators optionally accept a **time bound** `[lo:hi]`, `[:hi]`, or `[lo:]`, giving MTL-style bounded versions such as `G[100:1000](a)` or `Us[1:3](alpha, beta)`.
 
 A **freeze variable** `name@(... expression ...)` binds the current state to `name`, so subexpressions can reference data at that frozen point — e.g. `x@(F(x.abc.a == 3))` means "there is a future state whose `abc.a` equals the value `abc.a` had at the freeze point". A special `__time__` identifier refers to the current timestamp.
 
 ```text
-// A problem must be followed by an alarm within 5 seconds
-G(problem => t@(F(alarm && __time__ - t.__time__ <= 5)));
+// A problem must be followed by an alarm within 5 seconds.
+// The inner comparison must be parenthesised: `&&` binds tighter than `<=`
+// (see the precedence table above), so without the parentheses this parses as
+// `(alarm && __time__ - t.__time__) <= 5` and fails to type-check.
+G(problem => t@(F(alarm && (__time__ - t.__time__ <= 5))));
 ```
 
 ### Specification Patterns
@@ -244,7 +252,7 @@ globally, it is never the case that door.CLOSED && alarm.ON;
 while door.OPENED, it is always the case that alarm.ON after 30 seconds;
 globally, if button.DEPRESSED, then in response lock.ON after 100 milliseconds;
 globally, once lock.ON becomes satisfied it remains so for at least 2 seconds;
-globally, once lock.ON becomes satisfied it remains so for less than 2.2 seconds;
+globally, once lock.ON becomes satisfied it remains so for less than 3 seconds;
 between door.CLOSED and lock.OFF, it is always the case that door.CLOSED;
 after lock.ON, if door.OPENED, then it must have been the case that lock.OFF has occurred before it;
 after lock.ON, if lock.OFF, then it must have been the case that button.DEPRESSED has occurred before;

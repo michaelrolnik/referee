@@ -482,6 +482,45 @@ TEST(Rdb, ImportResolvedViaSearchPath)
     std::remove(rdbPath.c_str());
 }
 
+// Operator precedence, which is not C's. The README documents the actual
+// binding order; this pins it, so changing the grammar to conventional
+// precedence fails here and forces the prose to be revisited with it.
+TEST(Rdb, OperatorPrecedenceMatchesDocumentation)
+{
+    auto    refPath = std::string(REFEREE_TEST_DATA_DIR) + "/precedence.ref";
+    auto    csvPath = std::string(REFEREE_TEST_DATA_DIR) + "/precedence.csv";
+    auto    rdbPath = tmpFile("precedence");
+
+    referee::db::ingest(refPath, csvPath, /*confPath=*/"", rdbPath);
+
+    std::ifstream       refIn(refPath);
+    std::ostringstream  out;
+    EXPECT_TRUE(Referee::executeRdb(refIn, refPath, rdbPath, out)) << out.str();
+
+    std::remove(rdbPath.c_str());
+}
+
+// The README's worked examples have to keep compiling. These are the two that
+// carry real syntax rather than illustrative fragments.
+TEST(Rdb, ReadmeExamplesCompile)
+{
+    llvm::InitializeNativeTarget();
+    llvm::InitializeNativeTargetAsmPrinter();
+    llvm::InitializeNativeTargetAsmParser();
+
+    for (auto const* leaf : {"/readme_elevator.ref", "/readme_freeze.ref"})
+    {
+        auto            path = std::string(REFEREE_TEST_DATA_DIR) + leaf;
+        std::ifstream   in(path);
+        ASSERT_TRUE(in.is_open()) << path;
+
+        EXPECT_NO_THROW({
+            auto built = Referee::compile(in, path);
+            (void) built.ast;
+        }) << leaf;
+    }
+}
+
 // Sample-and-hold: a sample's values hold from its own timestamp up to, but
 // not including, the next one. A bounded window that closes before the next
 // sample sees only the held value; one that reaches it sees the change. These
