@@ -658,6 +658,21 @@ TEST(Rdb, AccumulateOverRecords)
     EXPECT_TRUE(Referee::executeAll(in, ref, {{csv, false}}, "", out)) << out.str();
 }
 
+// Computed props (`data x = expr`) of every width. The backing buffer was
+// allocated one byte per state, which is right only for a boolean; an integer
+// or number stored eight bytes into a one-byte slot and trampled the states
+// after it. Only the last state survived intact, and `x % 256` stayed correct
+// everywhere, so the existing all-boolean fixtures never noticed.
+TEST(Rdb, ComputedPropWidths)
+{
+    auto    ref = std::string(REFEREE_TEST_DATA_DIR) + "/computed.ref";
+    auto    csv = std::string(REFEREE_TEST_DATA_DIR) + "/computed.csv";
+
+    std::ifstream       in(ref);
+    std::ostringstream  out;
+    EXPECT_TRUE(Referee::executeAll(in, ref, {{csv, false}}, "", out)) << out.str();
+}
+
 TEST(Rdb, AccumulateDiagnostics)
 {
     struct Case { char const* src; char const* want; };

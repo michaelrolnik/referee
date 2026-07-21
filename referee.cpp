@@ -578,20 +578,30 @@ bool    runOneTrace(JitWithSpecs&            js,
     std::size_t stateStride = sizeof(int64_t) + totalProps * sizeof(void*);
     std::vector<std::uint8_t> runStates(numStates * stateStride, 0);
 
-    // Backing storage for computed (`data x = expr`) props: one byte per state
-    // per prop, which __prepare__ fills before any requirement runs.
+    // Backing storage for computed (`data x = expr`) props, which __prepare__
+    // fills before any requirement runs. The stride is the prop's own width:
+    // it was one byte here originally, which is right for a boolean and wrong
+    // for everything else -- __prepare__ stores through a pointer typed by the
+    // expression, so an integer wrote eight bytes into a one-byte slot and
+    // trampled the seven states after it. Filling is prop-major, so every
+    // state but the last ended up holding its own low byte under its
+    // successors'.
     //
     // Each computed prop gets its own buffer rather than sharing storage
     // between props whose live ranges look disjoint. Sharing is not safe here:
     // a temporal prop reads its dependencies at *other* states, so a prop's
     // values must survive for the whole trace, not just until the next
-    // declaration that mentions it. At one byte per state per prop the memory
-    // saved would not have been worth the risk in any case.
+    // declaration that mentions it.
+    std::map<std::string, std::size_t>               computedStrides;
     std::map<std::string, std::vector<std::uint8_t>> computedBuffers;
     for (auto const& name : astModule->getPropNames())
     {
         if (astModule->isExprData(name))
-            computedBuffers[name].assign(numStates, 0);
+        {
+            auto    width           = astModule->getProp(name)->size();
+            computedStrides[name]   = width;
+            computedBuffers[name].assign(numStates * width, 0);
+        }
     }
 
     for (std::size_t si = 0; si < numStates; si++)
@@ -604,7 +614,7 @@ bool    runOneTrace(JitWithSpecs&            js,
         {
             auto const& name = astModule->getPropNames()[pi];
             void* valPtr = astModule->isExprData(name)
-                         ? static_cast<void*>(computedBuffers[name].data() + si)
+                         ? static_cast<void*>(computedBuffers[name].data() + si * computedStrides[name])
                          : const_cast<void*>(rdb.propBlob(si, csvPropIndices[name]));
             std::memcpy(statePtr + sizeof(int64_t) + pi * sizeof(void*), &valPtr, sizeof(valPtr));
         }

@@ -1,0 +1,61 @@
+# `byte` and the bitwise operators, which exist for each other: a wire protocol
+# hands you octets with fields packed inside them, and neither half is much use
+# alone.
+#
+# `byte` is a *storage* width, not a value kind. It costs one byte per element
+# in a trace row instead of eight, and every read of one widens to an integer,
+# so no arithmetic or comparison rule has to know it exists. That is why
+# `flag & 0x80` below type-checks against `integer` operands without a cast.
+#
+# Trace: two messages, framed by bits in a flag octet.
+#   bit 0  SOM      bit 1  EOM      bits 4-7  sequence number
+#   t=0    SOM seq0 | 1000 MID seq1 | 2000 MID seq2 | 3000 EOM seq3
+#   t=4000 SOM seq0 | 5000 EOM seq1
+
+type K       : enum { SOM, MID, EOM };
+data k       : K;
+data flag    : byte;
+data payload : byte[];
+
+# ── A byte reads as an integer, and can only hold what a byte holds ──────────
+G(flag >= 0);
+G(flag <= 255);
+G(flag + 1 > flag);
+all b in payload: b >= 0 && b <= 255;
+
+# ── Extracting fields from the flag octet ────────────────────────────────────
+# This is the requirement that was not expressible before: the framing lives in
+# individual bits, and reaching them by division and remainder was the only
+# way to say it.
+G(k.SOM <=> (flag & 0x01) != 0);
+G(k.EOM <=> (flag & 0x02) != 0);
+G(k.MID <=> (flag & 0x03) == 0);
+
+# The sequence number occupies the top nibble. `>>` binds tighter than `==`,
+# as in C, so the parentheses around the shift are not needed.
+G(flag >> 4 <= 3);
+G(__time__ == 2000 => flag >> 4 == 2);
+G((flag & 0xF0) >> 4 == flag / 16);
+
+# Setting and clearing bits round-trips. The outer parentheses are required:
+# `&` binds looser than `==` in C, and REF follows it, so dropping them reads
+# as `flag & (~0x08 == flag)` -- which C accepts and quietly computes something
+# else, and REF rejects, because `==` yields a boolean and `&` wants integers.
+G(((flag | 0x08) & ~0x08) == flag);
+
+# ── Whole-payload reasoning ──────────────────────────────────────────────────
+G(payload.count == 4);
+
+# A running xor over the payload -- the shape a checksum takes on the wire.
+data xorsum = payload[0] ^ payload[1] ^ payload[2] ^ payload[3];
+G(xorsum >= 0 && xorsum <= 255);
+G(__time__ == 0    => xorsum == 0x22);      # DE^AD^BE^EF
+G(__time__ == 4000 => xorsum == 0x00);      # AA^55^AA^55
+
+# ── Bytes accumulate like any other number ───────────────────────────────────
+Sum(true, payload[0]) == 664;               # DE+01+10+FF+AA+00
+Cnt((flag & 0x01) != 0) == 2;               # two messages start
+Sum(k.EOM, flag >> 4) == 4;                 # 3 + 1
+
+# ── `^` does double duty, as in C, since there is no `^^` ────────────────────
+G(k.SOM ^ k.MID ^ k.EOM);                   # exactly one kind holds

@@ -1,0 +1,47 @@
+# Computed props (`data x = expr`) of every width.
+#
+# Regression: the backing buffer for a computed prop was allocated one byte
+# per state, which is right for a boolean and wrong for everything else.
+# __prepare__ stores through a pointer typed by the expression, so an integer
+# wrote eight bytes into a one-byte slot and trampled the seven states after
+# it. Because filling is prop-major and ascending, each store overwrote the
+# previous one's spill: every state but the last held its own low byte with
+# its successors' low bytes stacked above it. `x % 256` was therefore correct
+# everywhere, which is why nothing noticed -- and only booleans were tested.
+#
+# Trace: i = 5..9, r = 1.5..5.5, a alternating from true.
+
+data i : integer;
+data r : number;
+data a : boolean;
+
+data ii = i + 1;            #  integer  -- 8 bytes
+data rr = r * 2.0;          #  number   -- 8 bytes
+data aa = !a;               #  boolean  -- 1 byte, the case that always worked
+
+# The value must be right at *every* state, not just the last one. The
+# unbounded G is what the old code failed: the final state alone was correct.
+G(ii == i + 1);
+G(rr == r * 2.0);
+G(aa == !a);
+
+# Pinned values, so a wrong-but-consistent buffer cannot pass either.
+G(__time__ == 0    => ii == 6);
+G(__time__ == 1000 => ii == 7);
+G(__time__ == 4000 => ii == 10);
+G(__time__ == 0    => rr == 3.0);
+G(__time__ == 4000 => rr == 11.0);
+
+# Neighbouring props must not have been trampled by each other's stores.
+G(ii + 1 == i + 2);
+G(rr > 0.0);
+
+# A computed prop built from another computed prop, and one read at a state
+# other than the current one -- both depend on the whole buffer being intact.
+data i2 = ii * 2;
+G(i2 == (i + 1) * 2);
+Sum(true, ii) == 40;                #  6 + 7 + 8 + 9 + 10
+Sum(true, rr) == 35.0;              #  3 + 5 + 7 + 9 + 11
+Cnt(aa) == 2;
+F(ii == 10);
+G(ii == 6 => F(ii == 10));
