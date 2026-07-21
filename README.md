@@ -27,6 +27,7 @@ In short: Referee connects human-readable requirement intent to executable verif
 
 **What is missing**
 
+- **Ahead-of-time compiled checkers.** Every run compiles the specification from scratch, so CI and deployed checking pay for a compile they do not need, and shipping a checker means shipping LLVM. `referee build spec.ref -o checker` producing a native executable is designed in `docs/native-checkers.md`; the runtime half of the codebase already has no LLVM or ANTLR dependency, and the `.rdb` layout is already the contract the compiled code consumes.
 - **Streaming / online ingestion.** `referee execute` currently materialises the whole trace before invoking the JIT functions (CSV/YAML are parsed top-to-bottom into per-state blobs; `.rdb` is read into a single buffer). A streaming driver that feeds records to the JIT-compiled requirement functions as they arrive (and reports violation locations live) is not implemented yet — the on-disk `.rdb` layout is already mmap-friendly, so this is a Reader-side change rather than a format change.
 - **A language server.** The editor plugin does highlighting only, so there are no in-editor diagnostics, completion, hover or go-to-definition — errors still come from running `referee compile`. The compiler already produces positioned diagnostics (`file:row:col`), so the missing piece is the LSP plumbing rather than the analysis.
 - **Product-specific model exporters/importers** to adapt arbitrary system logs into the canonical trace format.
