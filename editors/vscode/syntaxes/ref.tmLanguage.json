@@ -133,8 +133,9 @@
           "match": "\\b(H|O|Ys|Yw|Ss|Sw|Ts|Tw)\\b(?=\\s*[\\(\\[])"
         },
         {
-          "name": "keyword.operator.temporal.integral.ref",
-          "match": "\\bI\\b(?=\\s*[\\(\\[])"
+          "name": "keyword.operator.temporal.accumulate.ref",
+          "match": "\\b(Itg|Sum|Cnt)\\b(?=\\s*[\\(\\[])",
+          "comment": "Accumulators: Itg integrates over time, Sum and Cnt over records"
         }
       ]
     },

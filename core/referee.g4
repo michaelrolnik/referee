@@ -173,8 +173,15 @@ expression  : sign? integer                                     # ExprConst
             | 'Ts' time? '(' expression ',' expression ')'      # ExprTs
             | 'Tw' time? '(' expression ',' expression ')'      # ExprTw
 
-            | 'I'  time? '(' expression ',' expression ')'      # ExprInt
-            | 'I'  time? '(' expression ')'                     # ExprInt
+            //  The three accumulators, named as a family: Int integrates a
+            //  value over time, Sum totals it over records, Cnt counts them.
+            | 'Itg' time? '(' expression ',' expression ')'     # ExprInt
+            | 'Itg' time? '(' expression ')'                    # ExprInt
+
+            //  Discrete accumulation up to a stopping condition, where I
+            //  integrates over a time window. Cnt is Sum with an indicator.
+            | 'Sum' time? '(' expression ',' expression ')'     # ExprSum
+            | 'Cnt' time? '(' expression ',' expression ')'     # ExprCnt
 
             | '(' expression ')'                                # ExprParen
 

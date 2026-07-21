@@ -114,6 +114,8 @@ public:
     std::any visitExprImp(      referee::refereeParser::ExprImpContext*     ctx) override;
     std::any visitExprIndx(     referee::refereeParser::ExprIndxContext*    ctx) override;
     std::any visitExprInt(      referee::refereeParser::ExprIntContext*     ctx) override;
+    std::any visitExprSum(      referee::refereeParser::ExprSumContext*     ctx) override;
+    std::any visitExprCnt(      referee::refereeParser::ExprCntContext*     ctx) override;
     std::any visitInteger(      referee::refereeParser::IntegerContext*     ctx) override;
     std::any visitExprLe(       referee::refereeParser::ExprLeContext*      ctx) override;
     std::any visitExprLt(       referee::refereeParser::ExprLtContext*      ctx) override;

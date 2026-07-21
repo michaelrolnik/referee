@@ -244,6 +244,7 @@ struct CompileExprImpl
              , ExprGt
              , ExprIndx
              , ExprInt
+             , ExprSum
              , ExprLe
              , ExprLt
              , ExprMmbr
@@ -302,6 +303,7 @@ struct CompileExprImpl
     void    visit(ExprGt*           expr) override;
     void    visit(ExprIndx*         expr) override;
     void    visit(ExprInt*          expr) override;
+    void    visit(ExprSum*          expr) override;
     void    visit(ExprLe*           expr) override;
     void    visit(ExprLt*           expr) override;
     void    visit(ExprMmbr*         expr) override;
@@ -891,6 +893,103 @@ llvm::Value*    CompileExprImpl::sub(llvm::Value* lhs, llvm::Value* rhs, std::st
     }
 
     return  m_builder->CreateFSub(lhs, rhs, name);
+}
+
+
+//  Sum(v, q): total `v` across the states from here up to, but not including,
+//  the first where `q` holds. Where ExprInt weights each step by its duration,
+//  this counts records -- which is what a protocol's "bytes in this message"
+//  or "packets before EOM" actually means.
+//
+//  A `[lo:hi]` window, if given, restricts which records contribute and gives
+//  a second reason to stop.
+void    CompileExprImpl::visit(ExprSum*          expr)
+{
+    auto    bbHead  = llvm::BasicBlock::Create(*m_context, "Sum-head", m_function);
+    auto    bbStop  = llvm::BasicBlock::Create(*m_context, "Sum-stop", m_function);
+    auto    bbBody  = llvm::BasicBlock::Create(*m_context, "Sum-body", m_function);
+    auto    bbNext  = llvm::BasicBlock::Create(*m_context, "Sum-next", m_function);
+    auto    bbTail  = llvm::BasicBlock::Create(*m_context, "Sum-tail", m_function);
+
+    auto    curr0   = m_curr.back();
+    auto    last    = m_last.back();
+
+    llvm::Value*    timeLo  = nullptr;
+    llvm::Value*    timeHi  = nullptr;
+    auto            now     = getTime(curr0);
+
+    if(expr->time && expr->time->lo)
+        timeLo  = m_builder->CreateAdd(now, make(expr->time->lo), "now + lo");
+    if(expr->time && expr->time->hi)
+        timeHi  = m_builder->CreateAdd(now, make(expr->time->hi), "now + hi");
+
+    auto    isInt   = expr->lhs->type() == Factory<TypeInteger>::create();
+    auto    type    = isInt ? static_cast<llvm::Type*>(m_builder->getInt64Ty())
+                            : static_cast<llvm::Type*>(m_builder->getDoubleTy());
+    auto    zero    = isInt ? static_cast<llvm::Value*>(
+                                  llvm::ConstantInt::getSigned(m_builder->getInt64Ty(), 0))
+                            : static_cast<llvm::Value*>(
+                                  llvm::ConstantFP::get(m_builder->getDoubleTy(), 0.0));
+
+    auto    bbEntry = m_builder->GetInsertBlock();
+    m_builder->CreateBr(bbHead);
+
+    //  head -- stop at the end of the trace, or once the window closes.
+    m_builder->SetInsertPoint(bbHead);
+    auto    total   = m_builder->CreatePHI(type, 2, "total");
+    auto    curr    = m_builder->CreatePHI(curr0->getType(), 2, "curr");
+    auto    cont    = m_builder->CreateICmpSLT(curr, last, "curr < last");
+    if(timeHi)
+    {
+        auto    currT = getTime(curr, "curr->__time__");
+        cont = m_builder->CreateAnd(cont,
+                    m_builder->CreateICmpSLT(currT, timeHi, "currT < timeHi"));
+    }
+    m_builder->CreateCondBr(cont, bbStop, bbTail);
+
+    //  stop -- the accumulation is bounded by a condition, not only by time.
+    m_builder->SetInsertPoint(bbStop);
+    m_curr.push_back(curr);
+    auto    until   = make(expr->rhs);
+    m_curr.pop_back();
+    auto    bbStopEnd = m_builder->GetInsertBlock();
+    m_builder->CreateCondBr(until, bbTail, bbBody);
+
+    //  body -- contribute, unless the record sits before the window opens.
+    m_builder->SetInsertPoint(bbBody);
+    m_curr.push_back(curr);
+    auto    value   = make(expr->lhs);
+    m_curr.pop_back();
+
+    llvm::Value*    contrib = value;
+    if(timeLo)
+    {
+        auto    currT = getTime(curr, "curr->__time__");
+        contrib = m_builder->CreateSelect(
+                    m_builder->CreateICmpSGE(currT, timeLo, "currT >= timeLo"),
+                    value, zero, "contrib");
+    }
+    auto    grown   = add(total, contrib, "total'");
+    auto    bbBodyEnd = m_builder->GetInsertBlock();
+    m_builder->CreateBr(bbNext);
+
+    //  next
+    m_builder->SetInsertPoint(bbNext);
+    auto    currNext = getNext(curr);
+    m_builder->CreateBr(bbHead);
+
+    total->addIncoming(zero,  bbEntry);
+    total->addIncoming(grown, bbNext);
+    curr->addIncoming(curr0,    bbEntry);
+    curr->addIncoming(currNext, bbNext);
+
+    //  tail
+    m_builder->SetInsertPoint(bbTail);
+    auto    result  = m_builder->CreatePHI(type, 2, "sum");
+    result->addIncoming(total, bbHead);
+    result->addIncoming(total, bbStopEnd);
+
+    m_value = result;
 }
 
 void    CompileExprImpl::visit(ExprInt*          expr)

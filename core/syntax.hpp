@@ -434,6 +434,12 @@ using ExprTs    = Final<SetOper<'Ts',  Temporal<ExprBinary>>>;
 using ExprTw    = Final<SetOper<'Tw',  Temporal<ExprBinary>>>;
 using ExprInt   = Final<SetOper<'I',   Temporal<ExprBinary>>>;
 
+//  Discrete accumulation over records, where ExprInt integrates over time.
+//  `Sum(v, q)` totals `v` across the states from here up to, but not
+//  including, the first where `q` holds. Counting is the same operator with an
+//  indicator body, which Antlr2AST builds for `Cnt`.
+using ExprSum   = Final<SetOper<'Sum', Temporal<ExprBinary>>>;
+
 class ExprAt final
     : public Visitable<SetOper<'@', ExprUnary>, ExprAt>
 {

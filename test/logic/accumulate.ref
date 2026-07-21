@@ -1,0 +1,41 @@
+# Discrete accumulation over records, bounded by a condition.
+#
+#   Itg(c, v)  integrates v over *time* where c holds        (existing)
+#   Sum(v, q)  totals v over *records*, until q holds        (new)
+#   Cnt(p, q)  counts records where p holds, until q holds   (new)
+#
+# The distinction matters: Itg weights each step by its duration, which is
+# right for "how long was the valve open" and wrong for "how many bytes were
+# in this message". A protocol's message-length and packet-count limits are
+# discrete, and were not expressible before.
+#
+# Trace: an MCTP-shaped pair of messages.
+#   t=0    SOM len=10 | 1000 MID 20 | 2000 MID 30 | 3000 MID 40 | 4000 EOM 5
+#   t=5000 SOM len=7  | 6000 MID  8 | 7000 EOM  1
+
+type K   : enum { SOM, MID, EOM };
+data k   : K;
+data len : integer;
+
+# ── Bounded by a condition ───────────────────────────────────────────────────
+# Accumulation starts at the current record and stops *before* the first
+# record satisfying the bound.
+G(k.SOM => Cnt(k.MID, k.EOM) <= 8);         # packets per message
+G(k.SOM => Sum(len,   k.EOM) <= 4096);      # bytes per message
+
+# Exact values for the first message, where the SOM record itself contributes.
+Cnt(k.MID, k.EOM) == 3;
+Sum(len,   k.EOM) == 100;                   # 10 + 20 + 30 + 40
+Cnt(true,  k.EOM) == 4;                     # records before the EOM
+
+# ── Unbounded: `false` never stops, so it runs to the end of the trace ───────
+Cnt(k.SOM, false) == 2;                     # two messages in the trace
+Cnt(k.EOM, false) == 2;
+Sum(len,   false) == 121;                   # every len in the trace
+
+# ── Time-bounded, reusing the existing [lo:hi] ───────────────────────────────
+Cnt[0:2500](k.MID, false) == 2;
+Sum[0:2500](len,   false) == 60;            # 10 + 20 + 30
+
+# ── Cnt is Sum over an indicator, so they agree ──────────────────────────────
+G(Cnt(k.MID, k.EOM) == Sum(k.MID ? 1 : 0, k.EOM));

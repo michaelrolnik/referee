@@ -659,6 +659,33 @@ std::any Antlr2AST::visitExprIndx(      referee::refereeParser::ExprIndxContext*
     return acceptBinary<ExprIndx>(ctx);
 }
 
+//  Sum(v, q): total `v` over the states from here until `q` holds.
+std::any Antlr2AST::visitExprSum(      referee::refereeParser::ExprSumContext*     ctx)
+{
+    return acceptTemporalBinary<ExprSum>(ctx);
+}
+
+//  Cnt(p, q): how many states satisfy `p` before `q` holds. Built as a Sum
+//  over an indicator, so there is one accumulation loop rather than two --
+//  the same trick the quantifiers' counting forms use.
+std::any Antlr2AST::visitExprCnt(      referee::refereeParser::ExprCntContext*     ctx)
+{
+    auto    cond    = std::any_cast<Expr*>(ctx->expression(0)->accept(this));
+    auto    until   = std::any_cast<Expr*>(ctx->expression(1)->accept(this));
+
+    auto    unit    = static_cast<Expr*>(build<ExprConstInteger>(ctx, 1));
+    auto    zero    = static_cast<Expr*>(build<ExprConstInteger>(ctx, 0));
+    auto    indic   = static_cast<Expr*>(build<ExprChoice>(ctx, cond, unit, zero));
+
+    if(ctx->time())
+    {
+        auto    time = std::any_cast<Time*>(ctx->time()->accept(this));
+        return  static_cast<Expr*>(build<ExprSum>(ctx, time, indic, until));
+    }
+
+    return  static_cast<Expr*>(build<ExprSum>(ctx, indic, until));
+}
+
 std::any Antlr2AST::visitExprInt(       referee::refereeParser::ExprIntContext*     ctx)
 {
     std::any    lhs;

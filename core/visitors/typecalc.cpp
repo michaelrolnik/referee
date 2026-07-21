@@ -40,6 +40,7 @@ struct TypeCalcImpl
              , ExprMmbr
              , ExprIndx
              , ExprInt
+             , ExprSum
              , ExprEq
              , ExprNe
              , ExprGt
@@ -123,6 +124,7 @@ struct TypeCalcImpl
     void    visit(ExprMmbr*             expr) override;
     void    visit(ExprIndx*             expr) override;
     void    visit(ExprInt*              expr) override;
+    void    visit(ExprSum*              expr) override;
     void    visit(ExprMod*              expr) override;
     void    visit(ExprMul*              expr) override;
     void    visit(ExprNe*               expr) override;
@@ -339,6 +341,25 @@ void    TypeCalcImpl::visit(ExprMmbr*               expr)
 //  GCOV_EXCL_STOP
 //  LCOV_EXCL_STOP
     }
+}
+
+//  Sum(v, q): `v` is what accumulates and must be numeric; `q` says when to
+//  stop and must be boolean. The result carries `v`'s type, so summing
+//  integers stays integral.
+void    TypeCalcImpl::visit(ExprSum*              expr)
+{
+    safe(expr->time);
+
+    auto    lhs = make(expr->lhs);
+    auto    rhs = make(expr->rhs);
+
+    if(!isNumeric(lhs))
+        throw Exception(expr->lhs->where(), "bad type: Sum accumulates a number");
+
+    if(rhs != typeBoolean)
+        throw Exception(expr->rhs->where(), "bad type: Sum stops on a condition");
+
+    m_type = lhs;
 }
 
 void    TypeCalcImpl::visit(ExprInt*              expr)

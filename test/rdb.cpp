@@ -644,6 +644,47 @@ TEST(Rdb, Quantifiers)
     std::remove(rdbPath.c_str());
 }
 
+// Discrete accumulation over records, bounded by a condition: Sum totals a
+// value and Cnt counts records, where the existing Itg integrates over time.
+// The distinction is what a protocol needs -- "bytes in this message" is a
+// count of records, not a duration-weighted quantity.
+TEST(Rdb, AccumulateOverRecords)
+{
+    auto    ref = std::string(REFEREE_TEST_DATA_DIR) + "/accumulate.ref";
+    auto    csv = std::string(REFEREE_TEST_DATA_DIR) + "/accumulate.csv";
+
+    std::ifstream       in(ref);
+    std::ostringstream  out;
+    EXPECT_TRUE(Referee::executeAll(in, ref, {{csv, false}}, "", out)) << out.str();
+}
+
+TEST(Rdb, AccumulateDiagnostics)
+{
+    struct Case { char const* src; char const* want; };
+
+    Case    cases[] = {
+        // what accumulates must be numeric
+        {"data a : boolean;\nSum(a, a) == 0;\n",            "accumulates a number"},
+        // what stops it must be boolean
+        {"data i : integer;\nSum(i, i) == 0;\n",            "stops on a condition"},
+    };
+
+    int     n = 0;
+    for (auto const& c : cases)
+    {
+        std::istringstream  src(c.src);
+        try
+        {
+            Referee::parseSchema(src, "<acc" + std::to_string(n++) + ">");
+            ADD_FAILURE() << "expected a rejection for: " << c.src;
+        }
+        catch (std::exception const& e)
+        {
+            EXPECT_NE(std::string(e.what()).find(c.want), std::string::npos) << e.what();
+        }
+    }
+}
+
 // An array declared `T[]` takes its extent from the trace. The same
 // specification must therefore hold against traces of different sizes, which
 // is the point of leaving the extent out.

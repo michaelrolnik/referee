@@ -280,9 +280,20 @@ Temporal operators come in both **future** and **past** flavours, and most come 
 | `Xs(p)` / `Xw(p)` | `Ys(p)` / `Yw(p)` | strong/weak next / yesterday |
 | `Us(p, q)` / `Uw(p, q)` | `Ss(p, q)` / `Sw(p, q)` | strong/weak until / since |
 | `Rs(p, q)` / `Rw(p, q)` | `Ts(p, q)` / `Tw(p, q)` | strong/weak release / triggered |
-| `I(v)` / `I(c, v)` | — | integral of a **numeric** signal `v` over time; the two-argument form integrates `v` only while the boolean `c` holds |
+| `Itg(v)` / `Itg(c, v)` | — | **integral** over time of a numeric `v`; the two-argument form integrates only while boolean `c` holds |
+| `Sum(v, q)` | — | **total** of numeric `v` over records, from here until `q` holds |
+| `Cnt(p, q)` | — | **count** of records where `p` holds, from here until `q` holds |
 
 All temporal operators optionally accept a **time bound** `[lo:hi]`, `[:hi]`, or `[lo:]`, giving MTL-style bounded versions such as `G[100:1000](a)` or `Us[1:3](alpha, beta)`.
+
+`Itg` weights each step by its duration; `Sum` and `Cnt` count records. The distinction is the difference between "how long was the valve open" and "how many bytes were in this message" — the second is discrete, and the accumulation stops at a *condition* rather than a time:
+
+```text
+G(k.SOM => Cnt(k.MID, k.EOM) <= 8);        // at most 8 packets per message
+G(k.SOM => Sum(len,   k.EOM) <= 4096);     // and at most 4096 bytes
+```
+
+Accumulation starts at the current record and stops *before* the first record satisfying the bound. `false` never stops it, so it runs to the end of the trace. `Cnt(p, q)` is `Sum(p ? 1 : 0, q)`, and all three accept a `[lo:hi]` window like every other temporal operator.
 
 A **freeze variable** `name@(... expression ...)` binds the current state to `name`, so subexpressions can reference data at that frozen point — e.g. `x@(F(x.abc.a == 3))` means "there is a future state whose `abc.a` equals the value `abc.a` had at the freeze point". A special `__time__` identifier refers to the current timestamp.
 

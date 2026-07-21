@@ -54,6 +54,7 @@ struct RewriteImpl
              , ExprImp
              , ExprIndx
              , ExprInt
+             , ExprSum
              , ExprLe
              , ExprLt
              , ExprMmbr
@@ -128,6 +129,7 @@ public:
     void    visit(ExprImp*          expr) override;
     void    visit(ExprIndx*         expr) override;
     void    visit(ExprInt*          expr) override;
+    void    visit(ExprSum*          expr) override;
     void    visit(ExprLe*           expr) override;
     void    visit(ExprLt*           expr) override;
     void    visit(ExprMmbr*         expr) override;
@@ -359,6 +361,25 @@ void    RewriteImpl::visit( ExprIndx*           expr)
         expr->where(),
         make(expr->lhs),
         make(expr->rhs));
+}
+
+void    RewriteImpl::visit( ExprSum*            expr)
+{
+    if(expr->time)
+    {
+        m_expr =  Factory<ExprSum>::create(
+            expr->where(),
+            make(expr->time),
+            make(expr->lhs),
+            make(expr->rhs));
+    }
+    else
+    {
+        m_expr =  Factory<ExprSum>::create(
+            expr->where(),
+            make(expr->lhs),
+            make(expr->rhs));
+    }
 }
 
 void    RewriteImpl::visit( ExprInt*            expr)
