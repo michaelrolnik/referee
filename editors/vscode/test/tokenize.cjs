@@ -60,6 +60,14 @@ const expectations = process.argv[3] ? JSON.parse(process.argv[3]) : [
   ['||', 'keyword.operator.logical'],
   ['<=', 'keyword.operator.comparison'],
   ['true', 'constant.language.boolean'],
+  ['all', 'keyword.control.quantifier'],
+  ['some', 'keyword.control.quantifier'],
+  ['none', 'keyword.control.quantifier'],
+  ['one', 'keyword.control.quantifier'],
+  ['most', 'keyword.control.quantifier'],
+  ['at', 'keyword.control.pattern'],
+  ['least', 'keyword.control.pattern'],
+  ['in', 'keyword.control.pattern'],
 ];
 const found = new Map();
 

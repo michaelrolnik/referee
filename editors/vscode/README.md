@@ -17,6 +17,7 @@ Dwyer specification-pattern vocabulary.
   `Sw` `Rs` `Rw` `Ts` `Tw` `I`, future and past scoped separately so a theme can
   colour them differently. Each only highlights when followed by `(` or a `[`
   time bound, so a capital letter elsewhere is left alone.
+- **Quantifiers** — `all`, `some`, `none`, `one`, and the `at least` / `at most` forms, scoped separately from the pattern vocabulary.
 - **Specification patterns** — scope words (`globally`, `before`, `after`,
   `while`, `between`, `until`) separately from the rest of the vocabulary
   (`holds`, `eventually`, `once`, `remains`, …). These are *reserved*, so seeing

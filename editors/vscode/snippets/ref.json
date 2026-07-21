@@ -38,7 +38,6 @@
     ],
     "description": "Declare a structure"
   },
-
   "globally always": {
     "prefix": "globally-always",
     "body": "globally, it is always the case that ${1:P} holds;",
@@ -79,7 +78,6 @@
     "body": "after ${1:P} until ${2:Q}, it is always the case that ${3:R} holds;",
     "description": "After-until scope"
   },
-
   "globally G": {
     "prefix": "G",
     "body": "G(${1:P});",
@@ -109,5 +107,40 @@
     "prefix": "freeze",
     "body": "${1:t}@(${2:F(alarm && (__time__ - ${1:t}.__time__ <= 5))})",
     "description": "Freeze the current state and refer back to it"
+  },
+  "all": {
+    "prefix": "all",
+    "body": "all ${1:x} in ${2:xs}: ${3:P};",
+    "description": "Every element satisfies the body"
+  },
+  "some": {
+    "prefix": "some",
+    "body": "some ${1:x} in ${2:xs}: ${3:P};",
+    "description": "At least one element satisfies the body"
+  },
+  "none": {
+    "prefix": "none",
+    "body": "none ${1:x} in ${2:xs}: ${3:P};",
+    "description": "No element satisfies the body"
+  },
+  "one": {
+    "prefix": "one",
+    "body": "one ${1:x} in ${2:xs}: ${3:P};",
+    "description": "Exactly one element satisfies the body"
+  },
+  "at least": {
+    "prefix": "atleast",
+    "body": "at least ${1:2} ${2:x} in ${3:xs}: ${4:P};",
+    "description": "At least N elements satisfy the body"
+  },
+  "at most": {
+    "prefix": "atmost",
+    "body": "at most ${1:2} ${2:x} in ${3:xs}: ${4:P};",
+    "description": "At most N elements satisfy the body"
+  },
+  "all indexed": {
+    "prefix": "alli",
+    "body": "all ${1:x}, ${2:i} in ${3:xs}: ${4:P};",
+    "description": "Quantify with both element and index"
   }
 }
