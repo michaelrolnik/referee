@@ -449,6 +449,15 @@ std::any Antlr2AST::visitExprQuant(     referee::refereeParser::ExprQuantContext
             return static_cast<Expr*>(build<ExprOr>(ctx, a, b)); });
     }
 
+    //  The dual of `some`: negate the disjunction rather than conjoin n
+    //  negations, which is the same answer for one node instead of n.
+    if(dynamic_cast<referee::refereeParser::QuantNoneContext*>(quant))
+    {
+        auto    any = fold([&](Expr* a, Expr* b) {
+            return static_cast<Expr*>(build<ExprOr>(ctx, a, b)); });
+        return static_cast<Expr*>(build<ExprNot>(ctx, any));
+    }
+
     //  The counting forms sum one indicator per element and compare. That is
     //  linear in the element count, where expanding over k-subsets would be
     //  combinatorial, and it needs no node types the language lacks.

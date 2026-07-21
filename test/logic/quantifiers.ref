@@ -16,6 +16,16 @@ all  x in v: x > 0;
 some x in v: x > 3;
 !(some x in v: x > 9);
 
+# ── none: the dual of some, and worth its own word for the same reason the
+#    Dwyer patterns give "it is never the case that" one ──────────────────────
+none x in v: x > 9;
+!(none x in v: x > 3);
+
+# It agrees with each of the three ways it could otherwise be written.
+(none x in v: x > 2) == !(some x in v: x > 2);
+(none x in v: x > 2) == (at most 0 x in v: x > 2);
+(none x in v: x > 2) == (all x in v: !(x > 2));
+
 # ── one: exactly one element satisfies the body ──────────────────────────────
 one x in v: x == 3;
 !(one x in v: x > 2);           # two of them do

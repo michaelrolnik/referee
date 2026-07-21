@@ -127,7 +127,7 @@
         {
           "comment": "Bounded quantifiers over array elements",
           "name": "keyword.control.quantifier.ref",
-          "match": "\\b(all|some|one|most)\\b"
+          "match": "\\b(all|some|none|one|most)\\b"
         },
         {
           "name": "keyword.control.pattern.scope.ref",

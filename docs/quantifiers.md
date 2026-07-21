@@ -1,7 +1,7 @@
 # Design: bounded quantifiers over arrays
 
-**Status:** implemented, except where noted. `all` / `some` / `one` and `at least N` / `at most N` are in; the array-size pseudo-member and everything under *arrays whose size is not in the `.ref`* are not.
-**Scope:** `all` / `some` / `one`, plus `at least N` / `at most N`, quantifying over the elements of an array.
+**Status:** implemented, except where noted. `all` / `some` / `none` / `one` and `at least N` / `at most N` are in; the array-size pseudo-member and everything under *arrays whose size is not in the `.ref`* are not.
+**Scope:** `all` / `some` / `none` / `one`, plus `at least N` / `at most N`, quantifying over the elements of an array.
 
 ## The problem
 
@@ -34,6 +34,7 @@ quantifier  : quant ID (',' ID)? 'in' expression ':' expression
             ;
 quant       : 'all'
             | 'some'
+            | 'none'
             | 'one'
             | 'at' 'least' integer
             | 'at' 'most'  integer
@@ -54,7 +55,7 @@ The body extends maximally — to the enclosing `)` or the terminating `;` — a
 
 `all` / `some` rather than `forall` / `exists`. The language's stated audience is people who own the requirements rather than programmers, and its house style is the Dwyer patterns' near-English. `all limit in limits` reads like that; `forall` reads like logic notation.
 
-Cost: two new reserved words. `in`, `at` and `least` are **already reserved**, so the counting forms add none.
+Cost: four new reserved words (`all`, `some`, `none`, `one`). `in`, `at` and `least` are **already reserved**, so the counting forms add none.
 
 ### Binder forms
 
@@ -91,11 +92,12 @@ Each form is defined by expansion over the array's `count`, which is known by th
 | --- | --- |
 | `all x in xs: P` | `P(xs[0]) && P(xs[1]) && … && P(xs[n-1])` |
 | `some x in xs: P` | `P(xs[0]) \|\| … \|\| P(xs[n-1])` |
+| `none x in xs: P` | `!(P(xs[0]) \|\| … \|\| P(xs[n-1]))` |
 | `one x in xs: P` | exactly one disjunct true — the pairwise-exclusive expansion |
 | `at least k …` | `(P₀ ? 1 : 0) + … + (Pₙ₋₁ ? 1 : 0) >= k` |
 | `at most k …` | the same sum, `<= k` |
 
-`one` is sugar: `at least 1 && at most 1`. It is kept because "exactly one" is common enough in safety requirements to deserve reading well.
+`one` is sugar for `at least 1 && at most 1`, and `none` for `at most 0`. Both are kept for the reason the Dwyer patterns give "it is never the case that P" its own phrasing rather than negating universality: the negated form is what a requirement actually says, and spelling it that way is what makes it reviewable. `none v in valves: v.stuck` reads as the requirement; `!(some v in valves: v.stuck)` reads as its encoding.
 
 An empty array (`n = 0`) gives `all` = true, `some` = false, following the usual vacuous-truth convention.
 

@@ -45,6 +45,7 @@ declImport  : 'import' string
 
 quant       : all                                   # QuantAll
             | some                                  # QuantSome
+            | none                                  # QuantNone
             | one                                   # QuantOne
             | at least integer                      # QuantAtLeast
             | at most  integer                      # QuantAtMost
@@ -217,6 +218,7 @@ nanoseconds     : 'nanoseconds'     ;
 never           : 'never'           ;
 all             : 'all'             ;
 some            : 'some'            ;
+none            : 'none'            ;
 one             : 'one'             ;
 most            : 'most'            ;
 occured         : 'occured'         ;

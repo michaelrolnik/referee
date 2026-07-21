@@ -14,7 +14,7 @@ In short: Referee connects human-readable requirement intent to executable verif
 - A typed AST and a set of semantic visitors (`canonic`, `negated`, `rewrite`, `typecalc`, `printer`, `csvHeaders`).
 - Lowering of temporal formulas (LTL/TPTL/MTL-flavoured, including strong/weak next `Xs`/`Xw`, bounded until/release, freeze variables, past operators) to **LLVM IR**, followed by standard LLVM optimization passes. `Us`/`Uw`/`Rs`/`Rw`/`Ss`/`Sw`/`Ts`/`Tw` are lowered to linear passes over the trace rather than the naive nested scan, bounded forms included — see *Temporal lowering* below.
 - **`import`** — split a specification across files: shared definition files, or one index file pulling in a directory of small requirement files. Resolved relative to the importing file plus `-I` search paths, imported once per real path, with file-qualified requirement labels. See *Splitting a specification across files* below.
-- **Bounded quantifiers** over array elements — `all` / `some` / `one`, plus `at least N` / `at most N`. See *Quantifiers* below; the design notes are in `docs/quantifiers.md`.
+- **Bounded quantifiers** over array elements — `all` / `some` / `none` / `one`, plus `at least N` / `at most N`. See *Quantifiers* below; the design notes are in `docs/quantifiers.md`.
 - **Computed signals** (`data Name = expression;`) — named derived signals, including temporal ones, evaluated once per state for the whole trace by a generated `__prepare__` pass and then read like any other signal. See *Computed signals* below.
 - A JIT-based test harness (`test/logic.cpp`) that compiles REF files, JITs them against a synthetic trace (`state_t[]` + `conf_t`), and asserts that each requirement evaluates to `true` (pass) or `false` (fail) over that trace. See `test/logic/pass.ref` and `test/logic/fail.ref` for the intended execution model.
 - A CLI with two subcommands:
@@ -120,6 +120,7 @@ data limits : integer[4];
 
 all limit in limits: limit < max;       // every element
 some limit in limits: limit < max;      // at least one
+none limit in limits: limit < max;      // not any
 one  limit in limits: limit < max;      // exactly one
 at least 2 limit in limits: limit < max;
 at most  2 limit in limits: limit < max;
