@@ -945,17 +945,13 @@ void    CompileExprImpl::visit(ExprSum*          expr)
         cont = m_builder->CreateAnd(cont,
                     m_builder->CreateICmpSLT(currT, timeHi, "currT < timeHi"));
     }
-    m_builder->CreateCondBr(cont, bbStop, bbTail);
-
-    //  stop -- the accumulation is bounded by a condition, not only by time.
-    m_builder->SetInsertPoint(bbStop);
-    m_curr.push_back(curr);
-    auto    until   = make(expr->rhs);
-    m_curr.pop_back();
-    auto    bbStopEnd = m_builder->GetInsertBlock();
-    m_builder->CreateCondBr(until, bbTail, bbBody);
+    m_builder->CreateCondBr(cont, bbBody, bbTail);
 
     //  body -- contribute, unless the record sits before the window opens.
+    //  The record satisfying the bound contributes *before* the loop ends:
+    //  a message runs from its SOM to its EOM inclusive, and the EOM packet
+    //  carries payload like any other. Excluding it would also make a
+    //  single-record message, where SOM and EOM coincide, total zero.
     m_builder->SetInsertPoint(bbBody);
     m_curr.push_back(curr);
     auto    value   = make(expr->lhs);
@@ -970,8 +966,15 @@ void    CompileExprImpl::visit(ExprSum*          expr)
                     value, zero, "contrib");
     }
     auto    grown   = add(total, contrib, "total'");
-    auto    bbBodyEnd = m_builder->GetInsertBlock();
-    m_builder->CreateBr(bbNext);
+    m_builder->CreateBr(bbStop);
+
+    //  stop -- checked after contributing, so the bound is inclusive.
+    m_builder->SetInsertPoint(bbStop);
+    m_curr.push_back(curr);
+    auto    until   = make(expr->rhs);
+    m_curr.pop_back();
+    auto    bbStopEnd = m_builder->GetInsertBlock();
+    m_builder->CreateCondBr(until, bbTail, bbNext);
 
     //  next
     m_builder->SetInsertPoint(bbNext);
@@ -987,7 +990,7 @@ void    CompileExprImpl::visit(ExprSum*          expr)
     m_builder->SetInsertPoint(bbTail);
     auto    result  = m_builder->CreatePHI(type, 2, "sum");
     result->addIncoming(total, bbHead);
-    result->addIncoming(total, bbStopEnd);
+    result->addIncoming(grown, bbStopEnd);
 
     m_value = result;
 }

@@ -293,7 +293,7 @@ G(k.SOM => Cnt(k.MID, k.EOM) <= 8);        // at most 8 packets per message
 G(k.SOM => Sum(len,   k.EOM) <= 4096);     // and at most 4096 bytes
 ```
 
-Accumulation starts at the current record and stops *before* the first record satisfying the bound. `false` never stops it, so it runs to the end of the trace. `Cnt(p, q)` is `Sum(p ? 1 : 0, q)`, and all three accept a `[lo:hi]` window like every other temporal operator.
+Accumulation starts at the current record and **includes** the first record satisfying the bound — a message runs from its SOM to its EOM inclusive, and the EOM packet carries payload like any other. Excluding it would also make a single-record message, where the bound holds immediately, total zero. `false` never stops it, so it runs to the end of the trace. `Cnt(p, q)` is `Sum(p ? 1 : 0, q)`, and all three accept a `[lo:hi]` window like every other temporal operator.
 
 A **freeze variable** `name@(... expression ...)` binds the current state to `name`, so subexpressions can reference data at that frozen point — e.g. `x@(F(x.abc.a == 3))` means "there is a future state whose `abc.a` equals the value `abc.a` had at the freeze point". A special `__time__` identifier refers to the current timestamp.
 

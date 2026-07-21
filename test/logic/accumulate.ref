@@ -18,15 +18,20 @@ data k   : K;
 data len : integer;
 
 # ── Bounded by a condition ───────────────────────────────────────────────────
-# Accumulation starts at the current record and stops *before* the first
-# record satisfying the bound.
+# Accumulation starts at the current record and includes the first record
+# satisfying the bound. A message runs from its SOM to its EOM inclusive, and
+# the EOM packet carries payload like any other; excluding it would also make a
+# single-record message, where SOM and EOM coincide, total zero.
 G(k.SOM => Cnt(k.MID, k.EOM) <= 8);         # packets per message
 G(k.SOM => Sum(len,   k.EOM) <= 4096);      # bytes per message
 
-# Exact values for the first message, where the SOM record itself contributes.
-Cnt(k.MID, k.EOM) == 3;
-Sum(len,   k.EOM) == 100;                   # 10 + 20 + 30 + 40
-Cnt(true,  k.EOM) == 4;                     # records before the EOM
+# Exact values for the first message: SOM, three MIDs and the EOM.
+Cnt(k.MID, k.EOM) == 3;                     # the EOM is not a MID
+Sum(len,   k.EOM) == 105;                   # 10 + 20 + 30 + 40 + 5
+Cnt(true,  k.EOM) == 5;                     # every record of the message
+
+# A message of one record, where the bound holds immediately, still counts it.
+G(k.EOM => Cnt(true, k.EOM) == 1);
 
 # ── Unbounded: `false` never stops, so it runs to the end of the trace ───────
 Cnt(k.SOM, false) == 2;                     # two messages in the trace
