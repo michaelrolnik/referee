@@ -19,7 +19,7 @@ In short: Referee connects human-readable requirement intent to executable verif
 - A JIT-based test harness (`test/logic.cpp`) that compiles REF files, JITs them against a synthetic trace (`state_t[]` + `conf_t`), and asserts that each requirement evaluates to `true` (pass) or `false` (fail) over that trace. See `test/logic/pass.ref` and `test/logic/fail.ref` for the intended execution model.
 - A CLI with two subcommands:
   - `referee compile file.ref [-I dir]…` — emits LLVM IR for a given `.ref` file.
-  - `referee execute file.ref trace.{csv,yaml,rdb} [--conf conf.{csv,yaml}] [-I dir]…` — JIT-compiles the requirements and evaluates them against a trace, reporting `PASS`/`FAIL` per requirement (and exiting non-zero if any requirement fails). Column names in the CSV/YAML must match the layout produced by `csvHeaders` (e.g. `__time__`, `pos.x`, `limits[0]`, …); see `test/logic/data.csv` and `test/logic/conf.csv` for working examples. `.rdb` traces (see below) are read with no per-row processing — only pointer fix-up.
+  - `referee execute file.ref trace.{csv,yaml,rdb}… [--success …] [--failure …] [--conf conf.{csv,yaml}] [-v 0..2] [-I dir]…` — JIT-compiles the requirements and evaluates them against one or more traces, reporting `PASS`/`FAIL` per requirement (and exiting non-zero if any requirement fails). Several traces are compiled **once** and checked in turn; `--failure` declares traces that must be rejected. See *Checking several traces* below. Column names in the CSV/YAML must match the layout produced by `csvHeaders` (e.g. `__time__`, `pos.x`, `limits[0]`, …); see `test/logic/data.csv` and `test/logic/conf.csv` for working examples. `.rdb` traces (see below) are read with no per-row processing — only pointer fix-up.
 - An **editor plugin** (`editors/vscode/`) giving syntax highlighting, bracket/comment handling and specification-pattern snippets for `.ref` files in VS Code and its forks (Cursor, Antigravity, VSCodium). Its keyword lists are generated from `core/referee.g4` rather than hand-written, and the grammar is tested against the same TextMate engine the editors use. See *Editor support* below.
 - A companion `rdb` binary for packing CSV/YAML traces into the on-disk **RDB** format consumed directly by `referee execute`:
   - `rdb build spec.ref trace.csv [--conf conf.csv] [-I dir]… -o trace.rdb` — packs a CSV/YAML trace into a `.rdb` whose state-buffer section is byte-for-byte the layout the JIT consumes (see *Referee Database* below).
@@ -27,8 +27,6 @@ In short: Referee connects human-readable requirement intent to executable verif
 
 **What is missing**
 
-- **Checking several traces per invocation.** `referee execute` takes one trace and recompiles the specification every time. Compilation is a fixed ~700 ms for a 233-requirement spec while checking a 26-row trace is about 3 ms, so validating a hundred traces costs roughly seventy seconds where it could cost one. `buildJitFromRef` is already separate from the per-trace work, so this is a loop rather than a redesign.
-- **Trace expectations.** A specification that passes every trace it is shown may be correct or may be vacuous, and nothing distinguishes the two. `referee execute spec.ref --success good*.csv --failure bad*.csv` exiting 0 only when every trace behaves as declared is designed in `docs/trace-expectations.md`; the valuable case is the *unexpected pass*, where a trace that should be rejected no longer is because a requirement was weakened.
 - **Ahead-of-time compiled checkers.** An object file, a loadable `.so`, or a standalone executable, so a machine that validates logs needs neither LLVM nor the `.ref` sources. Designed in `docs/native-checkers.md`, which also records the measurements above — the motivation is deployment and embedding rather than speed, since most of the speed is available from the previous item.
 - **Streaming / online ingestion.** `referee execute` currently materialises the whole trace before invoking the JIT functions (CSV/YAML are parsed top-to-bottom into per-state blobs; `.rdb` is read into a single buffer). A streaming driver that feeds records to the JIT-compiled requirement functions as they arrive (and reports violation locations live) is not implemented yet — the on-disk `.rdb` layout is already mmap-friendly, so this is a Reader-side change rather than a format change.
 - **A language server.** The editor plugin does highlighting only, so there are no in-editor diagnostics, completion, hover or go-to-definition — errors still come from running `referee compile`. The compiler already produces positioned diagnostics (`file:row:col`), so the missing piece is the LSP plumbing rather than the analysis.
@@ -617,6 +615,49 @@ The general recipe is:
 > **Every row must be complete.** Values are held between samples but *not* within a row: an empty cell reads as the type's zero rather than carrying forward from the row above, and does so silently. If your source only emits a signal when it changes, expand it into full rows before handing it to Referee. See *What a trace means between samples* above — it also covers why the spacing of your samples changes what unbounded operators like `Xs` mean.
 
 > **Limitation.** The driver currently reads the entire trace into memory and runs each requirement function across the whole trace. Streaming / online evaluation (consuming records as they arrive, reporting per-violation timestamps) is on the roadmap — see the *What is missing* section above.
+
+## Checking several traces
+
+`referee execute` takes any number of traces and compiles the specification once for all of them:
+
+```bash
+referee execute spec.ref run-*.csv --conf conf.csv
+```
+
+This matters more than it sounds. Compilation is a fixed cost — roughly 700 ms for a 233-requirement specification — while checking is about 0.12 ms per trace row. Twenty small traces one invocation at a time take ~13.7 s; the same twenty in one invocation take ~1.1 s, and the gap widens with the corpus.
+
+### Declaring what a trace should do
+
+A specification that passes everything it is shown may be correct, or may be vacuous — a requirement mistyped into triviality passes exactly as convincingly as one that holds. The defence is a corpus of traces that *must* be rejected:
+
+```bash
+referee execute spec.ref \
+    --success good/nominal.csv good/restart.rdb \
+    --failure bad/stuck-valve.csv bad/late-alarm.yml
+```
+
+Traces given bare, or under `--success`, must satisfy every requirement. Traces under `--failure` must violate at least one. The run exits 0 only if every trace behaved as declared:
+
+| declared | observed | verdict |
+| --- | --- | --- |
+| `--success` | all requirements hold | ok |
+| `--success` | something violated | failure |
+| `--failure` | something violated | ok |
+| `--failure` | all requirements hold | **unexpected pass** |
+
+The last row is the one that earns the feature. A trace that was supposed to be rejected and no longer is means the specification has stopped catching what that trace demonstrates — usually because a requirement was weakened or a signal renamed. It is reported distinctly from an ordinary failure, because it means something different: not "the system misbehaved" but "the specification no longer notices".
+
+### Output detail
+
+`-v 0` prints a closing tally, `-v 1` adds a line per trace, `-v 2` adds the requirement table for every trace. Regardless of the level, a trace that did not behave as declared always shows its violated requirements, since that is what a reader needs to act on. A single trace with no expectations defaults to the full table, which is what it has always printed.
+
+```text
+good/nominal.csv      expected success  PASS  ok
+bad/stuck-valve.csv   expected failure  FAIL  ok
+bad/late-alarm.yml    expected failure  PASS  UNEXPECTED PASS
+
+3 traces: 2 ok, 1 unexpected pass
+```
 
 # Referee Database (RDB)
 

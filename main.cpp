@@ -50,6 +50,9 @@ int main(int argc, char * argv[])
     auto    addIncludeOption = [&](CLI::App* sub) {
         sub->add_option("-I,--include", includePaths,
             "Directory to search for imported .ref files (repeatable)")
+            // One directory per occurrence, as a compiler's -I does. Left
+            // greedy it would swallow the trace positionals that follow it.
+            ->allow_extra_args(false)
             ->check(CLI::ExistingDirectory);
     };
 
@@ -63,7 +66,7 @@ int main(int argc, char * argv[])
 
     // execute subcommand
     std::string runRef;
-    std::string runData;
+    std::vector<std::string> runData;
     std::string runConf;
     auto        execute = app.add_subcommand(
         "execute",
@@ -72,11 +75,30 @@ int main(int argc, char * argv[])
         ->add_option("reffile", runRef, "REF specification file")
         ->required()
         ->check(CLI::ExistingFile);
+    // Traces given bare are expected to satisfy the specification, which is
+    // what `referee execute spec.ref trace.csv` has always meant.
+    std::vector<std::string>    runSuccess;
+    std::vector<std::string>    runFailure;
+    int                         runVerbose = -1;
+
     execute
         ->add_option("datafile", runData,
-            "Trace file (.csv / .yml / .yaml / .rdb)")
-        ->required()
+            "Trace files expected to pass (.csv / .yml / .yaml / .rdb)")
         ->check(CLI::ExistingFile);
+    execute
+        ->add_option("--success", runSuccess,
+            "Traces that must satisfy the specification")
+        ->check(CLI::ExistingFile);
+    // A corpus that must be *rejected* is what keeps a specification from
+    // going vacuous; a trace here that passes is a failure of the run.
+    execute
+        ->add_option("--failure", runFailure,
+            "Traces that must violate the specification")
+        ->check(CLI::ExistingFile);
+    execute
+        ->add_option("-v,--verbose", runVerbose,
+            "0 = closing summary only, 1 = a line per trace, 2 = requirements too")
+        ->check(CLI::Range(0, 2));
     execute
         ->add_option("--conf", runConf,
             "Conf file (.csv / .yml / .yaml); not used when datafile is .rdb")
@@ -96,31 +118,29 @@ int main(int argc, char * argv[])
         }
         else if(app.got_subcommand("execute"))
         {
-            // Dispatch on the datafile extension: `.rdb` is the packed
-            // execute-ready slab; everything else goes through the CSV/YAML
-            // tabular reader.
-            auto    isRdb = runData.size() >= 4
-                         && runData.compare(runData.size() - 4, 4, ".rdb") == 0;
+            std::vector<Referee::Trace>     traces;
+            for (auto const& p : runData)    traces.push_back({p, false});
+            for (auto const& p : runSuccess) traces.push_back({p, false});
+            for (auto const& p : runFailure) traces.push_back({p, true});
+
+            if (traces.empty())
+            {
+                std::cerr << "referee: no trace given\n";
+                return 1;
+            }
+
+            // Default to full detail for a lone trace, since there is no
+            // volume problem and the requirement lines are the useful output;
+            // to a line per trace for a corpus, where they are not.
+            auto    detail = runVerbose >= 0
+                           ? static_cast<Referee::Detail>(runVerbose)
+                           : (traces.size() == 1 ? Referee::Detail::Requirements
+                                                 : Referee::Detail::Traces);
 
             std::ifstream   refStream(runRef, std::ios_base::in);
-            bool            allPass;
-            if (isRdb)
-            {
-                allPass = Referee::executeRdb(refStream, runRef, runData,
-                                              std::cout, includePaths);
-            }
-            else
-            {
-                std::ifstream   dataStream(runData, std::ios_base::in);
-                std::ifstream   confStream;
-                if (!runConf.empty())
-                    confStream.open(runConf, std::ios_base::in);
-                allPass = Referee::execute(
-                    refStream, runRef,
-                    dataStream, runData,
-                    runConf.empty() ? nullptr : &confStream, runConf,
-                    std::cout, includePaths);
-            }
+            bool            allPass = Referee::executeAll(
+                                refStream, runRef, traces, runConf,
+                                std::cout, detail, includePaths);
             if (!allPass) return 1;
         }
     }

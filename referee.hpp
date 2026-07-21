@@ -122,6 +122,43 @@ public:
     static Schema   parseSchema(std::istream& is, std::string name,
                                 std::vector<std::string> const& includePaths = {});
 
+    /// One trace to check, and whether it is expected to violate the
+    /// specification. A corpus of traces that *must* be rejected is how a
+    /// specification is kept from going vacuous: a requirement mistyped into
+    /// triviality passes every trace exactly as convincingly as a correct one.
+    struct Trace
+    {
+        std::string path;
+        bool        expectFailure = false;
+    };
+
+    /// How much to print. The exit code carries the verdict either way, so
+    /// these only affect what a human or a log gets to read.
+    enum class Detail
+    {
+        Summary      = 0,   ///< one closing line; detail only for misbehaviour
+        Traces       = 1,   ///< a line per trace, saying what it did
+        Requirements = 2,   ///< the requirement table for every trace too
+    };
+
+    /// Compile the specification once and check every trace with it.
+    ///
+    /// Compilation dominates: roughly 700ms for a 233-requirement spec against
+    /// ~0.12ms per trace row, so checking a hundred traces one invocation at a
+    /// time costs seventy seconds where this costs one.
+    ///
+    /// Returns true iff every trace behaved as declared -- a `expectFailure`
+    /// trace that passes is a failure of the run, since it means the
+    /// specification has stopped catching what that trace demonstrates.
+    ///
+    /// `confPath` may be empty, and is shared by every CSV/YAML trace.
+    static bool     executeAll(std::istream& refStream, std::string refName,
+                               std::vector<Trace> const& traces,
+                               std::string const& confPath,
+                               std::ostream& os     = std::cout,
+                               Detail        detail = Detail::Requirements,
+                               std::vector<std::string> const& includePaths = {});
+
     /// Compile REF source, JIT it, and evaluate every requirement against
     /// a packed `.rdb` trace whose state buffer is *already* the layout the
     /// JIT consumes — only pointer fix-up happens at load time. The

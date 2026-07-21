@@ -483,6 +483,79 @@ TEST(Rdb, ImportResolvedViaSearchPath)
     std::remove(rdbPath.c_str());
 }
 
+// A specification is compiled once and checked against several traces, each
+// declared to pass or to fail. The exit-code contract is that every trace must
+// behave as declared -- including the case that earns the feature, where a
+// trace expected to be rejected is not, which means the specification has
+// stopped catching what that trace demonstrates.
+TEST(Rdb, TraceExpectations)
+{
+    auto    pass    = std::string(REFEREE_TEST_DATA_DIR) + "/pass.ref";
+    auto    fail    = std::string(REFEREE_TEST_DATA_DIR) + "/fail.ref";
+    auto    csv     = std::string(REFEREE_TEST_DATA_DIR) + "/data.csv";
+    auto    yaml    = std::string(REFEREE_TEST_DATA_DIR) + "/data.yaml";
+    auto    conf    = std::string(REFEREE_TEST_DATA_DIR) + "/conf.csv";
+
+    auto    run = [&](std::string const& ref,
+                      std::vector<Referee::Trace> const& traces,
+                      std::string& report)
+    {
+        std::ifstream       in(ref);
+        std::ostringstream  out;
+        bool                ok = Referee::executeAll(in, ref, traces, conf, out,
+                                                     Referee::Detail::Traces);
+        report = out.str();
+        return ok;
+    };
+
+    std::string report;
+
+    // The four outcomes.
+    EXPECT_TRUE (run(pass, {{csv, false}}, report)) << report;   // passes, as declared
+    EXPECT_TRUE (run(fail, {{csv, true }}, report)) << report;   // fails,  as declared
+    EXPECT_FALSE(run(pass, {{csv, true }}, report)) << report;   // unexpected pass
+    EXPECT_FALSE(run(fail, {{csv, false}}, report)) << report;   // unexpected failure
+
+    // An unexpected pass has to be distinguishable from an ordinary failure:
+    // it means the specification stopped noticing, not that the system
+    // misbehaved.
+    run(pass, {{csv, true}}, report);
+    EXPECT_NE(report.find("UNEXPECTED PASS"), std::string::npos) << report;
+
+    // A mixed corpus in one invocation: one compile, a verdict per trace, and
+    // the run fails because one trace did not behave as declared.
+    EXPECT_FALSE(run(pass, {{csv, false}, {yaml, false}, {csv, true}}, report)) << report;
+    EXPECT_NE(report.find("3 traces"), std::string::npos) << report;
+    EXPECT_NE(report.find("2 ok"),     std::string::npos) << report;
+}
+
+// Several traces of different formats in one invocation, all satisfying the
+// specification. CSV and YAML carry the same data, so both must agree.
+TEST(Rdb, MultipleTracesOneCompile)
+{
+    auto    ref  = std::string(REFEREE_TEST_DATA_DIR) + "/pass.ref";
+    auto    conf = std::string(REFEREE_TEST_DATA_DIR) + "/conf.csv";
+    auto    rdb  = tmpFile("multi") + ".rdb";
+
+    referee::db::ingest(ref,
+                        std::string(REFEREE_TEST_DATA_DIR) + "/data.csv",
+                        conf, rdb);
+
+    std::vector<Referee::Trace> traces = {
+        {std::string(REFEREE_TEST_DATA_DIR) + "/data.csv",  false},
+        {std::string(REFEREE_TEST_DATA_DIR) + "/data.yaml", false},
+        {rdb,                                               false},
+    };
+
+    std::ifstream       in(ref);
+    std::ostringstream  out;
+    EXPECT_TRUE(Referee::executeAll(in, ref, traces, conf, out,
+                                    Referee::Detail::Traces)) << out.str();
+    EXPECT_NE(out.str().find("3 traces: 3 ok"), std::string::npos) << out.str();
+
+    std::remove(rdb.c_str());
+}
+
 // Bounded quantifiers over array elements: all / some / one and the counted
 // forms, element-and-index binding, nesting over a 2-D array, composition with
 // temporal operators in both orders, and use inside a computed signal.

@@ -495,13 +495,15 @@ namespace {
 // and dispatch every requirement against the Reader's already-fixed-up
 // state buffer. The single backend used by both `Referee::execute` (after
 // ingesting CSV/YAML into an in-memory `.rdb`) and `Referee::executeRdb`.
-bool    runAgainstRdb(std::istream&            refStream,
-                      std::string const&       refName,
-                      referee::db::Reader&     rdb,
-                      std::ostream&            os,
-                      std::vector<std::string> const& includePaths)
+// Run an already-compiled specification against one trace. Split out from
+// runAgainstRdb so a batch pays for the compile once: it is by far the larger
+// cost (~700ms for a 233-requirement spec, against ~0.12ms per trace row), so
+// looping here rather than re-entering buildJitFromRef is the whole point of
+// accepting more than one trace per invocation.
+bool    runOneTrace(JitWithSpecs&            js,
+                    referee::db::Reader&     rdb,
+                    std::ostream&            os)
 {
-    auto    js          = buildJitFromRef(refStream, refName, includePaths);
     auto*   astModule   = js.astModule;
 
     auto    checkList   = [](std::vector<std::string> const& wanted,
@@ -589,6 +591,18 @@ bool    runAgainstRdb(std::istream&            refStream,
                        os);
 }
 
+// Compile, then run against a single trace. The original single-trace entry
+// point, kept as the shape most callers want.
+bool    runAgainstRdb(std::istream&            refStream,
+                      std::string const&       refName,
+                      referee::db::Reader&     rdb,
+                      std::ostream&            os,
+                      std::vector<std::string> const& includePaths)
+{
+    auto    js  = buildJitFromRef(refStream, refName, includePaths);
+    return runOneTrace(js, rdb, os);
+}
+
 } // namespace
 
 bool    Referee::execute(std::istream& refStream, std::string refName,
@@ -624,6 +638,163 @@ bool    Referee::execute(std::istream& refStream, std::string refName,
 
     std::istringstream  refForExec(refSrc);
     return runAgainstRdb(refForExec, refName, rdb, os, includePaths);
+}
+
+namespace {
+
+// Open a trace by extension: `.rdb` is already the execute-ready layout, and
+// everything else is packed into an in-memory one first. Same dispatch the CLI
+// did inline, moved here so every caller agrees on it.
+std::unique_ptr<referee::db::Reader>    openTrace(std::string const&  refSrc,
+                                                 std::string const&  refName,
+                                                 std::string const&  tracePath,
+                                                 std::string const&  confPath,
+                                                 std::vector<std::string> const& includePaths)
+{
+    auto    isRdb = tracePath.size() >= 4
+                 && tracePath.compare(tracePath.size() - 4, 4, ".rdb") == 0;
+
+    if (isRdb)
+        return std::make_unique<referee::db::Reader>(tracePath);
+
+    std::ifstream   dataStream(tracePath, std::ios_base::in);
+    if (!dataStream)
+        throw std::runtime_error(fmt::format("cannot open trace '{}'", tracePath));
+
+    std::ifstream   confStream;
+    if (!confPath.empty())
+    {
+        confStream.open(confPath, std::ios_base::in);
+        if (!confStream)
+            throw std::runtime_error(fmt::format("cannot open conf '{}'", confPath));
+    }
+
+    std::stringstream   rdbBuf(std::ios::in | std::ios::out | std::ios::binary);
+    {
+        std::istringstream  refForIngest(refSrc);
+        referee::db::ingest(refForIngest, refName,
+                            dataStream,   tracePath,
+                            confPath.empty() ? nullptr : &confStream, confPath,
+                            rdbBuf,       includePaths);
+    }
+
+    auto                    str = std::move(rdbBuf).str();
+    std::vector<uint8_t>    bytes(str.begin(), str.end());
+    return std::make_unique<referee::db::Reader>(std::move(bytes), tracePath);
+}
+
+} // namespace
+
+bool    Referee::executeAll(std::istream& refStream, std::string refName,
+                            std::vector<Trace> const& traces,
+                            std::string const& confPath,
+                            std::ostream& os,
+                            Detail        detail,
+                            std::vector<std::string> const& includePaths)
+{
+    if (traces.empty())
+        throw std::runtime_error("no traces given");
+
+    //  The .ref stream is consumed once per trace by the ingest path, so
+    //  snapshot it up front and hand out copies.
+    std::string refSrc{std::istreambuf_iterator<char>(refStream),
+                       std::istreambuf_iterator<char>()};
+
+    //  Compile once. This is the reason the loop is here rather than in the
+    //  caller: it is the dominant cost and it does not depend on the trace.
+    JitWithSpecs    js;
+    {
+        std::istringstream  refForJit(refSrc);
+        js = buildJitFromRef(refForJit, refName, includePaths);
+    }
+
+        auto    atLeast = [&](Detail want) {
+        return static_cast<int>(detail) >= static_cast<int>(want);
+    };
+
+    struct Outcome
+    {
+        std::string path;
+        bool        expectFailure;
+        bool        allPass;
+        std::string detail;
+        bool        ok() const  { return allPass != expectFailure; }
+    };
+
+    std::vector<Outcome>    outcomes;
+    bool                    everyTraceOk = true;
+
+    for (auto const& trace : traces)
+    {
+        auto    rdb = openTrace(refSrc, refName, trace.path, confPath, includePaths);
+
+        std::ostringstream  perTrace;
+        bool                allPass = runOneTrace(js, *rdb, perTrace);
+
+        outcomes.push_back({trace.path, trace.expectFailure, allPass, perTrace.str()});
+        everyTraceOk = everyTraceOk && outcomes.back().ok();
+    }
+
+    //  One trace, no expectation declared, full detail asked for: print what
+    //  a single-trace run has always printed. There is no volume problem to
+    //  solve and the per-requirement lines are the whole of the useful output.
+    bool    lone = traces.size() == 1 && !traces.front().expectFailure;
+    if (lone && detail == Detail::Requirements)
+    {
+        os << outcomes.front().detail;
+        return everyTraceOk;
+    }
+
+    std::size_t width = 0;
+    for (auto const& o : outcomes)
+        width = std::max(width, o.path.size());
+
+    unsigned    good = 0, bad = 0, surprises = 0;
+    for (auto const& o : outcomes)
+    {
+        char const* observed = o.allPass ? "PASS" : "FAIL";
+        char const* verdict  = o.ok() ? "ok"
+                             : o.expectFailure ? "UNEXPECTED PASS" : "FAILED";
+
+        //  At Summary only misbehaviour is worth a line; the closing tally
+        //  covers the rest.
+        if (atLeast(Detail::Traces) || !o.ok())
+            os << fmt::format("{:<{}}  expected {:<7}  {:<4}  {}\n",
+                              o.path, width,
+                              o.expectFailure ? "failure" : "success",
+                              observed, verdict);
+
+        //  The full table when asked for. Otherwise, only what a reader can
+        //  act on: the violated requirements of a trace that was supposed to
+        //  pass. An unexpected pass has nothing to point at -- every
+        //  requirement held -- so listing them all would be noise.
+        bool    wantAll     = atLeast(Detail::Requirements);
+        bool    wantFailed  = !o.ok() && !o.allPass;
+
+        if (wantAll || wantFailed)
+        {
+            std::istringstream  lines(o.detail);
+            std::string         line;
+            while (std::getline(lines, line))
+            {
+                if (wantAll || line.find("FAIL") != std::string::npos)
+                    os << "    " << line << "\n";
+            }
+        }
+
+        if (o.ok())                 good++;
+        else if (o.expectFailure)   surprises++;
+        else                        bad++;
+    }
+
+    os << fmt::format("\n{} trace{}: {} ok", traces.size(),
+                      traces.size() == 1 ? "" : "s", good);
+    if (bad)        os << fmt::format(", {} failed", bad);
+    if (surprises)  os << fmt::format(", {} unexpected pass{}",
+                                      surprises, surprises == 1 ? "" : "es");
+    os << "\n";
+
+    return everyTraceOk;
 }
 
 bool    Referee::executeRdb(std::istream& refStream, std::string refName,

@@ -1,6 +1,6 @@
 # Design: trace expectations
 
-**Status:** proposal, not implemented.
+**Status:** implemented. Whole-trace expectations and multi-trace checking are in; per-requirement expectations and a manifest file are not.
 **Scope:** `referee execute spec.ref --success good1.csv good2.csv --failure bad1.csv bad2.csv`, exiting 0 when every trace behaved as declared.
 
 ## The problem

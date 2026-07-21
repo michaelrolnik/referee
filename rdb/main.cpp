@@ -62,6 +62,7 @@ int main(int argc, char* argv[])
     std::vector<std::string>    includePaths;
     buildCmd->add_option("-I,--include", includePaths,
         "Directory to search for imported .ref files (repeatable)")
+        ->allow_extra_args(false)
         ->check(CLI::ExistingDirectory);
 
     auto*   dumpCmd = app.add_subcommand(
