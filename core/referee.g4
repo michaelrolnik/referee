@@ -24,7 +24,9 @@
 
 grammar referee;
 
-program     : (statement ';')*
+//  EOF is required: without it the rule happily matches a prefix and leaves
+//  the rest of the file unconsumed, so trailing garbage parsed clean.
+program     : (statement ';')* EOF
             ;
 
 statement   : declaraion

@@ -380,6 +380,24 @@ Or run the gtest binary directly — it resolves test-data paths via a compile-t
 ./build/tests
 ```
 
+The suite covers the compiler in-process and also drives the two CLI binaries as subprocesses, since argument parsing, subcommand dispatch and exit codes live in `main()` and no in-process test reaches them.
+
+### Coverage
+
+With [gcovr](https://gcovr.com/) installed, configure a build with coverage instrumentation and run one of the report targets:
+
+```bash
+meson setup build-cov -Db_coverage=true
+meson test -C build-cov
+ninja -C build-cov coverage-gcovr-text     # meson-logs/coverage.txt
+ninja -C build-cov coverage-gcovr-html     # meson-logs/coveragereport/index.html
+ninja -C build-cov coverage-gcovr-xml      # meson-logs/coverage.xml
+```
+
+The report covers `core/`, `rdb/`, `referee.cpp` and `main.cpp` — an include-filter rather than an exclude list, because gcovr's exclude patterns did not reliably keep the test tree out, and gtest's own branches alone moved the branch figure by 14 points. Branches arising from exception cleanup are excluded too: every C++ statement that can throw carries a hidden edge to its unwind path, and counting those buried the real conditionals (they took branch coverage from 86% to 39% while saying nothing about how well the code is exercised).
+
+Current figures: **95% of lines**, **89% of branches**, **89% of functions**. What remains is concentrated in `core/builder.hpp`, an operator-overloading DSL for constructing AST nodes whose unused operators are dead weight rather than untested logic, and in template machinery that is emitted but never instantiated.
+
 # Running referee
 
 `build/referee` is the main CLI and is driven through two subcommands, `compile` and `execute`. Pass `--help` or `<subcommand> --help` for the full option list:

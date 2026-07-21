@@ -95,6 +95,8 @@ struct TypeCalcImpl
     
     Type*   m_type  = nullptr;
 
+    bool    isNumeric(Type* type) const;
+
     Type*   make(Expr*          expr, Type* type = nullptr);
     Type*   make(Spec*          spec);
     Type*   safe(Expr*          expr, Type* type = nullptr);
@@ -183,18 +185,22 @@ private:
     Module* m_module;
 };
 
+bool    TypeCalcImpl::isNumeric(Type* type) const
+{
+    return type == typeInteger || type == typeNumber;
+}
+
 void    TypeCalcImpl::visit(ExprAdd*                expr)
 {
     auto    lhs = make(expr->lhs);
     auto    rhs = make(expr->rhs);
 
-    if(lhs != typeInteger && lhs != typeNumber && rhs != typeInteger && rhs != typeNumber)
+    //  Both operands must be numeric.  The condition was written with `&&`
+    //  throughout, which only rejects when *both* sides are non-numeric, so
+    //  `boolean + integer` and `integer + string` type-checked clean.
+    if(!isNumeric(lhs) || !isNumeric(rhs))
     {
-//  LCOV_EXCL_START 
-//  GCOV_EXCL_START 
-        throw Exception(expr->where(), "bad type");
-//  GCOV_EXCL_STOP
-//  LCOV_EXCL_STOP
+        throw Exception(expr->where(), "bad type: arithmetic needs numeric operands");
     }
 
     if(lhs == rhs)
@@ -243,13 +249,12 @@ void    TypeCalcImpl::visit(ExprDiv*                expr)
     auto    lhs = make(expr->lhs);
     auto    rhs = make(expr->rhs);
 
-    if(lhs != typeInteger && lhs != typeNumber && rhs != typeInteger && rhs != typeNumber)
+    //  Both operands must be numeric.  The condition was written with `&&`
+    //  throughout, which only rejects when *both* sides are non-numeric, so
+    //  `boolean + integer` and `integer + string` type-checked clean.
+    if(!isNumeric(lhs) || !isNumeric(rhs))
     {
-//  LCOV_EXCL_START 
-//  GCOV_EXCL_START 
-        throw Exception(expr->where(), "bad type");
-//  GCOV_EXCL_STOP
-//  LCOV_EXCL_STOP
+        throw Exception(expr->where(), "bad type: arithmetic needs numeric operands");
     }
 
     if(lhs == rhs)
@@ -436,13 +441,12 @@ void    TypeCalcImpl::visit(ExprMul*                expr)
     auto    lhs = make(expr->lhs);
     auto    rhs = make(expr->rhs);
 
-    if(lhs != typeInteger && lhs != typeNumber && rhs != typeInteger && rhs != typeNumber)
+    //  Both operands must be numeric.  The condition was written with `&&`
+    //  throughout, which only rejects when *both* sides are non-numeric, so
+    //  `boolean + integer` and `integer + string` type-checked clean.
+    if(!isNumeric(lhs) || !isNumeric(rhs))
     {
-//  LCOV_EXCL_START 
-//  GCOV_EXCL_START 
-        throw Exception(expr->where(), "bad type");
-//  GCOV_EXCL_STOP
-//  LCOV_EXCL_STOP
+        throw Exception(expr->where(), "bad type: arithmetic needs numeric operands");
     }
 
     if(lhs == rhs)
@@ -523,13 +527,12 @@ void    TypeCalcImpl::visit(ExprSub*                expr)
     auto    lhs = make(expr->lhs);
     auto    rhs = make(expr->rhs);
 
-    if(lhs != typeInteger && lhs != typeNumber && rhs != typeInteger && rhs != typeNumber)
+    //  Both operands must be numeric.  The condition was written with `&&`
+    //  throughout, which only rejects when *both* sides are non-numeric, so
+    //  `boolean + integer` and `integer + string` type-checked clean.
+    if(!isNumeric(lhs) || !isNumeric(rhs))
     {
-//  LCOV_EXCL_START 
-//  GCOV_EXCL_START 
-        throw Exception(expr->where(), "bad type");
-//  GCOV_EXCL_STOP
-//  LCOV_EXCL_STOP
+        throw Exception(expr->where(), "bad type: arithmetic needs numeric operands");
     }
 
     if(lhs == rhs)

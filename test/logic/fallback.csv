@@ -1,0 +1,6 @@
+__time__,a,b,k,i,n
+0,true,false,1000,3,1.5
+1000,true,true,1000,4,2.5
+2000,false,true,1000,5,3.5
+3000,true,false,1000,6,4.5
+4000,false,false,1000,7,5.5

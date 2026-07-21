@@ -243,6 +243,11 @@ Referee::Compiled   Referee::compile(std::istream& is, std::string name,
     antlr4::CommonTokenStream   tokens(&lexer);
     referee::refereeParser      parser(&tokens);
 
+    // Without this the parse reports its complaints to stderr and hands back a
+    // partial tree, so a malformed .ref compiled to a module and exited 0.
+    ParseErrors                 errors;
+    errors.attach(lexer, parser);
+
     // Antlr2AST resolves its Module via Factory<Module>::create(name), which
     // memoises by `name`. If compile() is called twice with the same name
     // (e.g. tests that compile the same .ref multiple times), the second call
@@ -254,6 +259,8 @@ Referee::Compiled   Referee::compile(std::istream& is, std::string name,
 
     out.astOwner    = std::make_unique<Antlr2AST>(uniqName, name, includePaths);
     auto*   tree    = parser.program();
+    if (errors.any())
+        throw std::runtime_error(errors.summary(name));
     out.ast         = std::any_cast<::Module*>(out.astOwner->visitProgram(tree));
 
     Compile::make(out.ctx.get(), out.mod.get(), out.ast);
@@ -284,6 +291,11 @@ Referee::Schema     Referee::parseSchema(std::istream& is, std::string name,
     antlr4::CommonTokenStream   tokens(&lexer);
     referee::refereeParser      parser(&tokens);
 
+    // Without this the parse reports its complaints to stderr and hands back a
+    // partial tree, so a malformed .ref compiled to a module and exited 0.
+    ParseErrors                 errors;
+    errors.attach(lexer, parser);
+
     // Antlr2AST goes through Factory<Module>::create(name), which caches by
     // the exact name string. If parseSchema is called for the same path that
     // Referee::compile was (or will be) invoked on, the cached Module would
@@ -294,6 +306,8 @@ Referee::Schema     Referee::parseSchema(std::istream& is, std::string name,
 
     out.astOwner    = std::make_unique<Antlr2AST>(uniqName, name, includePaths);
     auto*   tree    = parser.program();
+    if (errors.any())
+        throw std::runtime_error(errors.summary(name));
     out.ast         = std::any_cast<::Module*>(out.astOwner->visitProgram(tree));
     return out;
 }

@@ -393,7 +393,7 @@ core_dep            = declare_dependency(
 )
 
 # referee CLI
-executable(
+referee_exe         = executable(
     'referee',
     'main.cpp',
     dependencies : [
@@ -408,7 +408,7 @@ executable(
 )
 
 # rdb helper CLI
-executable(
+rdb_exe             = executable(
     'rdb',
     'rdb/main.cpp',
     dependencies        : [
@@ -432,8 +432,16 @@ tests_exe           = executable(
     'test/canonic.cpp',
     'test/logic.cpp',
     'test/rdb.cpp',
+    'test/visitors.cpp',
+    'test/cli.cpp',
+    'test/diagnostics.cpp',
     cpp_args     : [
         '-DREFEREE_TEST_DATA_DIR="' + test_data_dir + '"',
+        # The CLI tests drive the real binaries as subprocesses, which is the
+        # only way to reach main() -- and, under a coverage build, the only way
+        # those translation units are ever counted.
+        '-DREFEREE_BIN="' + referee_exe.full_path() + '"',
+        '-DRDB_BIN="' + rdb_exe.full_path() + '"',
     ],
     dependencies : [
         core_dep,
@@ -446,7 +454,10 @@ tests_exe           = executable(
     ],
 )
 
-test('tests', tests_exe, workdir : meson.project_source_root())
+test('tests', tests_exe,
+     depends  : [referee_exe, rdb_exe],
+     workdir  : meson.project_source_root(),
+     timeout  : 300)
 
 # gcovr-driven coverage targets (portable replacement for the stock
 # `ninja coverage-html`, which goes through lcov and fails on Apple Clang)
@@ -470,6 +481,20 @@ if gcovr_prog.found()
         '--exclude', meson.project_build_root() / 'refereeListener.h',
         '--exclude', meson.project_build_root() / 'refereeBaseListener.cpp',
         '--exclude', meson.project_build_root() / 'refereeBaseListener.h',
+        # Report on the product only. An include-filter is used rather than
+        # excludes because gcovr's exclude patterns did not reliably match the
+        # test tree, which quietly folded gtest's own branches into the number
+        # (they alone dragged branch coverage from 86% down to 72%).
+        '--filter', meson.project_source_root() / 'core' / '',
+        '--filter', meson.project_source_root() / 'rdb' / '',
+        '--filter', meson.project_source_root() / 'referee.cpp',
+        '--filter', meson.project_source_root() / 'main.cpp',
+        # Every C++ statement that can throw carries a hidden branch to its
+        # cleanup path. Counting those buries the real conditionals: they alone
+        # take branch coverage from ~67% to ~39% while saying nothing about how
+        # well the code is exercised.
+        '--exclude-throw-branches',
+        '--exclude-unreachable-branches',
     ]
 
     run_target(

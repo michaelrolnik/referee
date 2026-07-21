@@ -1,0 +1,44 @@
+# The paths a well-formed, well-typed specification takes only under specific
+# shapes: the nested-scan fallback for bounded operators, and the integer ->
+# floating promotions in mixed arithmetic.
+
+data    a   : boolean;
+data    b   : boolean;
+data    k   : integer;      # a *signal*, so bounds using it are not loop-invariant
+data    i   : integer;
+data    n   : number;
+
+# ── Nested-scan fallback ─────────────────────────────────────────────────────
+# A bound that reads a `data` signal can change from state to state, so the
+# window is not monotone and the linear lowering does not apply. These are the
+# only requirements that reach the original nested scan, which makes them the
+# only coverage of it -- including of the one-sided forms on the past
+# operators, which used to dereference a null bound and crash the compiler.
+G(Ss[k:](a, b)      == Ss[k:](a, b));
+G(Ss[:k](a, b)      == Ss[:k](a, b));
+G(Ss[k:k](a, b)     == Ss[k:k](a, b));
+G(Ts[k:](a, b)      == Ts[k:](a, b));
+G(Sw[:k](b, a)      == Sw[:k](b, a));
+G(Tw[k:k](a, b)     == Tw[k:k](a, b));
+G(Us[k:](a, b)      == Us[k:](a, b));
+G(Us[:k](a, b)      == Us[:k](a, b));
+G(Rs[k:k](a, b)     == Rs[k:k](a, b));
+G(Uw[k:](b, a)      == Uw[k:](b, a));
+G(Rw[:k](b, a)      == Rw[:k](b, a));
+
+# A bounded operator inside a freeze is excluded from the buffered path too.
+G(t@(Ss[0:2000](a, t.b)) == t@(Ss[0:2000](a, t.b)));
+
+# ── Mixed integer / floating arithmetic ──────────────────────────────────────
+# Each of these promotes the integer operand before the floating operation, a
+# conversion that never happens when both sides share a type.
+G(i + n > 0.0);
+G(i - n < 100.0);
+G(i * n > 0.0);
+G(i / n < 100.0);
+G(n + i > 0.0);
+G(n - i < 100.0);
+G(i > n);
+G(n < i);
+G(i >= n);
+G(n <= i);

@@ -38,6 +38,28 @@
 #include <filesystem>
 #include <fstream>
 
+void    ParseErrors::syntaxError(antlr4::Recognizer*    /*recognizer*/,
+                                 antlr4::Token*         /*offendingSymbol*/,
+                                 size_t                 line,
+                                 size_t                 charPositionInLine,
+                                 std::string const&     msg,
+                                 std::exception_ptr     /*e*/)
+{
+    m_messages.push_back(
+        std::to_string(line) + ":" + std::to_string(charPositionInLine) + ": " + msg);
+}
+
+std::string ParseErrors::summary(std::string const& name) const
+{
+    std::string out = name + ": " + std::to_string(m_messages.size())
+                    + (m_messages.size() == 1 ? " syntax error" : " syntax errors");
+
+    for (auto const& m : m_messages)
+        out += "\n  " + m;
+
+    return out;
+}
+
 //  Owns the ANTLR machinery for one imported file.  The AST keeps pointers
 //  into token text, so none of this may be destroyed before the visitor is.
 struct Antlr2AST::ParsedFile
@@ -145,10 +167,16 @@ void    Antlr2AST::importFile(std::string const& path, Position const& where)
     pf->tokens  = std::make_unique<antlr4::CommonTokenStream>(pf->lexer.get());
     pf->parser  = std::make_unique<referee::refereeParser>(pf->tokens.get());
 
+    ParseErrors errors;
+    errors.attach(*pf->lexer, *pf->parser);
+
     auto*   parser  = pf->parser.get();
     m_parsed.push_back(std::move(pf));
 
     auto*   tree    = parser->program();
+
+    if (errors.any())
+        throw Exception(where, errors.summary(path));
 
     //  Label nodes with the imported file's path relative to the root .ref, so
     //  requirement names are stable regardless of where the tree lives on disk.

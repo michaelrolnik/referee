@@ -34,9 +34,14 @@ std::string multichar(int data)
     data    = ((data & 0xff00ff00) >>  8)
             | ((data & 0x00ff00ff) <<  8);            
 
-    while(data) 
+    //  An operator is packed into an int, so anything shorter than four
+    //  characters carries NUL padding. Emitting those verbatim put raw zero
+    //  bytes in the middle of the output ("\0\0==" for '==').
+    while(data)
     {
-        os << (char)(data & 0xff);
+        char    c   = (char)(data & 0xff);
+        if(c != '\0')
+            os << c;
         data >>= 8;
     }
 
@@ -57,6 +62,9 @@ struct PrinterImpl
              , ExprConstBoolean
              , ExprConstInteger
              , ExprConstNumber
+             , ExprConstString
+             , ExprIndx
+             , ExprChoice
              , ExprAt
              , Time
              , TimeMax
@@ -98,6 +106,9 @@ struct PrinterImpl
     void    visit(ExprConstBoolean*     expr) override;
     void    visit(ExprConstInteger*     expr) override;
     void    visit(ExprConstNumber*      expr) override;
+    void    visit(ExprConstString*      expr) override;
+    void    visit(ExprIndx*             expr) override;
+    void    visit(ExprChoice*           expr) override;
     void    visit(ExprContext*          expr) override;
     void    visit(ExprData*             expr) override;
     void    visit(ExprConf*             expr) override;
@@ -213,6 +224,30 @@ void    PrinterImpl::visit(ExprMmbr*        expr)
 void    PrinterImpl::visit(ExprConstInteger*    expr)
 {
     os << expr->value;
+}
+
+void    PrinterImpl::visit(ExprConstString*     expr)
+{
+    os << "\"" << expr->value << "\"";
+}
+
+//  Indexing is a binary node, so without its own case it printed through the
+//  generic infix path as `arr [] 2`.
+void    PrinterImpl::visit(ExprIndx*            expr)
+{
+    expr->lhs->accept(*this);
+    os << "[";
+    expr->rhs->accept(*this);
+    os << "]";
+}
+
+void    PrinterImpl::visit(ExprChoice*          expr)
+{
+    expr->lhs->accept(*this);
+    os << " ? ";
+    expr->mhs->accept(*this);
+    os << " : ";
+    expr->rhs->accept(*this);
 }
 
 void    PrinterImpl::visit(ExprConstNumber*     expr)

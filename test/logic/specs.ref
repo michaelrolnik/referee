@@ -1,0 +1,48 @@
+# Every specification pattern, under every scope.
+#
+# The point is coverage of the pattern surface -- the parser alternatives, the
+# desugaring into temporal logic, and the Printer cases for each Spec node --
+# rather than the truth of any individual requirement, so the trace this runs
+# against is not expected to satisfy them all. Compile-only fixtures like this
+# are checked by parsing and printing, not by executing.
+
+data    a   : boolean;
+data    b   : boolean;
+data    c   : boolean;
+
+# ── The sixteen pattern bodies, under `globally` ─────────────────────────────
+globally, it is always the case that a holds;
+globally, it is never the case that a holds;
+globally, a eventually holds;
+globally, a holds after 100 milliseconds;
+globally, a holds in the long run;
+globally, once a becomes satisfied it remains so for at least 2 seconds;
+globally, once a becomes satisfied it remains so for less than 2 seconds;
+globally, a holds repeatedly every 100 milliseconds;
+globally, if a holds, then it must have been the case that b has occurred before it;
+globally, if b and afterwards c within 100 milliseconds holds, then it must have been the case that a has occurred before it;
+globally, if a holds, then it must have been the case that b and afterwards c within 100 milliseconds have occurred before it;
+globally, if a has occurred, then in response b eventually holds within 100 milliseconds;
+globally, if a has occurred, then in response within 100 milliseconds b followed by c within 200 milliseconds eventually holds;
+globally, if b followed by c within 100 milliseconds have occurred, then in response a eventually holds within 200 milliseconds;
+globally, if a has occurred, then in response b holds continually within 100 milliseconds;
+globally, a holds without interruption until b holds within 100 milliseconds;
+
+# ── The remaining five scopes ────────────────────────────────────────────────
+before c, a eventually holds;
+after c, a eventually holds;
+while c, it is always the case that a holds;
+between b and c, it is always the case that a holds;
+after b until c, it is always the case that a holds;
+
+# ── Time-bound shapes: within / after / between, and each unit ───────────────
+globally, a eventually holds within 5 nanoseconds;
+globally, a eventually holds within 5 microseconds;
+globally, a eventually holds within 5 milliseconds;
+globally, a eventually holds within 5 seconds;
+globally, a eventually holds within 5 minutes;
+globally, a eventually holds after 5 milliseconds;
+globally, a eventually holds between 5 and 10 milliseconds;
+
+# ── Scope nesting: a scope may wrap another scope ───────────────────────────
+after b, while c, it is always the case that a holds;

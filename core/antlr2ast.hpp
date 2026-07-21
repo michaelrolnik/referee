@@ -37,6 +37,39 @@
 #include <vector>
 
 
+//  ANTLR's default error listener writes to stderr and carries on, which meant
+//  a malformed .ref still produced a module: the diagnostic scrolled past and
+//  the tool exited 0. This collects the diagnostics so the caller can refuse to
+//  go any further.
+class ParseErrors
+    : public antlr4::BaseErrorListener
+{
+public:
+    void    syntaxError(antlr4::Recognizer*      recognizer,
+                        antlr4::Token*           offendingSymbol,
+                        size_t                   line,
+                        size_t                   charPositionInLine,
+                        std::string const&       msg,
+                        std::exception_ptr       e) override;
+
+    //  Attach to both the lexer and the parser, replacing the default
+    //  console listener on each.
+    template<typename Lexer, typename Parser>
+    void    attach(Lexer& lexer, Parser& parser)
+    {
+        lexer.removeErrorListeners();
+        lexer.addErrorListener(this);
+        parser.removeErrorListeners();
+        parser.addErrorListener(this);
+    }
+
+    bool                        any() const     {return !m_messages.empty();}
+    std::string                 summary(std::string const& name) const;
+
+private:
+    std::vector<std::string>    m_messages;
+};
+
 class Antlr2AST
     : public referee::refereeBaseVisitor
 {

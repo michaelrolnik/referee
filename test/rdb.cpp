@@ -482,6 +482,27 @@ TEST(Rdb, ImportResolvedViaSearchPath)
     std::remove(rdbPath.c_str());
 }
 
+// The nested-scan fallback: bounds that read a `data` signal are not
+// loop-invariant, so the window is not monotone and the buffered lowering does
+// not apply. Nothing else in the suite reaches that code, including the
+// one-sided past-operator forms. Also covers integer -> floating promotion in
+// mixed arithmetic.
+TEST(Rdb, NestedScanFallbackAndMixedArithmetic)
+{
+    auto    refPath = std::string(REFEREE_TEST_DATA_DIR) + "/fallback.ref";
+    auto    csvPath = std::string(REFEREE_TEST_DATA_DIR) + "/fallback.csv";
+    auto    rdbPath = tmpFile("fallback");
+
+    referee::db::ingest(refPath, csvPath, /*confPath=*/"", rdbPath);
+
+    std::ifstream       refIn(refPath);
+    std::ostringstream  out;
+    bool                allPass = Referee::executeRdb(refIn, refPath, rdbPath, out);
+    EXPECT_TRUE(allPass) << out.str();
+
+    std::remove(rdbPath.c_str());
+}
+
 // Time-bounded operators on the linear lowering, over an irregularly spaced
 // trace. Covers conf-valued bounds against their literal equivalents, one-sided
 // bounds on the past operators (which used to crash the compiler), degenerate
