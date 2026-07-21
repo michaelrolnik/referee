@@ -76,6 +76,11 @@ struct RewriteImpl
              , ExprUs
              , ExprUw
              , ExprXor
+             , ExprBand
+             , ExprBor
+             , ExprShl
+             , ExprShr
+             , ExprBnot
              , ExprXs
              , ExprXw
              , ExprYs
@@ -151,6 +156,11 @@ public:
     void    visit(ExprUs*           expr) override;
     void    visit(ExprUw*           expr) override;
     void    visit(ExprXor*          expr) override;
+    void    visit(ExprBand*      expr) override;
+    void    visit(ExprBor*       expr) override;
+    void    visit(ExprShl*       expr) override;
+    void    visit(ExprShr*       expr) override;
+    void    visit(ExprBnot*      expr) override;
     void    visit(ExprXs*           expr) override;
     void    visit(ExprXw*           expr) override;
     void    visit(ExprYs*           expr) override;
@@ -613,6 +623,46 @@ void    RewriteImpl::visit( ExprXor*            expr)
         make(expr->lhs),
         make(expr->rhs));
 }
+
+void    RewriteImpl::visit( ExprBand*        expr)
+{
+    m_expr =  Factory<ExprBand>::create(
+        expr->where(),
+        make(expr->lhs),
+        make(expr->rhs));
+}
+
+void    RewriteImpl::visit( ExprBor*         expr)
+{
+    m_expr =  Factory<ExprBor>::create(
+        expr->where(),
+        make(expr->lhs),
+        make(expr->rhs));
+}
+
+void    RewriteImpl::visit( ExprShl*         expr)
+{
+    m_expr =  Factory<ExprShl>::create(
+        expr->where(),
+        make(expr->lhs),
+        make(expr->rhs));
+}
+
+void    RewriteImpl::visit( ExprShr*         expr)
+{
+    m_expr =  Factory<ExprShr>::create(
+        expr->where(),
+        make(expr->lhs),
+        make(expr->rhs));
+}
+
+void    RewriteImpl::visit( ExprBnot*        expr)
+{
+    m_expr =  Factory<ExprBnot>::create(
+        expr->where(),
+        make(expr->arg));
+}
+
 
 void    RewriteImpl::visit( ExprXs*             expr) 
 {

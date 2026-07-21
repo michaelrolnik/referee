@@ -35,7 +35,7 @@ static void alignBuffer(std::vector<uint8_t>& buf, size_t align)
 } // namespace
 
 struct LoaderImpl
-    : Visitor<TypeBoolean, TypeInteger, TypeNumber, TypeString, TypeEnum, TypeStruct, TypeArray>
+    : Visitor<TypeBoolean, TypeByte, TypeInteger, TypeNumber, TypeString, TypeEnum, TypeStruct, TypeArray>
 {
     using GetCell = Loader::GetCell;
 
@@ -51,6 +51,24 @@ struct LoaderImpl
     {
         m_prefix = prefix;
         type->accept(*this);
+    }
+
+    //  Written like an integer, stored in one byte. Out-of-range is rejected
+    //  rather than truncated, since a payload byte silently becoming a
+    //  different value is exactly the kind of thing a checker exists to catch.
+    void visit(TypeByte*) override
+    {
+        alignBuffer(m_buf, 1);
+        auto        text = m_getCell(m_prefix);
+        long long   v    = 0;
+        try         { v = text.empty() ? 0 : std::stoll(text, nullptr, 0); }
+        catch (...) { v = 0; }
+
+        if (v < 0 || v > 255)
+            throw std::runtime_error(
+                "byte '" + m_prefix + "' out of range 0..255: '" + text + "'");
+
+        m_buf.push_back(static_cast<std::uint8_t>(v));
     }
 
     void visit(TypeBoolean*) override

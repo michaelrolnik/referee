@@ -31,6 +31,7 @@
 Module::Module(std::string name)
 {
     m_name2type["boolean"]  = Factory<TypeBoolean>::create();
+    m_name2type["byte"]     = Factory<TypeByte>::create();
     m_name2type["integer"]  = Factory<TypeInteger>::create();
     m_name2type["string"]   = Factory<TypeString>::create();
     m_name2type["number"]   = Factory<TypeNumber>::create();

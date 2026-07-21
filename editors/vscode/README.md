@@ -14,7 +14,8 @@ they cover the grammar exactly — all 83 reserved words, including the whole
 Dwyer specification-pattern vocabulary.
 
 - **Temporal operators** — `G` `F` `H` `O` `Xs` `Xw` `Ys` `Yw` `Us` `Uw` `Ss`
-  `Sw` `Rs` `Rw` `Ts` `Tw` `I`, future and past scoped separately so a theme can
+  `Sw` `Rs` `Rw` `Ts` `Tw`, and the accumulators `Itg` `Sum` `Cnt`, future and
+  past scoped separately so a theme can
   colour them differently. Each only highlights when followed by `(` or a `[`
   time bound, so a capital letter elsewhere is left alone.
 - **Quantifiers** — `all`, `some`, `none`, `one`, and the `at least` / `at most` forms, scoped separately from the pattern vocabulary.
@@ -22,6 +23,7 @@ Dwyer specification-pattern vocabulary.
   `while`, `between`, `until`) separately from the rest of the vocabulary
   (`holds`, `eventually`, `once`, `remains`, …). These are *reserved*, so seeing
   them light up is a useful warning that `data at : boolean;` will not parse.
+- **Types** — `boolean`, `byte`, `integer`, `number`, `string`.
 - **Declarations** — `type`, `data`, `conf`, `import`, with the declared name
   scoped as a type / signal / constant respectively.
 - **Freeze variables** — `t@( … )` and `__time__`.

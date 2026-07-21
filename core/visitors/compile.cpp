@@ -195,6 +195,7 @@ struct CompileTypeImpl
              ,  TypeNumber
              ,  TypeString
              ,  TypeBoolean
+             ,  TypeByte
              ,  TypeStruct
              ,  TypeEnum
              ,  TypeArray>
@@ -210,6 +211,7 @@ struct CompileTypeImpl
     void    visit(TypeNumber*           type) override;
     void    visit(TypeString*           type) override;
     void    visit(TypeBoolean*          type) override;
+    void    visit(TypeByte*             type) override;
     void    visit(TypeStruct*           type) override;
     void    visit(TypeEnum*             type) override;
     void    visit(TypeArray*            type) override;
@@ -265,6 +267,11 @@ struct CompileExprImpl
              , ExprUs
              , ExprUw
              , ExprXor
+             , ExprBand
+             , ExprBor
+             , ExprShl
+             , ExprShr
+             , ExprBnot
              , ExprXs
              , ExprXw
              , ExprYs
@@ -324,6 +331,11 @@ struct CompileExprImpl
     void    visit(ExprUs*           expr) override;
     void    visit(ExprUw*           expr) override;
     void    visit(ExprXor*          expr) override;
+    void    visit(ExprBand*      expr) override;
+    void    visit(ExprBor*       expr) override;
+    void    visit(ExprShl*       expr) override;
+    void    visit(ExprShr*       expr) override;
+    void    visit(ExprBnot*      expr) override;
     void    visit(ExprXs*           expr) override;
     void    visit(ExprXw*           expr) override;
     void    visit(ExprYs*           expr) override;
@@ -369,6 +381,8 @@ struct CompileExprImpl
     llvm::Value*    getPropPtr(llvm::Value* var);
     llvm::Value*    setPropPtr(llvm::Value* var, llvm::Value* val);
     llvm::Value*    getBool(llvm::Value* var);
+    llvm::Value*    widenByte(llvm::Value* value, Type* type);
+    Type*           valueType(Expr* expr);
     llvm::Value*    setBool(llvm::Value* var, llvm::Value* val);
     void            compileTemporalLoops(Expr* rootExpr);
     llvm::Value*    compileTemporalLoopInline(Expr*        expr,
@@ -459,6 +473,11 @@ void    CompileTypeImpl::visit(TypeNumber*           type)
 void    CompileTypeImpl::visit(TypeString*           type)
 {
     m_type  = m_builder->getPtrTy();
+}
+
+void    CompileTypeImpl::visit(TypeByte*             type)
+{
+    m_type  = m_builder->getInt8Ty();
 }
 
 void    CompileTypeImpl::visit(TypeBoolean*          type)
@@ -653,7 +672,8 @@ void    CompileExprImpl::visit(ExprConf*         expr)
         //  before this node -- null at the start of a function, and some
         //  unrelated pointer in the middle of one.
         auto    fieldType   = Compile::make(m_context, m_module, expr->type(), expr->name);
-        m_value = m_builder->CreateLoad(fieldType, confPtr, false, "val_" + expr->name);
+        m_value = widenByte(m_builder->CreateLoad(fieldType, confPtr, false, "val_" + expr->name),
+                            m_refmod->getConf(expr->name));
     }
     else
     {
@@ -681,7 +701,8 @@ void    CompileExprImpl::visit(ExprData*         expr)
         if(dynamic_cast<TypePrimitive*>(expr->type()))
         {
             auto    propFieldType   = Compile::make(m_context, m_module, expr->type(), expr->name);
-            m_value = m_builder->CreateLoad(propFieldType, m_value, false, "val_" + expr->name);
+            m_value = widenByte(m_builder->CreateLoad(propFieldType, m_value, false, "val_" + expr->name),
+                                m_refmod->getProp(expr->name));
         }
     }
 }
@@ -700,8 +721,8 @@ void    CompileExprImpl::compare(
 {
     auto    lhs     = make(expr->lhs);
     auto    rhs     = make(expr->rhs);
-    auto    lhsT    = expr->lhs->type();
-    auto    rhsT    = expr->rhs->type();
+    auto    lhsT    = valueType(expr->lhs);
+    auto    rhsT    = valueType(expr->rhs);
 
     if(     lhsT == Factory<TypeNumber>::create()
         && rhsT == Factory<TypeInteger>::create())
@@ -752,8 +773,8 @@ void    CompileExprImpl::arithmetic(
 {
     auto    lhs     = make(expr->lhs);
     auto    rhs     = make(expr->rhs);
-    auto    lhsT    = expr->lhs->type();
-    auto    rhsT    = expr->rhs->type();
+    auto    lhsT    = valueType(expr->lhs);
+    auto    rhsT    = valueType(expr->rhs);
 
     if(     lhsT == Factory<TypeNumber>::create()
         && rhsT == Factory<TypeInteger>::create())
@@ -822,7 +843,8 @@ void    CompileExprImpl::visit(ExprIndx*         expr)
 
     if(dynamic_cast<TypePrimitive*>(exprType))
     {
-        m_value = m_builder->CreateLoad(elemType, m_value, false, "val_[]");
+        m_value = widenByte(m_builder->CreateLoad(elemType, m_value, false, "val_[]"),
+                            dynamic_cast<TypeArray*>(expr->lhs->type())->type);
     }
 }
 
@@ -924,7 +946,7 @@ void    CompileExprImpl::visit(ExprSum*          expr)
     if(expr->time && expr->time->hi)
         timeHi  = m_builder->CreateAdd(now, make(expr->time->hi), "now + hi");
 
-    auto    isInt   = expr->rhs->type() == Factory<TypeInteger>::create();
+    auto    isInt   = valueType(expr->rhs) == Factory<TypeInteger>::create();
     auto    type    = isInt ? static_cast<llvm::Type*>(m_builder->getInt64Ty())
                             : static_cast<llvm::Type*>(m_builder->getDoubleTy());
     auto    zero    = isInt ? static_cast<llvm::Value*>(
@@ -1094,10 +1116,10 @@ uint64_t    integral(prop_t const* curr, prop_t const* frst, prop_t const* last)
     auto    bbEntry = m_builder->GetInsertBlock();
     m_builder->CreateBr(bbHead);
 
-    auto    type    = expr->rhs->type() == Factory<TypeInteger>::create()
+    auto    type    = valueType(expr->rhs) == Factory<TypeInteger>::create()
                     ? m_builder->getInt64Ty()
                     : m_builder->getDoubleTy();
-    auto    zero    = expr->rhs->type() == Factory<TypeInteger>::create()
+    auto    zero    = valueType(expr->rhs) == Factory<TypeInteger>::create()
                     ? llvm::ConstantInt::getSigned(m_builder->getInt64Ty(), 0)
                     : llvm::ConstantFP::get(m_builder->getDoubleTy(), 0.0);
 
@@ -1236,7 +1258,8 @@ void    CompileExprImpl::visit(ExprMmbr*         expr)
             auto    dataPtr     = m_builder->CreateStructGEP(baseType, basePtr, temp->index(expr->mmbr), "ptr_" + expr->mmbr);
             auto    dataType    = Compile::make(m_context, m_module, expr->type(), expr->mmbr);
 
-            m_value = m_builder->CreateLoad(dataType, dataPtr, false, "val_" + expr->mmbr);
+            m_value = widenByte(m_builder->CreateLoad(dataType, dataPtr, false, "val_" + expr->mmbr),
+                                temp->member(expr->mmbr));
         }
     }
     else
@@ -1362,6 +1385,34 @@ void    CompileExprImpl::visit( ExprXor*        expr)
     auto    lhs = make(expr->lhs);
     auto    rhs = make(expr->rhs);
     m_value = m_builder->CreateXor(lhs, rhs);   //  TODO: fix
+}
+
+//  Bitwise. The operands are always i64 by the time they arrive -- a `byte` is
+//  widened on load -- so there is one instruction per operator and no width
+//  juggling. `>>` is arithmetic, since REF integers are signed.
+void    CompileExprImpl::visit( ExprBand*       expr)
+{
+    m_value = m_builder->CreateAnd(make(expr->lhs), make(expr->rhs), "band");
+}
+
+void    CompileExprImpl::visit( ExprBor*        expr)
+{
+    m_value = m_builder->CreateOr(make(expr->lhs), make(expr->rhs), "bor");
+}
+
+void    CompileExprImpl::visit( ExprShl*        expr)
+{
+    m_value = m_builder->CreateShl(make(expr->lhs), make(expr->rhs), "shl");
+}
+
+void    CompileExprImpl::visit( ExprShr*        expr)
+{
+    m_value = m_builder->CreateAShr(make(expr->lhs), make(expr->rhs), "shr");
+}
+
+void    CompileExprImpl::visit( ExprBnot*       expr)
+{
+    m_value = m_builder->CreateNot(make(expr->arg), "bnot");
 }
 
 void    CompileExprImpl::XY(ExprBinary*     expr,
@@ -2118,6 +2169,24 @@ llvm::Value*    CompileExprImpl::getPropPtr(llvm::Value* var)
 llvm::Value*    CompileExprImpl::setPropPtr(llvm::Value* var, llvm::Value* val)
 {
     return m_builder->CreateStore(val, var);
+}
+
+//  A byte is stored in i8 but read as an integer, so every load of one is
+//  widened here rather than at each call site. Unsigned: a byte is 0..255.
+//  For dispatch, a byte *is* an integer: the value has already been widened
+//  by the time any operator sees it.
+Type*   CompileExprImpl::valueType(Expr* expr)
+{
+    auto    type = expr->type();
+    return type == Factory<TypeByte>::create() ? Factory<TypeInteger>::create() : type;
+}
+
+llvm::Value*    CompileExprImpl::widenByte(llvm::Value* value, Type* type)
+{
+    if(type == Factory<TypeByte>::create())
+        return m_builder->CreateZExt(value, m_builder->getInt64Ty(), "byte");
+
+    return value;
 }
 
 llvm::Value*    CompileExprImpl::getBool(llvm::Value* var)

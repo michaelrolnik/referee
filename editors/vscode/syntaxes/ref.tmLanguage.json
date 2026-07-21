@@ -192,7 +192,7 @@
         {
           "comment": "Not keywords in the grammar -- pre-registered type aliases (core/module.cpp) -- but they behave as builtins",
           "name": "support.type.primitive.ref",
-          "match": "\\b(boolean|integer|number|string)\\b"
+          "match": "\\b(boolean|byte|integer|number|string)\\b"
         }
       ]
     },

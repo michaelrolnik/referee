@@ -52,6 +52,11 @@ struct TypeCalcImpl
              , ExprOr
              , ExprAnd
              , ExprXor
+             , ExprBand
+             , ExprBor
+             , ExprShl
+             , ExprShr
+             , ExprBnot
              , ExprImp
              , ExprEqu
              , ExprAdd
@@ -98,6 +103,13 @@ struct TypeCalcImpl
 
     bool    isNumeric(Type* type) const;
 
+    Type*   bitwise(Expr* expr, Expr* lhs, Expr* rhs);
+
+    //  `byte` is a storage width, not a value kind: reading one yields an
+    //  integer. Applied wherever a value comes out of storage, so nothing
+    //  downstream has to special-case it.
+    Type*   widen(Type* type) const;
+
     Type*   make(Expr*          expr, Type* type = nullptr);
     Type*   make(Spec*          spec);
     Type*   safe(Expr*          expr, Type* type = nullptr);
@@ -135,6 +147,11 @@ struct TypeCalcImpl
     void    visit(ExprChoice*           expr) override;
     void    visit(ExprSub*              expr) override;
     void    visit(ExprXor*              expr) override;
+    void    visit(ExprBand*          expr) override;
+    void    visit(ExprBor*           expr) override;
+    void    visit(ExprShl*           expr) override;
+    void    visit(ExprShr*           expr) override;
+    void    visit(ExprBnot*          expr) override;
     void    visit(Temporal<ExprBinary>* expr) override;
     void    visit(Temporal<ExprUnary>*  expr) override;
     void    visit(Time*                 time) override;
@@ -186,6 +203,11 @@ struct TypeCalcImpl
 private:
     Module* m_module;
 };
+
+Type*   TypeCalcImpl::widen(Type* type) const
+{
+    return type == Factory<TypeByte>::create() ? typeInteger : type;
+}
 
 bool    TypeCalcImpl::isNumeric(Type* type) const
 {
@@ -581,9 +603,62 @@ void    TypeCalcImpl::visit(ExprSub*                expr)
         m_type  = typeNumber;
 }
 
+//  `^` does double duty: logical xor on booleans -- there is no `^^` to pair
+//  with `&&` and `||` -- and bitwise xor on integers, as in C.
 void    TypeCalcImpl::visit(ExprXor*                expr)
-{   
+{
+    if(make(expr->lhs) == typeInteger && make(expr->rhs) == typeInteger)
+    {
+        m_type = typeInteger;
+        return;
+    }
+
     m_type = boolBool2Bool(expr, expr->lhs, expr->rhs);
+}
+
+//  Bitwise operators work on the bit pattern of an integer, which is what a
+//  `byte` read out of a trace becomes. Both operands must be integral: there
+//  is no bitwise reading of a number, and `&&` / `||` already cover booleans.
+Type*   TypeCalcImpl::bitwise(Expr* expr, Expr* lhs, Expr* rhs)
+{
+    auto    lhsT    = make(lhs);
+    auto    rhsT    = make(rhs);
+
+    if(lhsT != typeInteger)
+        throw Exception(lhs->where(), "bad type: expected an integer");
+
+    if(rhsT != typeInteger)
+        throw Exception(rhs->where(), "bad type: expected an integer");
+
+    return  typeInteger;
+}
+
+void    TypeCalcImpl::visit(ExprBand*               expr)
+{
+    m_type  = bitwise(expr, expr->lhs, expr->rhs);
+}
+
+void    TypeCalcImpl::visit(ExprBor*                expr)
+{
+    m_type  = bitwise(expr, expr->lhs, expr->rhs);
+}
+
+void    TypeCalcImpl::visit(ExprShl*                expr)
+{
+    m_type  = bitwise(expr, expr->lhs, expr->rhs);
+}
+
+void    TypeCalcImpl::visit(ExprShr*                expr)
+{
+    m_type  = bitwise(expr, expr->lhs, expr->rhs);
+}
+
+void    TypeCalcImpl::visit(ExprBnot*               expr)
+{
+    m_type  = make(expr->arg);
+
+    if(m_type != typeInteger)
+        throw Exception(expr->arg->where(), "bad type: expected an integer");
 }
 
 void    TypeCalcImpl::visit(Temporal<ExprBinary>*   expr)
@@ -955,7 +1030,9 @@ Type*   TypeCalcImpl::make(Expr* expr, Type* type)
     
     if(type != nullptr)
     {
-        if(type != expr->type())
+        //  Compare the widened view, so a `byte` satisfies a demand for an
+        //  integer -- the node keeps its declared type either way.
+        if(widen(type) != widen(expr->type()))
         {
 //  LCOV_EXCL_START 
 //  GCOV_EXCL_START 
@@ -965,7 +1042,9 @@ Type*   TypeCalcImpl::make(Expr* expr, Type* type)
         }
     }
 
-    return expr->type();
+    //  Rules see `byte` as `integer`; the node keeps the declared type, which
+    //  is what tells the code generator to load one byte rather than eight.
+    return widen(expr->type());
 }
 
 Type*   TypeCalcImpl::make(Spec* spec)

@@ -139,6 +139,11 @@ public:
     std::any visitExprUs(       referee::refereeParser::ExprUsContext*      ctx) override;
     std::any visitExprUw(       referee::refereeParser::ExprUwContext*      ctx) override;
     std::any visitExprXor(      referee::refereeParser::ExprXorContext*     ctx) override;
+    std::any visitExprBand(      referee::refereeParser::ExprBandContext*     ctx) override;
+    std::any visitExprBor(      referee::refereeParser::ExprBorContext*     ctx) override;
+    std::any visitExprShl(      referee::refereeParser::ExprShlContext*     ctx) override;
+    std::any visitExprShr(      referee::refereeParser::ExprShrContext*     ctx) override;
+    std::any visitExprBnot(      referee::refereeParser::ExprBnotContext*     ctx) override;
     std::any visitExprXs(       referee::refereeParser::ExprXsContext*      ctx) override;
     std::any visitExprXw(       referee::refereeParser::ExprXwContext*      ctx) override;
     std::any visitExprYs(       referee::refereeParser::ExprYsContext*      ctx) override;

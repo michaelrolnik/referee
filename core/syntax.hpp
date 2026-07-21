@@ -106,6 +106,17 @@ public:
     size_t alignment() override { return 1; }
 };
 
+//  An 8-bit unsigned value. Stored in one byte, but *read* as an integer:
+//  expressions never see a distinct byte type, so no arithmetic or comparison
+//  rule has to know about it. It exists so that a payload of bytes costs one
+//  byte each rather than eight.
+class TypeByte    : public Visitable<TypePrimitive, TypeByte>
+{
+public:
+    size_t size()      override { return 1; }
+    size_t alignment() override { return 1; }
+};
+
 class TypeInteger : public Visitable<TypePrimitive, TypeInteger>
 {
 public:
@@ -406,6 +417,15 @@ using ExprLt    = Final<SetOper<'<',   ExprBinary>>;
 using ExprLe    = Final<SetOper<'<=',  ExprBinary>>;
 
 using ExprNot   = Final<SetOper<'!',   ExprUnary>>;
+
+//  Bitwise. `^` is deliberately absent: it already exists as logical xor and
+//  is extended to integers rather than duplicated, which is why there is no
+//  `^^` to pair with `&&` and `||`.
+using ExprBnot  = Final<SetOper<'~',   ExprUnary>>;
+using ExprBand  = Final<SetOper<'&',   ExprBinary>>;
+using ExprBor   = Final<SetOper<'|',   ExprBinary>>;
+using ExprShl   = Final<SetOper<'<<',  ExprBinary>>;
+using ExprShr   = Final<SetOper<'>>',  ExprBinary>>;
 
 using ExprOr    = Final<SetOper<'||',  ExprBinary>>;
 using ExprAnd   = Final<SetOper<'&&',  ExprBinary>>;

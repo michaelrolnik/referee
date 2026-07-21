@@ -334,6 +334,61 @@ TEST(Diagnostics, WriterRejectsMisuse)
 // Both are behavioural changes rather than test fixes, so they are left for a
 // separate pass.
 
+// Bitwise operators read the bit pattern of an integer. A number has no such
+// reading, and booleans already have `&&` / `||`, so both are refused rather
+// than silently converted -- and `^` alone is polymorphic, because there is no
+// `^^` for booleans to use instead.
+TEST(Diagnostics, RejectsNonIntegerBitwise)
+{
+    char const* cases[] = {
+        "data r : number;\nG((r & 1) == 0);\n",
+        "data r : number;\nG((1 | r) == 0);\n",
+        "data r : number;\nG((r << 1) == 0);\n",
+        "data r : number;\nG((r >> 1) == 0);\n",
+        "data r : number;\nG(~r == 0);\n",
+        "data a : boolean;\nG((a & 1) == 0);\n",
+        "data a : boolean;\nG(~a);\n",
+        //  `&` binds looser than `==`, as in C, so this reads as
+        //  `n & (1 == 1)` -- which C computes and REF refuses.
+        "data n : integer;\nG(n & 1 == 1);\n",
+    };
+
+    int     n = 0;
+    for (auto const* src : cases)
+    {
+        EXPECT_THROW(parseSnippet(src, "bitwise" + std::to_string(n++)), std::exception) << src;
+    }
+}
+
+// A byte holds 0..255. A cell outside that range is refused rather than
+// truncated: a payload octet silently becoming a different value is exactly
+// what a checker exists to catch.
+TEST(Diagnostics, RejectsOutOfRangeByte)
+{
+    auto    refPath = tmpFile("byterange") + ".ref";
+    {
+        std::ofstream   f(refPath);
+        f << "data b : byte;\nG(b >= 0);\n";
+    }
+
+    for (auto const* cell : {"256", "-1", "0x100"})
+    {
+        auto    csv = tmpFile("byterange") + ".csv";
+        {
+            std::ofstream   f(csv);
+            f << "__time__,b\n0," << cell << "\n";
+        }
+        auto    out = tmpFile("byterange") + ".rdb";
+
+        EXPECT_THROW(referee::db::ingest(refPath, csv, "", out), std::exception) << cell;
+
+        std::remove(csv.c_str());
+        std::remove(out.c_str());
+    }
+
+    std::remove(refPath.c_str());
+}
+
 // An unrecognised trace extension has no loader.
 TEST(Diagnostics, RejectsUnknownTraceFormat)
 {

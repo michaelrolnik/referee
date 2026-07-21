@@ -658,6 +658,20 @@ TEST(Rdb, AccumulateOverRecords)
     EXPECT_TRUE(Referee::executeAll(in, ref, {{csv, false}}, "", out)) << out.str();
 }
 
+// `byte` and the bitwise operators, which exist for each other: a wire
+// protocol packs fields into octets, and neither half is much use alone. A
+// byte is a storage width, not a value kind -- one byte per element in a row,
+// widened to an integer on every read -- so `flag & 0x80` needs no cast.
+TEST(Rdb, BytesAndBitwise)
+{
+    auto    ref = std::string(REFEREE_TEST_DATA_DIR) + "/bytes.ref";
+    auto    csv = std::string(REFEREE_TEST_DATA_DIR) + "/bytes.csv";
+
+    std::ifstream       in(ref);
+    std::ostringstream  out;
+    EXPECT_TRUE(Referee::executeAll(in, ref, {{csv, false}}, "", out)) << out.str();
+}
+
 // Computed props (`data x = expr`) of every width. The backing buffer was
 // allocated one byte per state, which is right only for a boolean; an integer
 // or number stored eight bytes into a one-byte slot and trampled the states

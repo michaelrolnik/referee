@@ -216,7 +216,7 @@ Two consequences worth knowing:
 
 The type grammar supports:
 
-- **Primitive types:** `boolean`, `integer` (64-bit signed), `number` (floating point), `string`.
+- **Primitive types:** `boolean`, `byte` (8-bit unsigned), `integer` (64-bit signed), `number` (floating point), `string`.
 - **Enumerations:** `enum { A, B, ... }` — a finite set of named values referenced as `T.A`, `T.B`. Enums are nominal: two enum types with the same members are distinct.
 - **Structures:** `struct { field1: T1; field2: T2; ... }` — record types with named, typed fields. Nesting is allowed (`struct { inner: struct { ... }; }`).
 - **Arrays:** `T[N]`, which may be stacked to form multi-dimensional arrays `T[N][M]`. Writing `T[]` leaves the extent out of the specification and takes it from the trace instead — see *Arrays sized by the trace* below. Dimensions read as they do in C, C++ and Kotlin: `integer[3][2]` is **three** arrays of **two**, the first subscript written is the outer one, and `g[2][1]` is the last element. Rows are homogeneous — the outer array's element type is a single type, so every row of a `T[N][M]` has exactly `M` elements and a ragged array cannot be expressed.
@@ -241,29 +241,55 @@ conf grid   : Matrix;
 
 Member access uses `.` (`lock.ON`, `pos.x`, `xyz.limits`) and array indexing uses `[...]` (`xyz.limits[2]`, `grid[1][2].x`). Accesses nest in the obvious way, so `data abc : struct { x: integer[2][3]; };` permits `abc.x[1][2]`.
 
+#### `byte`, and reasoning about a wire
+
+`byte` is a **storage width, not a value kind**. It occupies one octet in a trace row instead of eight, and every read of one widens to `integer`, so no arithmetic, comparison or accumulation rule has to know it exists — `flag & 0x80` type-checks against integer operands with no cast, and `Sum(true, payload[0])` totals bytes as integers. A cell outside `0..255` is refused at load time rather than truncated, since a payload octet quietly becoming a different value is precisely what a checker exists to catch.
+
+It exists for binary protocols. A message arrives pre-framed — someone has already cut the stream into records — and the framing lives in individual bits of an octet:
+
+```text
+data flag    : byte;
+data payload : byte[];          // extent from the trace
+
+G(k.SOM <=> (flag & 0x01) != 0);        // start-of-message bit
+G(k.EOM <=> (flag & 0x02) != 0);        // end-of-message bit
+G(flag >> 4 <= 3);                      // sequence number, top nibble
+
+data xorsum = payload[0] ^ payload[1] ^ payload[2] ^ payload[3];
+```
+
+Without `byte` a payload costs eight bytes per octet in every row; without the bitwise operators the framing bits are reachable only as `(flag / 128) % 2 == 1`. Neither half is much use alone. See `test/logic/bytes.ref`.
+
 Enum members are reached **through the signal**, not through the type: `lock.ON` reads as "the current value of `lock` is `ON`" and is the form requirements use to turn a raw signal into a boolean. Writing the member against the type instead (`State.ON`, or `lock == State.ON`) is *not* accepted — the parser resolves the head of a dotted name as a signal, so a type name there fails to resolve.
 
 ### Expressions
 
 REF expressions combine the familiar C-family operator set with dedicated temporal operators. Outside of the temporal layer, the non-temporal expression language is what requirement authors use most of the time.
 
-**Operators, from tightest to loosest binding.** The ordering follows C++ and Kotlin, which agree on all of these: multiplicative, additive, relational, equality, `^`, `&&`, `||`. `=>` and `<=>` have no C++ equivalent and sit where logic conventionally puts them — looser than `||`, tighter than the conditional. So `2 + 3 * 4` is 14, `a || b && c` is `a || (b && c)`, and `a && x <= 5` needs no parentheses.
+**Operators, from tightest to loosest binding.** The ordering follows C++ and Kotlin, which agree on all of these: multiplicative, additive, shift, relational, equality, `&`, `^`, `|`, `&&`, `||`. `=>` and `<=>` have no C++ equivalent and sit where logic conventionally puts them — looser than `||`, tighter than the conditional. So `2 + 3 * 4` is 14, `a || b && c` is `a || (b && c)`, and `a && x <= 5` needs no parentheses.
 
 
 | Category    | Operators                                  | Notes                                            |
 | ----------- | ------------------------------------------ | ------------------------------------------------ |
 | Postfix     | `.field`, `[index]`                        | Member access and array indexing.                |
-| Unary       | `!`, `-`                                   | Logical negation and arithmetic negation.        |
+| Unary       | `!`, `-`, `~`                              | Logical negation, arithmetic negation, bitwise complement. |
 | Multiplicative | `*`, `/`, `%`                           | `%` is integer modulo.                           |
 | Additive    | `+`, `-`                                   |                                                  |
+| Shift       | `<<`, `>>`                                 | Integers only. `>>` is arithmetic — REF integers are signed. |
 | Relational  | `<`, `<=`, `>`, `>=`                       |                                                  |
 | Equality    | `==`, `!=`                                 | Works on booleans, numbers, strings, enums.      |
-| Logical XOR | `^`                                        | Logical, not bitwise.                            |
+| Bitwise AND | `&`                                        | Integers only.                                   |
+| XOR         | `^`                                        | Bitwise on integers, logical on booleans.        |
+| Bitwise OR  | `\|`                                       | Integers only.                                   |
 | Logical AND | `&&`                                       |                                                  |
 | Logical OR  | `\|\|`                                      |                                                  |
 | Implication | `=>`, `<=>`                                | Material implication and biconditional.          |
 | Ternary     | `cond ? then : else`                       | Selects between two values of the same type.     |
 | Grouping    | `(...)`                                    |                                                  |
+
+The precedence is C's, exactly — including the part everyone trips over: `&`, `^` and `\|` bind *looser* than `==`, so `flag & 0x80 != 0` reads as `flag & (0x80 != 0)`. C computes that silently; REF rejects it, because `!=` yields a boolean and the bitwise operators take integers. Write `(flag & 0x80) != 0`.
+
+`^` is the one operator that does double duty — bitwise xor on integers, logical xor on booleans — because there is no `^^` to pair with `&&` and `\|\|`. `&` and `\|` stay integers-only for that reason: booleans already have the doubled spellings.
 
 `=>` and `<=>` are first-class operators, not macros: `p => q` is exactly `!p || q`, and `p <=> q` is `p == q` restricted to booleans, but writing them with the logical spelling makes requirement intent immediately readable ("whenever `p`, then `q`").
 

@@ -88,6 +88,7 @@ enum TypeTag : uint8_t
     TAG_ENUM    = 5,
     TAG_STRUCT  = 6,
     TAG_ARRAY   = 7,
+    TAG_BYTE    = 8,
 };
 
 template<typename T>
@@ -126,13 +127,14 @@ std::string     readString(uint8_t const*& cur, uint8_t const* end)
 }
 
 struct TypeEncoder
-    : Visitor<TypeBoolean, TypeInteger, TypeNumber, TypeString,
+    : Visitor<TypeBoolean, TypeByte, TypeInteger, TypeNumber, TypeString,
               TypeEnum, TypeStruct, TypeArray>
 {
     std::vector<uint8_t>&   out;
     explicit TypeEncoder(std::vector<uint8_t>& o) : out(o) {}
 
     void    visit(TypeBoolean*) override { appendBytes<uint8_t>(out, TAG_BOOLEAN); }
+    void    visit(TypeByte*)    override { appendBytes<uint8_t>(out, TAG_BYTE);    }
     void    visit(TypeInteger*) override { appendBytes<uint8_t>(out, TAG_INTEGER); }
     void    visit(TypeNumber*)  override { appendBytes<uint8_t>(out, TAG_NUMBER);  }
     void    visit(TypeString*)  override { appendBytes<uint8_t>(out, TAG_STRING);  }
@@ -174,7 +176,7 @@ Type*   decodeType(uint8_t const*& cur, uint8_t const* end,
 using TypeCtor = Type* (*)(uint8_t const*&, uint8_t const*,
                            std::vector<std::unique_ptr<Type>>&);
 
-static std::array<TypeCtor, 8> const kTypeCtors = {
+static std::array<TypeCtor, 9> const kTypeCtors = {
     /* 0  (unused)  */ nullptr,
     /* TAG_BOOLEAN  */ [](uint8_t const*&, uint8_t const*,
                           std::vector<std::unique_ptr<Type>>&) -> Type*
@@ -226,6 +228,11 @@ static std::array<TypeCtor, 8> const kTypeCtors = {
         auto    count = readBytes<uint32_t>(cur, end);
         auto*   t     = decodeType(cur, end, sink);
         return new TypeArray(t, count);
+    },
+    /* TAG_BYTE     */ [](uint8_t const*&, uint8_t const*,
+                          std::vector<std::unique_ptr<Type>>&) -> Type*
+    {
+        return new TypeByte();
     },
 };
 
@@ -286,7 +293,7 @@ void    decodeSchema(uint8_t const*&                         cur,
 }
 
 class BlobWalker
-    : public Visitor<TypeBoolean, TypeInteger, TypeNumber, TypeString,
+    : public Visitor<TypeBoolean, TypeByte, TypeInteger, TypeNumber, TypeString,
                      TypeEnum, TypeStruct, TypeArray>
 {
 public:
@@ -304,6 +311,7 @@ protected:
     virtual void    visitString(uint8_t* slot) = 0;
 
     void    visit(TypeBoolean* t) override { advance(t); }
+    void    visit(TypeByte*    t) override { advance(t); }
     void    visit(TypeInteger* t) override { advance(t); }
     void    visit(TypeNumber*  t) override { advance(t); }
     void    visit(TypeEnum*    t) override { advance(t); }
@@ -855,7 +863,7 @@ void const*     Reader::propBlob(std::size_t stateIdx, std::size_t propIdx) cons
 }
 
 struct DataYamlPrinter
-    : Visitor<TypeBoolean, TypeInteger, TypeNumber, TypeString, TypeEnum, TypeStruct, TypeArray>
+    : Visitor<TypeBoolean, TypeByte, TypeInteger, TypeNumber, TypeString, TypeEnum, TypeStruct, TypeArray>
 {
     std::ostream& os;
     Type*          type;
@@ -886,6 +894,11 @@ struct DataYamlPrinter
     void visit(TypeBoolean*) override
     {
         os << ((*reinterpret_cast<bool const*>(data)) ? "true" : "false");
+    }
+
+    void visit(TypeByte*) override
+    {
+        os << static_cast<unsigned>(*reinterpret_cast<std::uint8_t const*>(data));
     }
 
     void visit(TypeInteger*) override
@@ -947,7 +960,7 @@ struct DataYamlPrinter
 };
 
 struct TypeYamlPrinter
-    : Visitor<TypeBoolean, TypeInteger, TypeNumber, TypeString, TypeEnum, TypeStruct, TypeArray>
+    : Visitor<TypeBoolean, TypeByte, TypeInteger, TypeNumber, TypeString, TypeEnum, TypeStruct, TypeArray>
 {
     std::ostream&   os;
     Type*           type;
@@ -975,6 +988,7 @@ struct TypeYamlPrinter
     }
 
     void visit(TypeBoolean*)  override { os << "boolean"; }
+    void visit(TypeByte*)     override { os << "byte"; }
     void visit(TypeInteger*)  override { os << "integer"; }
     void visit(TypeNumber*)   override { os << "number"; }
     void visit(TypeString*)   override { os << "string"; }

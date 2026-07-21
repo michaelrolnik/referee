@@ -120,6 +120,7 @@ expression  : sign? integer                                     # ExprConst
 
             | '!' expression                                    # ExprNot
             | '-' expression                                    # ExprNeg
+            | '~' expression                                    # ExprBnot
 
             //  Precedence is the order of these alternatives, tightest first.
             //  It follows C++ / Kotlin: multiplicative, additive, relational,
@@ -133,6 +134,9 @@ expression  : sign? integer                                     # ExprConst
             | expression '+'   expression                       # ExprAdd
             | expression '-'   expression                       # ExprSub
 
+            | expression '<<'  expression                       # ExprShl
+            | expression '>>'  expression                       # ExprShr
+
             | expression '<'   expression                       # ExprLt
             | expression '<='  expression                       # ExprLe
             | expression '>'   expression                       # ExprGt
@@ -141,7 +145,10 @@ expression  : sign? integer                                     # ExprConst
             | expression '=='  expression                       # ExprEq
             | expression '!='  expression                       # ExprNe
 
+            | expression '&'   expression                       # ExprBand
             | expression '^'   expression                       # ExprXor
+            | expression '|'   expression                       # ExprBor
+
             | expression '&&'  expression                       # ExprAnd
             | expression '||'  expression                       # ExprOr
 

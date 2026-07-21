@@ -870,6 +870,32 @@ std::any Antlr2AST::visitExprXor(       referee::refereeParser::ExprXorContext* 
     return acceptBinary<ExprXor>(ctx);
 }
 
+std::any Antlr2AST::visitExprBand(      referee::refereeParser::ExprBandContext*     ctx)
+{
+    return acceptBinary<ExprBand>(ctx);
+}
+
+std::any Antlr2AST::visitExprBor(      referee::refereeParser::ExprBorContext*     ctx)
+{
+    return acceptBinary<ExprBor>(ctx);
+}
+
+std::any Antlr2AST::visitExprShl(      referee::refereeParser::ExprShlContext*     ctx)
+{
+    return acceptBinary<ExprShl>(ctx);
+}
+
+std::any Antlr2AST::visitExprShr(      referee::refereeParser::ExprShrContext*     ctx)
+{
+    return acceptBinary<ExprShr>(ctx);
+}
+
+std::any Antlr2AST::visitExprBnot(      referee::refereeParser::ExprBnotContext*     ctx)
+{
+    return acceptUnary<ExprBnot>(ctx);
+}
+
+
 std::any Antlr2AST::visitExprXs(        referee::refereeParser::ExprXsContext*      ctx)
 {
     auto    args    = ctx->expression();
