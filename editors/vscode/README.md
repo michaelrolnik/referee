@@ -10,7 +10,7 @@ consume the same extension format.
 ## What it highlights
 
 The keyword lists are generated from `core/referee.g4`, not written by hand, so
-they cover the grammar exactly — all 78 reserved words, including the whole
+they cover the grammar exactly — all 83 reserved words, including the whole
 Dwyer specification-pattern vocabulary.
 
 - **Temporal operators** — `G` `F` `H` `O` `Xs` `Xw` `Ys` `Yw` `Us` `Uw` `Ss`
