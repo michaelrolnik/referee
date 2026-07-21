@@ -7,23 +7,95 @@
 
 Every run compiles from scratch. `referee execute` parses the `.ref`, lowers it to LLVM IR, runs the O2 pipeline and JITs the result, then reads the trace. For a large requirement set that work is repeated on every invocation, and it is identical every time — the specification has not changed.
 
-That cost lands where it is least wanted:
+### Measured, before deciding anything
 
-- **CI**, which checks the same requirements against a new trace on every commit.
-- **Deployed checking**, where a machine that validates logs should not need a compiler toolchain, an LLVM runtime, or the `.ref` sources on it at all.
-- **Batch validation** of many traces, where the compile is paid once conceptually and N times in practice.
+`pass.ref` (233 requirements) against traces of two sizes:
 
-There is also a distribution argument. Shipping a checker currently means shipping the specification, the compiler and its LLVM dependency. Shipping one executable is a different proposition, especially where the requirements themselves are not to be handed over.
+| trace | wall time |
+| --- | --- |
+| 26 rows | 700 ms |
+| 10,400 rows | 1904 ms |
+
+That gives a marginal cost of about **0.12 ms per row** and a fixed cost of about **700 ms**, essentially all of it compilation — `referee compile` alone, which stops after the O2 pipeline, accounts for 351 ms of it.
+
+So checking is cheap and compiling is not. For a hundred small traces:
+
+| | total |
+| --- | --- |
+| today, one invocation each | ~70 s |
+| compile once, check many | ~1 s |
+| pre-compiled checker | ~0.6 s |
+
+**Most of the available win comes from not recompiling, not from compiling ahead of time.** Accepting several traces per invocation —
+
+```bash
+referee execute spec.ref run-*.rdb
+```
+
+— captures the great majority of it, needs no new artefact, and is a small change: `buildJitFromRef` is already separate from the per-trace work, so the JIT is built once and the trace loop runs inside it. **That should be built first, and this document's motivation is not primarily speed.**
+
+### What remains after that
+
+Three things multi-trace does not give:
+
+- **No toolchain on the checking machine.** A host validating logs still needs `referee`, and therefore LLVM. That is a large dependency to deploy, and in some environments not deployable at all.
+- **No specification on the checking machine.** Shipping a checker currently means shipping the requirements. They are often the thing least intended to be handed over.
+- **Better code.** A JIT pays its compile time on every run, which caps how much optimisation is reasonable. A build-time compile can afford O3, cross-requirement LTO and target-specific tuning, because the cost is paid once. This is the only remaining *performance* argument, and it is about the quality of the generated code rather than the compile.
+
+Those are deployment and embedding concerns. They are real, but they should be stated as the motivation rather than the compile time, which multi-trace addresses more cheaply.
 
 ## Shape
 
+Three artefacts, in increasing order of independence and of difficulty. Each is the previous one plus a step, so they are stages rather than alternatives.
+
+### 1. An object file
+
 ```bash
-referee build spec.ref -o door-checker [-I dir]…      # once, at spec-change time
-./door-checker trace.rdb                              # per trace, no compiler
-./door-checker run-*.rdb                              # many traces
+referee build -c spec.ref -o spec.o
 ```
 
-Output, exit code and per-requirement labels are identical to `referee execute`, so the two are interchangeable in a pipeline and a CI job can switch to the compiled form without touching anything that reads its output.
+The plain output of `addPassesToEmitFile` over the module `Referee::compile` already produces. Composable with any build system, and the primitive the other two are built from. Cross-compilation falls out of it, since `TargetMachine` takes a target triple.
+
+### 2. A shared object
+
+```bash
+referee build --shared spec.ref -o spec.so
+
+referee execute --checker spec.so run-*.csv     # or dlopen it from a host
+```
+
+The compiled requirements, the requirement table and the schema, with nothing else — the runtime stays in whatever loads it. This is the **embeddable** form, and the one that fits a host application: a test harness or a log pipeline can `dlopen` it and push records through without spawning a process.
+
+It exports exactly one symbol, which keeps the ELF-naming problem from arising at all:
+
+```c
+//  The only exported symbol. Everything else is internal, so requirement
+//  labels stay data rather than becoming symbol names.
+extern "C" referee_module_v1 const* referee_module(void);
+
+struct referee_module_v1 {
+    uint32_t                version;        // rejects a .so built by another release
+    uint8_t  const*         schema;         // .rdb type encoding
+    size_t                  schemaBytes;
+    size_t                  count;
+    struct requirement {
+        char const*         label;          // "reqs/one.ref:5:0 .. 5:10"
+        bool              (*eval)(state_t const*, state_t const*, conf_t const*);
+    } const*                requirements;
+    void                  (*prepare)(state_t*, state_t*, conf_t const*);
+};
+```
+
+Linking a `.so` is also markedly simpler than linking an executable — no C runtime startup, no `main`, no libc entry.
+
+### 3. A standalone executable
+
+```bash
+referee build spec.ref -o door-checker
+./door-checker run-*.rdb run-*.csv
+```
+
+Stage 2 plus a driver and a static link of the runtime. Fully independent: no `referee`, no LLVM, no `.ref`. Output, exit code and labels identical to `referee execute`, so a CI job can switch between them without touching anything that reads the report.
 
 ## Why this is unusually cheap here
 
@@ -62,16 +134,7 @@ Requirements are currently found by name: `Compile::make` emits one function per
 
 That does not survive into an object file. Those names are fine as JIT symbols and poor as ELF symbols — they contain spaces, colons and slashes. Mangling them would make the labels unrecoverable, which matters because the label *is* the report.
 
-Instead, emit a static table alongside the functions:
-
-```c
-struct requirement {
-    char const* label;      // "reqs/one.ref:5:0 .. 5:10"
-    bool      (*eval)(state_t const* frst, state_t const* last, conf_t const*);
-};
-```
-
-with the functions given ordinary internal symbol names and the table carrying the human-readable label as data. The driver walks the table in order, so the sort that `buildJitFromRef` does at run time happens once at build time instead. The report comes out byte-identical.
+Instead, emit the static table shown under *A shared object* above: the functions get ordinary internal symbol names and the table carries the human-readable label as data. The same table serves all three artefacts. The driver walks the table in order, so the sort that `buildJitFromRef` does at run time happens once at build time instead. The report comes out byte-identical.
 
 ### The embedded schema
 
@@ -103,6 +166,8 @@ Producing an executable needs a linker and a C runtime. Options, in the order I 
 3. **Link in-process with LLD**, if it is available as a library. Removes the external toolchain dependency at the cost of another LLVM component.
 
 I would implement (2) first because it is unavoidable anyway, then (1) on top, and treat (3) as an optimisation.
+
+A shared object is an easier case than an executable and worth reaching first: no C runtime startup, no `main`, no libc entry, so `ld -shared` over the emitted object and the table is close to the whole story.
 
 ### Cross-compilation
 
@@ -144,5 +209,5 @@ With that done, the checker's flow for a CSV is the same as `Referee::execute`'s
 ## Open questions
 
 1. **Is the executable self-contained or does it link a shared runtime?** Static is the simpler distribution story and the one the motivation implies. Accepting CSV and YAML pulls in yaml-cpp and rapidcsv, so "small" here means free of LLVM and ANTLR rather than free of everything.
-2. **Should the checker report which trace failed** when handed several? `referee execute` takes one. Multiple traces need either a per-trace prefix in the output or a summary, and that is a format decision affecting anything that parses the report.
+2. **How is a multi-trace report formatted?** This is now the first question rather than a later one, because accepting several traces per invocation is the change that should land first — before any of these artefacts. Either each block is prefixed with its trace, or there is a summary, and either way it is a format decision affecting anything that parses the report. Whatever is chosen, the compiled artefacts should match it rather than invent a second convention.
 3. **Does `referee build` need to run the trace at all?** With load-sized arrays (see `docs/quantifiers.md`) the element count comes from the trace, so a specification using them cannot be compiled without one — which conflicts with the whole premise. Either such specifications are rejected by `build`, or `build` takes a representative trace to fix the sizes, and the resulting checker only accepts traces matching them. This interaction should be settled before either feature is finished.
