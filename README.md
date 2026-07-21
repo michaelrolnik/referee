@@ -12,7 +12,8 @@ In short: Referee connects human-readable requirement intent to executable verif
 
 - A REF language front end: lexer, parser, and grammar (`core/referee.g4`) covering typed declarations (`type`, `data`, `conf`), structs, enums, arrays, and Dwyer-style property specification patterns (e.g. `globally, ...`, `before ..., ... eventually holds after N milliseconds`, `between ... and ..., it is always the case that ...`).
 - A typed AST and a set of semantic visitors (`canonic`, `negated`, `rewrite`, `typecalc`, `printer`, `csvHeaders`).
-- Lowering of temporal formulas (LTL/TPTL/MTL-flavoured, including strong/weak next `Xs`/`Xw`, bounded until/release, freeze variables, past operators) to **LLVM IR**, followed by standard LLVM optimization passes.
+- Lowering of temporal formulas (LTL/TPTL/MTL-flavoured, including strong/weak next `Xs`/`Xw`, bounded until/release, freeze variables, past operators) to **LLVM IR**, followed by standard LLVM optimization passes. Unbounded `Us`/`Uw`/`Rs`/`Rw`/`Ss`/`Sw`/`Ts`/`Tw` are lowered to a single linear pass over the trace rather than the naive nested scan — see *Temporal lowering* below.
+- **Computed signals** (`data Name = expression;`) — named derived signals, including temporal ones, evaluated once per state for the whole trace by a generated `__prepare__` pass and then read like any other signal. See *Computed signals* below.
 - A JIT-based test harness (`test/logic.cpp`) that compiles REF files, JITs them against a synthetic trace (`state_t[]` + `conf_t`), and asserts that each requirement evaluates to `true` (pass) or `false` (fail) over that trace. See `test/logic/pass.ref` and `test/logic/fail.ref` for the intended execution model.
 - A CLI with two subcommands:
   - `referee compile file.ref` — emits LLVM IR for a given `.ref` file.
@@ -23,19 +24,22 @@ In short: Referee connects human-readable requirement intent to executable verif
 
 **What is missing**
 
+- **Linear lowering for time-bounded operators.** The unbounded temporal operators compile to a single pass over the trace; the bounded forms still use the `O(N²)` nested scan. This is a gap in the implementation rather than a limit of the approach — bounded operators with loop-invariant bounds reduce to the same linear scan via a "next decisive index" array and two monotone pointers. See *Temporal lowering* below.
 - **Streaming / online ingestion.** `referee execute` currently materialises the whole trace before invoking the JIT functions (CSV/YAML are parsed top-to-bottom into per-state blobs; `.rdb` is read into a single buffer). A streaming driver that feeds records to the JIT-compiled requirement functions as they arrive (and reports violation locations live) is not implemented yet — the on-disk `.rdb` layout is already mmap-friendly, so this is a Reader-side change rather than a format change.
 - **VSCode / LSP plugin** for editing REF files with diagnostics, as envisioned in the original design.
 - **Product-specific model exporters/importers** to adapt arbitrary system logs into the canonical trace format.
 
-## Why this is better than the original Python approach
+## Design rationale
 
-1. **Declarative, not imperative.** Requirements are written once, in a language designed for them (temporal-logic patterns), instead of being re-expressed as hand-maintained Python state machines. The slide deck's elevator example ("between called and opened, transition to `atfloor` occurs at most 2 times") is a single line of REF; the Python equivalent is a class with flags, counters, and event handlers that must be kept in sync with the requirement as it evolves.
-2. **Native performance.** Requirements compile to optimized LLVM IR and run as native code via the ORC JIT. Checking a long trace against hundreds of properties does not pay the interpreter tax of a Python runtime, which matters when validating large systems over long log windows.
-3. **All requirements evaluated together — contradictions surface automatically.** Because every property is compiled into the same module and evaluated over the same trace, mutually inconsistent requirements are detected as soon as a trace exists that no property set can satisfy. In the Python approach each check was an isolated script, so contradictions between requirements typically went unnoticed until much later.
-4. **Strong types, not just booleans.** REF supports integers, numbers, strings, enums, structs, and multi-dimensional arrays, so requirements can talk about real signal values (`lock.ON`, `abc.x[2][3].a`) rather than pre-extracted booleans. This removes an entire class of bugs in the "boolean extraction" layer that the Python version had to maintain by hand.
-5. **Patterns instead of formulas.** Engineers write Dwyer-style English-like patterns; the compiler translates them into the underlying temporal-logic formulas (with correct handling of finite-trace semantics, strong/weak next, bounded operators). The original Python code effectively re-implemented each pattern ad hoc, with all the subtle off-by-one and finite-trace bugs that implies.
-6. **Separation of concerns.** Trace generation (recording what the system did) and trace verification (checking that it satisfies the requirements) are fully decoupled. The same compiled requirements can be applied online, offline, to real logs, or to simulated traces, without changing the requirement source.
-7. **Lower barrier for the test team.** Writing and reviewing a REF file requires understanding of the system, not programming fluency — which was one of the explicit goals and outcomes reported in the original deployment.
+The usual way to check behavioural requirements against a log is to hand-write a checker per requirement — a state machine with flags, counters, and event handlers. Referee exists because that approach degrades badly as the requirement set grows. The design choices below are each a response to a specific way it degrades.
+
+1. **Declarative, not imperative.** A requirement is written once, in a notation meant for it. "Between `called` and `opened`, a transition to `atfloor` occurs at most twice" is a single line of REF. Written as a checker it is a class whose flags and counters have to be re-derived, by hand, every time the requirement is reworded — and the requirement and the code that checks it drift apart silently, because nothing connects them.
+2. **Patterns instead of raw formulas.** Engineers write Dwyer-style English-like patterns; the compiler translates them into the underlying temporal-logic formulas, handling finite-trace semantics, strong/weak next, and bounded operators uniformly. Hand-written checkers re-implement each pattern ad hoc, and the off-by-one and end-of-trace mistakes that come with that are made once per requirement rather than once per compiler.
+3. **Strong types, not just booleans.** REF has integers, numbers, strings, enums, structs, and multi-dimensional arrays, so a requirement can talk about signal values directly (`lock.ON`, `abc.x[2][3].a`). Without that, every requirement sits behind a hand-maintained layer that flattens real signals into booleans — a layer that is itself untested and a reliable source of bugs.
+4. **All requirements evaluated together.** Every property is compiled into one module and evaluated over the same trace, so mutually inconsistent requirements become observable: they show up as a trace that no requirement set can satisfy. A collection of independent checker scripts cannot surface a contradiction between two of them at all.
+5. **Native performance.** Requirements compile to optimized LLVM IR and run as native code via the ORC JIT, with the unbounded temporal operators lowered to a linear pass over the trace. Checking a long trace against hundreds of properties is the normal case, not the stress case.
+6. **Separation of concerns.** Recording what the system did and checking that it was allowed to are fully decoupled. The same compiled requirements apply to real logs, simulated traces, offline batches, or (once streaming lands) a live feed, with no change to the requirement source.
+7. **Reviewable by the people who own the requirements.** Reading and writing a REF file needs an understanding of the system, not programming fluency. A requirement that a test engineer can review is a requirement that gets reviewed.
 
 ## The REF Language
 
@@ -69,6 +73,32 @@ Three declaration kinds introduce names into the program:
 - `conf Name : T;` — a **configuration value** that is constant for the whole trace. It is effectively a field of the `conf_t` struct shared by all records.
 
 Splitting `data` from `conf` is a deliberate modeling choice: signals that change per event (sensor readings, state machine outputs) live in `data`, while things that are set at the start of a run and never change (thresholds, limits, operating mode) live in `conf`. The compiler uses that distinction to generate a correct trace/config memory layout (see `core/visitors/csvHeaders.cpp`, which derives CSV column names from `data` declarations).
+
+#### Computed signals
+
+`data` has a second form that gives a name to a derived signal instead of declaring a column in the trace:
+
+```text
+data Name = expression;
+```
+
+The type is inferred from the expression, and the expression may use anything already in scope — other `data` signals, `conf` values, and the full operator set including the temporal operators:
+
+```text
+data a : boolean;
+data b : boolean;
+
+data both      = a && b;          // point-wise
+data seen_a    = O(a);            // "a has occurred at some point in the past"
+data next_both = Xs(both);        // computed signals may build on each other
+```
+
+This exists to let a recurring sub-formula be named once and referred to everywhere, rather than pasted into a dozen requirements. It is also a performance lever: a computed signal is evaluated exactly once per state for the whole trace, whereas the same sub-formula written inline in ten requirements is evaluated ten times.
+
+Two consequences worth knowing:
+
+- **Declaration order matters.** A computed signal can only reference names declared before it, so forward and circular references cannot be written. Dependencies are resolved in declaration order.
+- **Computed signals are not stored in `.rdb` files.** They are a property of the specification, not of the recording, so `rdb build` writes only the trace-backed signals and `referee execute` recomputes the derived ones from the `.ref` at run time. A `.rdb` therefore stays valid when a computed signal's defining expression changes — only the `.ref` needs to be re-read. See `test/logic/expr_data.ref` and `test/logic/expr_chain.ref` for worked examples.
 
 The type grammar supports:
 
@@ -162,7 +192,7 @@ On top of raw temporal-logic expressions, REF provides Dwyer's property specific
 
 Time bounds may be `within N units`, `after N units`, or `between N and M units`, where `units` is one of `nanoseconds`, `microseconds`, `milliseconds`, `seconds`, `minutes`.
 
-Example — the elevator system from the slide deck:
+Example — an elevator system:
 
 ```text
 type Button : enum { DEPRESSED, RELEASED };
@@ -195,9 +225,38 @@ A REF program does not describe a computation that produces outputs; it describe
 2. **A trace is an ordered list of states plus a configuration.** Each state carries a timestamp (implicitly exposed to REF as the `__time__` pseudo-identifier inside freeze scopes) and values for every declared `data` field. The configuration carries values for every declared `conf` field. The trace is assumed to be **finite**; strong/weak variants of the temporal operators exist specifically so requirements behave correctly at the end of that finite trace.
 3. **Every requirement statement becomes one function.** For a statement `R` at file position `P`, the compiler emits an LLVM function named after `P` with the signature `bool eval(const state_t* states, size_t n, const conf_t* conf)` (more precisely, a pointer to the first state and the current-index bookkeeping that the temporal operators need). That function returns `true` iff the trace satisfies `R`.
 4. **The module is optimized, then JIT-compiled.** `Referee::compile` runs a fixed pipeline of LLVM passes (instruction combining, reassociation, GVN, CFG simplification, loop strength reduction, loop data prefetch, plus a custom pass that lowers `llvm.smax/smin/umax/umin` intrinsics into `icmp`+`select` to keep the ORC JIT happy) and pins the module's data layout to the host so struct field offsets match the C ABI used by the driver.
-5. **Verification is just iteration.** The runtime driver loads every requirement function by name, calls each one against the trace, and reports pass/fail. Two front ends use this loop today: the gtest harness (`test/logic.cpp`) builds a synthetic trace in C++, while the `referee execute` CLI ingests a CSV trace whose column layout is the one `csvHeaders` derives from the `data` declarations (and, optionally, a single-row `conf.csv` for `conf` declarations).
+5. **Computed signals are filled in first.** Alongside the requirement functions the compiler emits a `__prepare__` function, which the driver calls once before any requirement runs. It walks the trace once *per computed signal*, in declaration order, writing that signal's value at every state. Per-signal rather than per-state ordering is what makes `data y = Xs(x);` work: `x` is materialised across the whole trace before anything reading `x` at a later state is evaluated. Specifications with no computed signals get an empty `__prepare__`.
+6. **Verification is just iteration.** The runtime driver loads every requirement function by name, calls each one against the trace, and reports pass/fail. Two front ends use this loop today: the gtest harness (`test/logic.cpp`) builds a synthetic trace in C++, while the `referee execute` CLI ingests a CSV trace whose column layout is the one `csvHeaders` derives from the `data` declarations (and, optionally, a single-row `conf.csv` for `conf` declarations).
 
 Because all requirements are evaluated over the same trace in the same module, any inconsistency between them becomes observable: a trace that satisfies one requirement may violate another, and the set of requirements is collectively checkable — not a collection of independent scripts.
+
+### Temporal lowering
+
+The binary temporal operators come in two families that are duals of each other, and the distinction drives both the generated code and its correctness:
+
+| Family | Operators | Recurrence |
+| ------ | --------- | ---------- |
+| Disjunctive | `Us`, `Uw` (until), `Ss`, `Sw` (since) | `val[i] = rhs[i] \|\| (lhs[i] && val[i±1])` |
+| Conjunctive | `Rs`, `Rw` (release), `Ts`, `Tw` (trigger) | `val[i] = rhs[i] && (lhs[i] \|\| val[i±1])` |
+
+`U`/`R` recur forward (`val[i+1]`), `S`/`T` recur backward (`val[i-1]`). The strong/weak distinction is the base case: strong variants seed the recurrence with `false` at the end of the finite trace, weak variants with `true`. Several surface operators canonicalize into this family — `G(x)` becomes `Rw(false, x)`, for instance — so the conjunctive form is on the hot path even for specifications that never mention release or trigger by name.
+
+For the **unbounded** operators the compiler emits that recurrence directly as a single linear pass over the trace into a `bool[numStates]` buffer, then each use of the operator becomes an array load. Evaluating a requirement containing `k` distinct unbounded temporal operators therefore costs `O(k·N)` rather than the `O(N²)` of a nested scan, and a sub-formula shared between operators is computed once.
+
+**Bounded** operators (`G[0:2500](a)`, `Us[1000:3000](a, c)`, …) still use the nested-scan lowering, but only because the linear version is not implemented yet — not because they are inherently quadratic. The recurrence above genuinely does not apply to them (`timeLo`/`timeHi` derive from the timestamp at the *evaluation point*, so `val[i]` and `val[i+1]` are quantified over different windows and the sub-result is not reusable), but a different linear formulation does:
+
+Because timestamps increase strictly, the states the scan examines at evaluation point `i` form a contiguous index range `[S(i), E(i)]`, and the scan's answer is the outcome at the first *decisive* index in that range — the first `j` with `rhs[j] == rhsV` or `lhs[j] == lhsV` — or `endV` if there is none. So with
+
+```text
+nextDec[j] = smallest k >= j that is decisive        // one backward scan, O(N)
+val[i]     = nextDec[S(i)] <= E(i) ? outcome(nextDec[S(i)]) : endV
+```
+
+and `S(i)`, `E(i)` advanced by two monotone pointers, the whole operator is O(N). This subsumes the unbounded case as `S(i) = i`, `E(i) = numStates-2`, so it would replace the current recurrence rather than sit alongside it.
+
+The condition is that the bounds be **loop-invariant** — literals, or expressions over `conf` only. The grammar admits an arbitrary expression there, and a bound that reads a `data` signal or a frozen state makes the window non-monotone in `i`, which breaks the two-pointer scan; such operators would stay on the nested scan.
+
+**Freeze (`@`) bodies** are excluded from the buffered path regardless. A buffer is indexed by state, which is only meaningful for an operator whose value is a function of the state index, and inside a freeze an operator that names the frozen state denotes different things at different evaluation points. An operator that merely *contains* a freeze is still eligible — it is evaluated once per state like any other — so `Us(t@(...), b)` is buffered while a temporal operator nested under that `t@` is not.
 
 # Installation
 
@@ -410,7 +469,7 @@ The first and last `states` rows are sentinels (zero blobs, time outside the dat
 
 | Argument | Required | Description |
 |----------|----------|-------------|
-| `spec.ref` | yes | REF source file whose `data`/`conf` declarations define the binary schema. |
+| `spec.ref` | yes | REF source file whose `data`/`conf` declarations define the binary schema. Computed signals (`data x = expr;`) are excluded — they are recomputed at execute time, not stored. |
 | `data.{csv,yml,yaml}` | yes | Trace file. One row per timestamped state. Column names must match the layout `csvHeaders` derives from the `data` declarations (same rules as `referee execute`). |
 | `--conf conf.{csv,yml,yaml}` | no | Single-row configuration file for `conf` declarations. Omit if the spec has no `conf` declarations; the blob is zero-initialised when absent. |
 | `-o / --out trace.rdb` | yes | Output path for the packed `.rdb` file. |
@@ -423,7 +482,7 @@ The CSV / YAML column schema is the same one `referee execute` accepts (see *Bui
 ./build/referee execute spec.ref trace.rdb
 ```
 
-`--conf` is *not* used with `.rdb` inputs — the configuration is already inside the file. Output, exit code, and per-requirement formatting are identical to the CSV path; before invoking the JIT, the executor cross-checks the file's embedded schema against the `.ref`'s AST and refuses to run on a mismatch.
+`--conf` is *not* used with `.rdb` inputs — the configuration is already inside the file. Output, exit code, and per-requirement formatting are identical to the CSV path; before invoking the JIT, the executor cross-checks the file's embedded schema against the `.ref`'s AST and refuses to run on a mismatch. That check covers the trace-backed signals only — computed signals are not part of the file's schema, so changing a `data x = ...;` expression does not invalidate an existing `.rdb`.
 
 ## Inspecting `.rdb` files — `rdb dump`
 

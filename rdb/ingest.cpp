@@ -64,7 +64,19 @@ void    ingest(std::istream&        refIn,   std::string const& refName,
     // 2. Build the in-memory blob set for each state, exactly the way
     //    Referee::execute would have done from the same inputs.
     auto    doc         = loader::Row::open(dataIn, dataName);
-    auto    propNames   = astModule->getPropNames();
+
+    //  Computed props (`data x = expr`) are deliberately absent from the .rdb:
+    //  nothing in the trace file backs them, and their values are a function of
+    //  the spec rather than of the recording. `referee execute` materialises
+    //  them from the .ref at run time (see __prepare__), so a .rdb stays valid
+    //  when only a computed prop's defining expression changes.
+    std::vector<std::string> propNames;
+    for (auto const& n : astModule->getPropNames())
+    {
+        if (!astModule->isExprData(n))
+            propNames.push_back(n);
+    }
+
     auto    confNames   = astModule->getConfNames();
     std::size_t     numRows     = doc->rowCount();
     std::size_t     numProps    = propNames.size();

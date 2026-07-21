@@ -38,9 +38,10 @@ class Antlr2AST
 public:
     Antlr2AST(std::string name);
 
-    std::any visitDeclConf(     referee::refereeParser::DeclConfContext*    ctx) override;
-    std::any visitDeclData(     referee::refereeParser::DeclDataContext*    ctx) override;
-    std::any visitDeclType(     referee::refereeParser::DeclTypeContext*    ctx) override;
+    std::any visitDeclConf(     referee::refereeParser::DeclConfContext*        ctx) override;
+    std::any visitDeclDataTyped(referee::refereeParser::DeclDataTypedContext*   ctx) override;
+    std::any visitDeclDataExpr( referee::refereeParser::DeclDataExprContext*    ctx) override;
+    std::any visitDeclType(     referee::refereeParser::DeclTypeContext*        ctx) override;
     std::any visitExprAdd(      referee::refereeParser::ExprAddContext*     ctx) override;
     std::any visitExprAnd(      referee::refereeParser::ExprAndContext*     ctx) override;
     std::any visitExprAt(       referee::refereeParser::ExprAtContext*      ctx) override;

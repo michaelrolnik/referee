@@ -1,0 +1,40 @@
+# Freeze (`@`) interaction with the buffered O(N) temporal lowering.
+#
+# The buffered lowering computes an operator once and indexes it by state, so
+# it is only valid for operators whose value is a function of the state index.
+# A freeze breaks that for anything under it that names the frozen state, and
+# these requirements pin the resulting semantics from the outside.
+#
+# Trace (expr_freeze.csv), real states:
+#   si=1  t=0     a=true  b=true
+#   si=2  t=1000  a=true  b=false
+#   si=3  t=2000  a=true  b=false
+
+data    a:  boolean;
+data    b:  boolean;
+
+# Inside `t@(...)`, `t.b` denotes b at the *frozen* state, so it is constant
+# for the whole of the inner backward scan.  With a constant rhs `c` the Since
+# recurrence val[i] = c || (a[i] && val[i-1]) with base false collapses to `c`
+# itself, so the whole expression collapses to plain `b`.
+G(t@(Ss(a, t.b)) == b);
+
+# The point of the previous line: it must NOT agree with the unfrozen Ss(a,b).
+# Over this trace a holds throughout and b holds at the first state, so
+# Ss(a,b) is true everywhere while b is not.  If the inner Ss were ever
+# precomputed into a per-state buffer -- which would evaluate `t.b` at the
+# scanned state rather than the frozen one -- these two would agree and this
+# requirement would fail.
+!G(t@(Ss(a, t.b)) == Ss(a, b));
+
+# A freeze whose body never mentions the frozen name is semantically identical
+# to no freeze at all.  This is the case the lowering is free to buffer, and
+# buffering it must not change the answer.
+G(t@(Ss(a, b)) == Ss(a, b));
+
+# A temporal operator that *contains* a freeze is itself evaluated once per
+# state like any other, so it stays eligible for the buffered path; the
+# restriction applies only to operators nested under the freeze.  Sanity-check
+# that the outer operator still produces the right answer.
+#   inner collapses to b => Us(b, b) == b at every state
+G(Us(t@(Ss(a, t.b)), t@(Ss(a, t.b))) == b);

@@ -185,7 +185,7 @@ protected:
 
             for(auto const& name : names)
             {
-                if(name == "debug")
+                if(name == "debug" || name == "__prepare__")
                     continue;
 
                 auto    symbol  = ExitOnErr(TheJIT->lookup(name));

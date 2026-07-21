@@ -6,7 +6,7 @@
 
 FROM ubuntu:24.04 AS build
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-      g++ gcc meson ninja-build llvm llvm-dev \
+      g++ gcc meson ninja-build pkg-config cmake llvm llvm-dev \
       libantlr4-runtime-dev libcli11-dev libfmt-dev libgtest-dev \
       libspdlog-dev libyaml-cpp-dev \
       default-jre-headless ca-certificates curl git \

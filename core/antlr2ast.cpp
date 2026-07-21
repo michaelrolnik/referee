@@ -143,12 +143,28 @@ std::any Antlr2AST::visitDeclConf(      referee::refereeParser::DeclConfContext*
 }
 
 
-std::any Antlr2AST::visitDeclData(      referee::refereeParser::DeclDataContext*    ctx)
+// CSV-backed: data name : type
+std::any Antlr2AST::visitDeclDataTyped( referee::refereeParser::DeclDataTypedContext* ctx)
 {
     auto    name    = ctx->dataID()->getText();
     auto    type    = ctx->type()->accept(this);
 
     module->addProp(name, std::any_cast<Type*>(type));
+
+    return nullptr;
+}
+
+// Computed: data name = expression
+std::any Antlr2AST::visitDeclDataExpr(  referee::refereeParser::DeclDataExprContext*  ctx)
+{
+    auto    name    = ctx->dataID()->getText();
+    auto    expr    = std::any_cast<Expr*>(ctx->expression()->accept(this));
+
+    // Infer the type from the expression; requires all deps to already be in
+    // the module — declaration order enforces this (acyclicity in practice).
+    TypeCalc::make(module, expr);
+
+    module->addPropExpr(name, expr->type(), expr);
 
     return nullptr;
 }

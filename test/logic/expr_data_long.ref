@@ -1,0 +1,48 @@
+# Bounded temporal operator test fixture on a longer trace.
+# Uses expr_data_long.csv: 8 real states.
+
+data    a:  boolean;
+data    b:  boolean;
+data    c:  boolean;
+
+# ── Bounded future operators ──────────────────────────────────────────────────
+# Globally in next 2500ms
+data    g_bounded = G[0:2500](a);
+G(g_bounded == G[0:2500](a));
+
+# Eventually in next 2000ms
+data    f_bounded = F[0:2000](b);
+G(f_bounded == F[0:2000](b));
+
+# Until with bounded time: a holds until c holds within [1000:3000]ms
+data    u_bounded = Us[1000:3000](a, c);
+G(u_bounded == Us[1000:3000](a, c));
+
+# Release with bounded time
+data    r_bounded = Rs[0:2000](b, a);
+G(r_bounded == Rs[0:2000](b, a));
+
+# ── Bounded past operators ────────────────────────────────────────────────────
+# Historically in past 2000ms
+data    h_bounded = H[0:2000](c);
+G(h_bounded == H[0:2000](c));
+
+# Once in past 3000ms
+data    o_bounded = O[0:3000](b);
+G(o_bounded == O[0:3000](b));
+
+# Since with bounded time: a has held since b was true in the past [1000:3000]ms
+data    s_bounded = Ss[1000:3000](a, b);
+G(s_bounded == Ss[1000:3000](a, b));
+
+# Trigger with bounded time
+data    t_bounded = Ts[0:2000](a, c);
+G(t_bounded == Ts[0:2000](a, c));
+
+# ── Mixed pointwise and arithmetic ────────────────────────────────────────────
+# Pointwise boolean operations
+data    abc = a && b || !c;
+G(abc == (a && b || !c));
+
+data    impl = a => b;
+G(impl == (a => b));

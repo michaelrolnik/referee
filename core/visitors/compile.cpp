@@ -30,6 +30,122 @@
 
 #include <functional>
 #include <vector>
+#include <map>
+#include <set>
+
+namespace {
+bool isLoopTemporal(Expr* expr)
+{
+    if (!expr) return false;
+    return dynamic_cast<ExprUs*>(expr) || dynamic_cast<ExprUw*>(expr) ||
+           dynamic_cast<ExprRs*>(expr) || dynamic_cast<ExprRw*>(expr) ||
+           dynamic_cast<ExprSs*>(expr) || dynamic_cast<ExprSw*>(expr) ||
+           dynamic_cast<ExprTs*>(expr) || dynamic_cast<ExprTw*>(expr);
+}
+
+//  Is any context name referenced in `expr` *free* -- that is, bound by a
+//  freeze (`@`) further out rather than by one inside `expr` itself?
+//
+//  This is the eligibility test for the buffered lowering, which computes an
+//  operator once and keys it on state index alone.  That is sound exactly when
+//  the operator's value is a function of the state index, and a free context
+//  reference is what breaks that: it makes the value depend on where the
+//  enclosing freeze was evaluated.
+//
+//  Names bound *within* `expr` do not disqualify it.  In `Us(t@(... t.a ...), b)`
+//  the freeze re-binds `t` at each state the Us itself is evaluated at, so the
+//  Us as a whole is still a function of the state index and can be buffered --
+//  only the temporal operators nested under that freeze cannot be, and
+//  collectTemporals() declines to collect those.
+bool hasFreeContext(Expr* expr, std::set<std::string> const& bound)
+{
+    if (!expr) return false;
+
+    if (auto* ctx = dynamic_cast<ExprContext*>(expr))
+    {
+        return ctx->name != "__curr__"
+            && ctx->name != "__conf__"
+            && !bound.contains(ctx->name);
+    }
+
+    if (auto* data = dynamic_cast<ExprData*>(expr))
+        return hasFreeContext(data->ctxt, bound);
+
+    if (auto* conf = dynamic_cast<ExprConf*>(expr))
+        return hasFreeContext(conf->ctxt, bound);
+
+    //  Before ExprUnary: ExprAt derives from it, so the unary branch would
+    //  otherwise swallow it and lose the binding it introduces.
+    if (auto* at = dynamic_cast<ExprAt*>(expr))
+    {
+        auto    inner = bound;
+        inner.insert(at->name);
+        return hasFreeContext(at->arg, inner);
+    }
+
+    if (auto* ternary = dynamic_cast<ExprTernary*>(expr))
+    {
+        return hasFreeContext(ternary->lhs, bound)
+            || hasFreeContext(ternary->mhs, bound)
+            || hasFreeContext(ternary->rhs, bound);
+    }
+
+    if (auto* binary = dynamic_cast<ExprBinary*>(expr))
+    {
+        return hasFreeContext(binary->lhs, bound)
+            || hasFreeContext(binary->rhs, bound);
+    }
+
+    if (auto* unary = dynamic_cast<ExprUnary*>(expr))
+        return hasFreeContext(unary->arg, bound);
+
+    return false;
+}
+
+void collectTemporals(Expr* expr, std::vector<Expr*>& temporals)
+{
+    if (!expr) return;
+
+    //  ExprAt must be tested before ExprUnary -- it derives from it, so the
+    //  ExprUnary branch would otherwise swallow it and descend anyway.
+    if (dynamic_cast<ExprAt*>(expr))
+    {
+        //  Deliberately do NOT descend into a freeze (`@`) body.
+        //
+        //  A temporal operator inside a freeze that mentions the frozen name
+        //  denotes different things at different evaluation points, so it can
+        //  never be reduced to one buffer indexed by state.  One that does not
+        //  mention the frozen name could in principle be buffered, but the
+        //  buffer would have to be built outside the enclosing loop -- not
+        //  worth the machinery, given how rare `@` is.
+        //
+        //  Note this does not disqualify a temporal operator that *contains* a
+        //  freeze: `Us(t@(...), b)` is still collected below and still buffered,
+        //  because the Us is evaluated once per state like any other.
+    }
+    else if (auto* ternary = dynamic_cast<ExprTernary*>(expr))
+    {
+        collectTemporals(ternary->lhs, temporals);
+        collectTemporals(ternary->mhs, temporals);
+        collectTemporals(ternary->rhs, temporals);
+    }
+    else if (auto* binary = dynamic_cast<ExprBinary*>(expr))
+    {
+        collectTemporals(binary->lhs, temporals);
+        collectTemporals(binary->rhs, temporals);
+    }
+    else if (auto* unary = dynamic_cast<ExprUnary*>(expr))
+    {
+        collectTemporals(unary->arg, temporals);
+    }
+
+    if (isLoopTemporal(expr))
+    {
+        if (std::find(temporals.begin(), temporals.end(), expr) == temporals.end())
+            temporals.push_back(expr);
+    }
+}
+} // namespace
 
 struct CompileTypeImpl
     : Visitor<  TypeInteger
@@ -209,6 +325,21 @@ struct CompileExprImpl
     llvm::Value*    setPropPtr(llvm::Value* var, llvm::Value* val);
     llvm::Value*    getBool(llvm::Value* var);
     llvm::Value*    setBool(llvm::Value* var, llvm::Value* val);
+    void            compileTemporalLoops(Expr* rootExpr);
+    llvm::Value*    compileTemporalLoopInline(Expr*        expr,
+                                              llvm::Value* rhsV,
+                                              llvm::Value* lhsV,
+                                              llvm::Value* endV,
+                                              bool         isUR);
+
+    //  Buffers are only valid in blocks dominated by the one they were built
+    //  in.  Callers that emit several independent loop nests into the same
+    //  function (see __prepare__) must drop them between nests.
+    void            resetTemporalBuffers()  {m_temporalBuffers.clear();}
+
+    std::vector<llvm::Value*>   m_frst;
+    std::vector<llvm::Value*>   m_last;
+    std::vector<llvm::Value*>   m_curr;
 
 private:
     llvm::Value*        add(llvm::Value* lhs, llvm::Value* rhs, std::string const& name);
@@ -222,8 +353,6 @@ private:
     llvm::IRBuilder<>*  m_builder;
 
     llvm::Value*        m_value;
-    std::vector<llvm::Value*>
-                        m_curr;
     std::vector<std::pair<std::string, llvm::Value*>>
                         m_name2value;
 
@@ -233,14 +362,14 @@ private:
     llvm::Value*        m_m1;
     llvm::Value*        m_T;
     llvm::Value*        m_F;
-    std::vector<llvm::Value*>   m_frst;
-    std::vector<llvm::Value*>   m_last;
     llvm::Value*        m_conf;
     llvm::Type*         m_propType;
     llvm::Type*         m_propPtrType;
     llvm::Type*         m_confType;
     llvm::Type*         m_confPtrType;
     llvm::Type*         m_boolType;
+    std::map<Expr*, llvm::Value*>
+                        m_temporalBuffers;
 };
 
 
@@ -1114,76 +1243,21 @@ void    CompileExprImpl::UR(Temporal<ExprBinary>*   expr,
                             llvm::Value*            endV,
                             std::string             name)
 {
-/*
-typedef long long uint64_t;
-typedef struct prop_t
-{
-    uint64_t    __time__;
-    uint64_t    a;
-} prop_t;
-
-bool        boolean(prop_t const* curr);
-bool        integer(prop_t const* curr);
-
-uint64_t    UR(uint64_t lo, uint64_t hi, prop_t const* curr, prop_t const* frst, prop_t const* last, bool lhsV, bool rhsV, bool endV)
-{
-    prop_t const*   next    = curr + 1;
-
-    lo  = lo + curr->__time__;
-    hi  = hi + curr->__time__;
-
-    while(next <= last)
+    //  Fast path: use the pre-compiled O(N) buffer if available.
+    auto it = m_temporalBuffers.find(expr);
+    if (it != m_temporalBuffers.end())
     {
-        if(hi <= curr->__time__)
-        {
-            break;
-        }
-
-        uint64_t    _lo = curr->__time__ < lo ? lo : curr->__time__;
-        uint64_t    _hi = hi < next->__time__ ? hi : next->__time__;
-
-        if(_lo < _hi)
-        {
-            if(eval(rhs) == rhsV)
-                return rshV;
-
-            if(eval(lhs) == lhsV)
-                return lshV;
-        }
-
-        curr    = next;
-        next    = next + 1;
+        auto buffer = it->second;
+        auto frst   = m_frst.back();
+        auto curr   = m_curr.back();
+        auto idx    = m_builder->CreatePtrDiff(m_propType, curr, frst, "idx");
+        auto ptr    = m_builder->CreateGEP(m_builder->getInt1Ty(), buffer, idx);
+        m_value     = m_builder->CreateLoad(m_builder->getInt1Ty(), ptr, false, name);
+        return;
     }
 
-    return  endV;
-}
-
-uint64_t    UR(prop_t const* curr, prop_t const* frst, prop_t const* last, bool lhsV, bool rhsV, bool endV)
-{
-    prop_t const*   next    = curr + 1;
-    uint64_t        result  = 0;
-
-    while(next <= last)
-    {
-        uint64_t    _lo = curr->__time__;
-        uint64_t    _hi = next->__time__;
-
-        if(_lo < _hi)
-        {
-            if(eval(rhs) == rhsV)
-                return rshV;
-
-            if(eval(lhs) == lhsV)
-                return lshV;
-        }
-
-        curr    = next;
-        next    = next + 1;
-    }
-
-    return  endV;
-}
-*/
+    //  Slow path (O(N²)): original nested-loop implementation.
+    //  Handles bounded operators (time windows) correctly.
     auto    bbWhile = llvm::BasicBlock::Create(*m_context, name + "-while", m_function);
     auto    bbOuter = llvm::BasicBlock::Create(*m_context, name + "-outer", m_function);
     auto    bbInner = llvm::BasicBlock::Create(*m_context, name + "-inner", m_function);
@@ -1254,7 +1328,6 @@ uint64_t    UR(prop_t const* curr, prop_t const* frst, prop_t const* last, bool 
 
     m_builder->CreateCondBr(loLThi, bbRhsHi, bbNext);
 
-
     //  rhs
     m_builder->SetInsertPoint(bbRhsHi);
     m_curr.push_back(curr);
@@ -1305,77 +1378,21 @@ void    CompileExprImpl::ST(Temporal<ExprBinary>*   expr,
                             llvm::Value*            endV,
                             std::string             name)
 {
-/*
-typedef long long uint64_t;
-typedef struct prop_t
-{
-    uint64_t    __time__;
-    uint64_t    a;
-} prop_t;
-
-bool        boolean(prop_t const* curr);
-bool        integer(prop_t const* curr);
-
-uint64_t    ST(uint64_t lo, uint64_t hi, prop_t const* curr, prop_t const* frst, prop_t const* last, bool lhsV, bool rhsV, bool endV)
-{
-    prop_t const*   prev    = curr - 1;
-
-    lo  = curr->__time__ - lo;
-    hi  = curr->__time__ - hi;
-    swap(lo, hi);
-
-    while(frst <= prev)
+    //  Fast path: use the pre-compiled O(N) buffer if available.
+    auto it = m_temporalBuffers.find(expr);
+    if (it != m_temporalBuffers.end())
     {
-        ifcurr->__time__ < lo)
-        {
-            break;
-        }
-
-        uint64_t    _lo = lo > curr->__time__ ? lo : curr->__time__;
-        uint64_t    _hi = prev->__time__ < hi ? hi : prev->__time__;
-
-        if(_lo < _hi)
-        {
-            if(eval(rhs) == rhsV)
-                return rshV;
-
-            if(eval(lhs) == lhsV)
-                return lshV;
-        }
-
-        curr    = prev;
-        prev    = prev - 1;
+        auto buffer = it->second;
+        auto frst   = m_frst.back();
+        auto curr   = m_curr.back();
+        auto idx    = m_builder->CreatePtrDiff(m_propType, curr, frst, "idx");
+        auto ptr    = m_builder->CreateGEP(m_builder->getInt1Ty(), buffer, idx);
+        m_value     = m_builder->CreateLoad(m_builder->getInt1Ty(), ptr, false, name);
+        return;
     }
 
-    return  endV;
-}
-
-uint64_t    ST(prop_t const* curr, prop_t const* frst, prop_t const* last, bool lhsV, bool rhsV, bool endV)
-{
-    prop_t const*   prev    = curr - 1;
-    uint64_t        result  = 0;
-
-    while(frst <= prev)
-    {
-        uint64_t    _hi = curr->__time__;
-        uint64_t    _lo = prev->__time__;
-
-        if(_lo < _hi)
-        {
-            if(eval(rhs) == rhsV)
-                return rshV;
-
-            if(eval(lhs) == lhsV)
-                return lshV;
-        }
-
-        curr    = prev;
-        prev    = prev + 1;
-    }
-
-    return  endV;
-}
-*/
+    //  Slow path (O(N²)): original nested-loop implementation.
+    //  Handles bounded operators (time windows) correctly.
     auto    bbWhile = llvm::BasicBlock::Create(*m_context, name + "-while", m_function);
     auto    bbOuter = llvm::BasicBlock::Create(*m_context, name + "-outer", m_function);
     auto    bbInner = llvm::BasicBlock::Create(*m_context, name + "-inner", m_function);
@@ -1448,7 +1465,6 @@ uint64_t    ST(prop_t const* curr, prop_t const* frst, prop_t const* last, bool 
 
     m_builder->CreateCondBr(loLThi, bbRhsHi, bbPrev);
 
-
     //  rhs
     m_builder->SetInsertPoint(bbRhsHi);
     m_curr.push_back(curr);
@@ -1517,6 +1533,8 @@ void    CompileExprImpl::visit(Spec*             spec)
 {
     auto    expr    = Rewrite::make(spec);
     TypeCalc::make(m_refmod, expr);
+
+    compileTemporalLoops(expr);
 
     m_value = make(expr);
 }
@@ -1931,6 +1949,200 @@ llvm::Value*    CompileExprImpl::setBool(llvm::Value* var, llvm::Value* val)
 {
     return m_builder->CreateStore(val, var);
 }
+void CompileExprImpl::compileTemporalLoops(Expr* rootExpr)
+{
+    std::vector<Expr*> temporals;
+    collectTemporals(rootExpr, temporals);
+
+    if (temporals.empty()) return;
+
+    for (auto* expr : temporals)
+    {
+        if (m_temporalBuffers.count(expr)) continue;
+        if (hasFreeContext(expr, {})) continue;
+
+        //  Bounded operators (with a time window) require time-interval filtering
+        //  logic that the original O(N²) UR/ST loops handle correctly.  Only
+        //  pre-compile the unbounded (no time) form into an O(N) buffer.
+        auto* temporal = dynamic_cast<Temporal<ExprBinary>*>(expr);
+        if (temporal && temporal->time != nullptr) continue;
+
+        //  (rhsV, lhsV, endV) must mirror the corresponding visit() call site
+        //  exactly -- those are the authority on each operator's semantics.
+        //  U/S short-circuit on rhs==true / lhs==false (disjunctive), while
+        //  their duals R/T short-circuit on rhs==false / lhs==true
+        //  (conjunctive).  Getting this table wrong silently collapses e.g.
+        //  G(a) -- which canonicalises to Rw(false, a) -- into pointwise `a`.
+        bool            isUR = false;
+        llvm::Value*    rhsV = nullptr;
+        llvm::Value*    lhsV = nullptr;
+        llvm::Value*    endV = nullptr;
+
+        if      (dynamic_cast<ExprUs*>(expr)) {isUR = true;  rhsV = m_T; lhsV = m_F; endV = m_F;}
+        else if (dynamic_cast<ExprUw*>(expr)) {isUR = true;  rhsV = m_T; lhsV = m_F; endV = m_T;}
+        else if (dynamic_cast<ExprRs*>(expr)) {isUR = true;  rhsV = m_F; lhsV = m_T; endV = m_F;}
+        else if (dynamic_cast<ExprRw*>(expr)) {isUR = true;  rhsV = m_F; lhsV = m_T; endV = m_T;}
+        else if (dynamic_cast<ExprSs*>(expr)) {isUR = false; rhsV = m_T; lhsV = m_F; endV = m_F;}
+        else if (dynamic_cast<ExprSw*>(expr)) {isUR = false; rhsV = m_T; lhsV = m_F; endV = m_T;}
+        else if (dynamic_cast<ExprTs*>(expr)) {isUR = false; rhsV = m_F; lhsV = m_T; endV = m_F;}
+        else if (dynamic_cast<ExprTw*>(expr)) {isUR = false; rhsV = m_F; lhsV = m_T; endV = m_T;}
+        else                                  continue;
+
+        m_temporalBuffers[expr] = compileTemporalLoopInline(expr, rhsV, lhsV, endV, isUR);
+    }
+}
+
+//  Emit the O(N) recurrence for one unbounded U/R/S/T node into a
+//  bool[numStates] stack buffer, and return the buffer.
+//
+//  The slow path is a linear scan that, walking away from the evaluation
+//  point, returns rhsV on the first state where rhs==rhsV, lhsV on the first
+//  state where lhs==lhsV, and endV if it runs off the trace.  Written as a
+//  recurrence over the neighbouring state that is exactly:
+//
+//      val[i] = (rhs[i] == rhsV) ? rhsV
+//             : (lhs[i] == lhsV) ? lhsV
+//             :                    val[i +- 1]
+//
+//  which folds to `rhs || (lhs && val)` for U/S and to `rhs && (lhs || val)`
+//  for their duals R/T once the constants are substituted.  Emitting the
+//  select chain rather than a hand-specialised form keeps the two families
+//  from drifting apart.
+llvm::Value* CompileExprImpl::compileTemporalLoopInline(Expr*        expr,
+                                                        llvm::Value* rhsV,
+                                                        llvm::Value* lhsV,
+                                                        llvm::Value* endV,
+                                                        bool         isUR)
+{
+    auto frst = m_frst.back();
+    auto last = m_last.back();
+
+    auto diff = m_builder->CreatePtrDiff(m_propType, last, frst, "diff");
+    auto numStates = m_builder->CreateAdd(diff, llvm::ConstantInt::get(m_builder->getInt64Ty(), 1), "numStates");
+
+    auto buffer = m_builder->CreateAlloca(m_builder->getInt1Ty(), numStates, "temp_buf");
+
+    auto bbEntry = m_builder->GetInsertBlock();
+
+    if (isUR)
+    {
+        //  Both sentinel slots get the base value.  index numStates-1 is the
+        //  recurrence's base case; index 0 is never a legitimate evaluation
+        //  point (the sentinels carry no prop storage, so evaluating rhs/lhs
+        //  there would dereference garbage -- the slow path avoids it for the
+        //  same reason), but a nested Ys at the first real state still reads
+        //  the slot, so it must hold something defined rather than whatever
+        //  the alloca happened to contain.
+        auto lastIdx = m_builder->CreateSub(numStates, llvm::ConstantInt::get(m_builder->getInt64Ty(), 1));
+        auto lastPtr = m_builder->CreateGEP(m_builder->getInt1Ty(), buffer, lastIdx);
+        m_builder->CreateStore(endV, lastPtr);
+        m_builder->CreateStore(endV, m_builder->CreateGEP(m_builder->getInt1Ty(), buffer,
+                                        llvm::ConstantInt::get(m_builder->getInt64Ty(), 0)));
+
+        auto bbWhile = llvm::BasicBlock::Create(*m_context, "while_UR", m_function);
+        auto bbBody  = llvm::BasicBlock::Create(*m_context, "body_UR", m_function);
+        auto bbNext  = llvm::BasicBlock::Create(*m_context, "next_UR", m_function);
+        auto bbExit  = llvm::BasicBlock::Create(*m_context, "exit_UR", m_function);
+
+        auto curr0 = getPrev(last);
+        m_builder->CreateBr(bbWhile);
+
+        m_builder->SetInsertPoint(bbWhile);
+        auto curr = m_builder->CreatePHI(m_propPtrType, 2, "curr");
+        auto cond = m_builder->CreateICmpSGT(curr, frst, "curr > frst");
+        m_builder->CreateCondBr(cond, bbBody, bbExit);
+
+        m_builder->SetInsertPoint(bbBody);
+        m_curr.push_back(curr);
+
+        auto idx = m_builder->CreatePtrDiff(m_propType, curr, frst, "idx");
+        auto idxNext = m_builder->CreateAdd(idx, llvm::ConstantInt::get(m_builder->getInt64Ty(), 1), "idxNext");
+        auto nextPtr = m_builder->CreateGEP(m_builder->getInt1Ty(), buffer, idxNext);
+        auto nextVal = m_builder->CreateLoad(m_builder->getInt1Ty(), nextPtr, false, "nextVal");
+
+        auto binary = dynamic_cast<ExprBinary*>(expr);
+        auto rhs = make(binary->rhs);
+        auto lhs = make(binary->lhs);
+        auto rhsHit = m_builder->CreateICmpEQ(rhs, rhsV, "rhsHit");
+        auto lhsHit = m_builder->CreateICmpEQ(lhs, lhsV, "lhsHit");
+        auto val = m_builder->CreateSelect(
+                        rhsHit, rhsV,
+                        m_builder->CreateSelect(lhsHit, lhsV, nextVal, "lhsSel"),
+                        "val");
+
+        auto currPtr = m_builder->CreateGEP(m_builder->getInt1Ty(), buffer, idx);
+        m_builder->CreateStore(val, currPtr);
+
+        m_curr.pop_back();
+        m_builder->CreateBr(bbNext);
+
+        m_builder->SetInsertPoint(bbNext);
+        auto currPrev = getPrev(curr);
+        m_builder->CreateBr(bbWhile);
+
+        curr->addIncoming(curr0, bbEntry);
+        curr->addIncoming(currPrev, bbNext);
+
+        m_builder->SetInsertPoint(bbExit);
+    }
+    else
+    {
+        //  Mirror of the UR case: index 0 is the base case, index numStates-1
+        //  is the far sentinel that a nested Xs at the last real state reads.
+        auto zeroPtr = m_builder->CreateGEP(m_builder->getInt1Ty(), buffer, llvm::ConstantInt::get(m_builder->getInt64Ty(), 0));
+        m_builder->CreateStore(endV, zeroPtr);
+        auto lastIdx = m_builder->CreateSub(numStates, llvm::ConstantInt::get(m_builder->getInt64Ty(), 1));
+        m_builder->CreateStore(endV, m_builder->CreateGEP(m_builder->getInt1Ty(), buffer, lastIdx));
+
+        auto bbWhile = llvm::BasicBlock::Create(*m_context, "while_ST", m_function);
+        auto bbBody  = llvm::BasicBlock::Create(*m_context, "body_ST", m_function);
+        auto bbNext  = llvm::BasicBlock::Create(*m_context, "next_ST", m_function);
+        auto bbExit  = llvm::BasicBlock::Create(*m_context, "exit_ST", m_function);
+
+        auto curr0 = getNext(frst);
+        m_builder->CreateBr(bbWhile);
+
+        m_builder->SetInsertPoint(bbWhile);
+        auto curr = m_builder->CreatePHI(m_propPtrType, 2, "curr");
+        auto cond = m_builder->CreateICmpSLT(curr, last, "curr < last");
+        m_builder->CreateCondBr(cond, bbBody, bbExit);
+
+        m_builder->SetInsertPoint(bbBody);
+        m_curr.push_back(curr);
+
+        auto idx = m_builder->CreatePtrDiff(m_propType, curr, frst, "idx");
+        auto idxPrev = m_builder->CreateSub(idx, llvm::ConstantInt::get(m_builder->getInt64Ty(), 1), "idxPrev");
+        auto prevPtr = m_builder->CreateGEP(m_builder->getInt1Ty(), buffer, idxPrev);
+        auto prevVal = m_builder->CreateLoad(m_builder->getInt1Ty(), prevPtr, false, "prevVal");
+
+        auto binary = dynamic_cast<ExprBinary*>(expr);
+        auto rhs = make(binary->rhs);
+        auto lhs = make(binary->lhs);
+        auto rhsHit = m_builder->CreateICmpEQ(rhs, rhsV, "rhsHit");
+        auto lhsHit = m_builder->CreateICmpEQ(lhs, lhsV, "lhsHit");
+        auto val = m_builder->CreateSelect(
+                        rhsHit, rhsV,
+                        m_builder->CreateSelect(lhsHit, lhsV, prevVal, "lhsSel"),
+                        "val");
+
+        auto currPtr = m_builder->CreateGEP(m_builder->getInt1Ty(), buffer, idx);
+        m_builder->CreateStore(val, currPtr);
+
+        m_curr.pop_back();
+        m_builder->CreateBr(bbNext);
+
+        m_builder->SetInsertPoint(bbNext);
+        auto currNext = getNext(curr);
+        m_builder->CreateBr(bbWhile);
+
+        curr->addIncoming(curr0, bbEntry);
+        curr->addIncoming(currNext, bbNext);
+
+        m_builder->SetInsertPoint(bbExit);
+    }
+
+    return buffer;
+}
 
 llvm::Value*    CompileExprImpl::make(Expr* expr)
 {
@@ -2020,6 +2232,7 @@ void Compile::make(llvm::LLVMContext* context, llvm::Module* module, Module* ref
 
         auto    temp        = Rewrite::make(expr);
         TypeCalc::make(refmod, temp);
+        compExpr.compileTemporalLoops(temp);
         builder->CreateRet(compExpr.make(temp));
         if(!llvm::verifyFunction(*funcBody, &llvm::outs()))
         {
@@ -2056,6 +2269,111 @@ void Compile::make(llvm::LLVMContext* context, llvm::Module* module, Module* ref
 //  LCOV_EXCL_START 
 //  GCOV_EXCL_START 
             //throw std::runtime_error(__PRETTY_FUNCTION__);
+//  GCOV_EXCL_STOP
+//  LCOV_EXCL_STOP
+        }
+    }
+
+    // ── Create __prepare__ JIT function ─────────────────────────────────────
+    //
+    //  Fills the slot of every computed (`data x = expr`) prop at every state,
+    //  ahead of any requirement function running.
+    //
+    //  One full trace pass *per prop*, in declaration order -- not one pass
+    //  over states evaluating every prop. The distinction matters because a
+    //  computed prop may be defined in terms of an earlier computed prop at a
+    //  *different* state (`data y = Xs(x);`). State-major order would read
+    //  x[i+1] before it had been written. Prop-major order materialises each
+    //  prop across the whole trace before anything that depends on it runs,
+    //  and declaration order already guarantees dependencies come first
+    //  (Antlr2AST resolves a computed prop's type against the props already in
+    //  the module, so a forward reference cannot parse).
+    //
+    //  It also lets each prop's temporal buffers be built once, in a block
+    //  outside its state loop, instead of being re-allocated and refilled on
+    //  every iteration.
+    {
+        auto    funcName    = "__prepare__";
+        auto    funcType    = llvm::FunctionType::get(builder->getVoidTy(), {propPtrType, propPtrType, confPtrType}, false);
+        auto    funcBody    = llvm::Function::Create(funcType, llvm::Function::ExternalLinkage, funcName, module);
+        auto    funcArgs    = funcBody->args().begin();
+
+        funcArgs->setName("frst");  funcArgs++;
+        funcArgs->setName("last");  funcArgs++;
+        funcArgs->setName("conf");
+
+        auto    bb          = llvm::BasicBlock::Create(*context, "entry", funcBody);
+        builder->SetInsertPoint(bb);
+
+        CompileExprImpl compExpr(context, module, builder.get(), funcBody, refmod, propType, confType);
+
+        auto    frst        = compExpr.m_frst.back();
+        auto    last        = compExpr.m_last.back();
+        auto    curr0       = compExpr.getNext(frst);
+
+        auto    propNames   = refmod->getPropNames();
+
+        for (std::size_t pi = 0; pi < propNames.size(); pi++)
+        {
+            auto const& name    = propNames[pi];
+            if (!refmod->isExprData(name))
+                continue;
+
+            auto    rewritten   = Rewrite::make(refmod->getPropExpr(name));
+            TypeCalc::make(refmod, rewritten);
+
+            //  Setup: build this prop's temporal buffers once, outside its
+            //  state loop.  Buffers only dominate blocks emitted after them,
+            //  so anything a previous prop built is unusable here -- drop it
+            //  rather than let the fast path load from a buffer that does not
+            //  dominate this use.
+            compExpr.resetTemporalBuffers();
+            compExpr.compileTemporalLoops(rewritten);
+
+            auto    bbWhile     = llvm::BasicBlock::Create(*context, "while_" + name, funcBody);
+            auto    bbBody      = llvm::BasicBlock::Create(*context, "body_"  + name, funcBody);
+            auto    bbNext      = llvm::BasicBlock::Create(*context, "next_"  + name, funcBody);
+            auto    bbDone      = llvm::BasicBlock::Create(*context, "done_"  + name, funcBody);
+
+            //  compileTemporalLoops leaves the insert point in whichever block
+            //  its last loop nest ended in, so capture it rather than assume.
+            auto    bbSetup     = builder->GetInsertBlock();
+            builder->CreateBr(bbWhile);
+
+            builder->SetInsertPoint(bbWhile);
+            auto    curr        = builder->CreatePHI(propPtrType, 2, "curr");
+            auto    currLTlast  = builder->CreateICmpSLT(curr, last, "curr < last");
+            builder->CreateCondBr(currLTlast, bbBody, bbDone);
+
+            builder->SetInsertPoint(bbBody);
+            compExpr.m_curr.push_back(curr);
+
+            llvm::Value* val    = compExpr.make(rewritten);
+
+            auto    propPtrPtr  = builder->CreateStructGEP(propType, curr, pi + 1);
+            auto    propPtr     = builder->CreateLoad(builder->getPtrTy(), propPtrPtr, false, "ptr_" + name);
+            builder->CreateStore(val, propPtr);
+
+            compExpr.m_curr.pop_back();
+            builder->CreateBr(bbNext);
+
+            builder->SetInsertPoint(bbNext);
+            auto    currNext    = compExpr.getNext(curr);
+            builder->CreateBr(bbWhile);
+
+            curr->addIncoming(curr0, bbSetup);
+            curr->addIncoming(currNext, bbNext);
+
+            builder->SetInsertPoint(bbDone);
+        }
+
+        builder->CreateRetVoid();
+
+        if(llvm::verifyFunction(*funcBody, &llvm::outs()))
+        {
+//  LCOV_EXCL_START
+//  GCOV_EXCL_START
+            throw std::runtime_error("__prepare__ failed LLVM verification");
 //  GCOV_EXCL_STOP
 //  LCOV_EXCL_STOP
         }

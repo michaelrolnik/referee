@@ -66,6 +66,21 @@ void    Module::addProp(std::string const& name, Type* data)
     m_propNames.push_back(name);
 }
 
+void    Module::addPropExpr(std::string const& name, Type* type, Expr* expr)
+{
+    if(m_name2data.contains(name))
+    {
+//  LCOV_EXCL_START 
+//  GCOV_EXCL_START 
+        throw std::runtime_error(__PRETTY_FUNCTION__);
+//  GCOV_EXCL_STOP
+//  LCOV_EXCL_STOP
+    }
+    m_name2data[name]   = type;     // in the shared type map → typecalc resolves it
+    m_name2expr[name]   = expr;     // expression for ingest-time evaluation
+    m_propNames.push_back(name);    // same list as CSV props → gets a __prop_t slot
+}
+
 void    Module::addConf(std::string const& name, Type* data)
 {
     if(m_name2conf.contains(name))
@@ -127,6 +142,17 @@ bool    Module::hasType(std::string const& name)
 bool    Module::hasData(std::string const& name)
 {
     return m_name2data.contains(name);
+}
+
+bool    Module::isExprData(std::string const& name)
+{
+    return m_name2expr.contains(name);
+}
+
+Expr*   Module::getPropExpr(std::string const& name)
+{
+    auto it = m_name2expr.find(name);
+    return it != m_name2expr.end() ? it->second : nullptr;
 }
 
 bool    Module::hasConf(std::string const& name)

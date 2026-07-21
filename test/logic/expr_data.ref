@@ -1,0 +1,37 @@
+# Test fixture for data=expr (computed props) feature.
+# Uses expr_data.csv: 4 rows with a, b boolean columns.
+# Trace (real states, 0-based):
+#   si=0  t=0     a=true,  b=false
+#   si=1  t=1000  a=false, b=true
+#   si=2  t=2000  a=true,  b=true
+#   si=3  t=3000  a=false, b=false
+
+data    a:  boolean;
+data    b:  boolean;
+
+# Computed props: boolean type inferred from the expression, filled in by the
+# JIT-compiled __prepare__ pass before any requirement runs.
+data    anb  = a && b;    # point-wise AND
+data    aob  = a || b;    # point-wise OR
+data    nota = !a;        # point-wise NOT
+data    once_a = O(a);    # past-eventually of a
+
+# anb == a && b at every state
+G(anb == (a && b));
+
+# aob == a || b at every state
+G(aob == (a || b));
+
+# nota == !a at every state
+G(nota == !a);
+
+# O(a) is true from the first occurrence of a onward.
+# a is true at t=0 (the very first real state), so O(a) is true everywhere.
+G(once_a);
+
+# Sanity: computed prop used inside a temporal formula.
+# At t=2000 both a and b are true => anb is true there.
+F(anb);
+
+# At t=1000 a=false, b=true => aob is true there.
+F(aob && !a && b);

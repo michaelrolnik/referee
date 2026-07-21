@@ -35,17 +35,23 @@ public:
     Module(std::string name);
 
     void    addType(std::string const& name, Type* type);
-    void    addProp(std::string const& name, Type* data);
+    void    addProp(std::string const& name, Type* data);             // CSV-backed prop
+    void    addPropExpr(std::string const& name, Type* type, Expr* expr); // computed prop
     void    addConf(std::string const& name, Type* data);
 
     Type*   getType(std::string const& name);
-    Type*   getProp(std::string const& name);
+    Type*   getProp(std::string const& name);               // type of any data (CSV or computed)
+    Expr*   getPropExpr(std::string const& name);           // defining expression (null if CSV-backed)
     Type*   getConf(std::string const& name);
 
     bool    hasType(std::string const& name);
-    bool    hasData(std::string const& name);
+    bool    hasData(std::string const& name);               // true for both CSV and computed
     bool    hasConf(std::string const& name);
+    bool    isExprData(std::string const& name);            // true only for computed data
 
+    // getPropNames() returns ALL props in declaration order (CSV + computed).
+    // This drives __prop_t slot layout — both kinds get a slot; ingest uses
+    // isExprData() to decide whether to load from CSV or compute via JIT.
     std::vector<std::string> const&  getTypeNames()  {return m_typeNames;}
     std::vector<std::string> const&  getPropNames()  {return m_propNames;}
     std::vector<std::string> const&  getConfNames()  {return m_confNames;}
@@ -62,13 +68,14 @@ public:
 
 private:
     std::map<std::string, Type*>    m_name2type;
-    std::map<std::string, Type*>    m_name2data;
+    std::map<std::string, Type*>    m_name2data;  // ALL props (CSV + computed) for type lookup
+    std::map<std::string, Expr*>    m_name2expr;  // only computed props
     std::map<std::string, Type*>    m_name2conf;
     std::vector<Expr*>              m_exprs;
     std::vector<Spec*>              m_specs;
     std::vector<std::string>        m_context;
 
-    std::vector<std::string>        m_propNames;
+    std::vector<std::string>        m_propNames;  // ALL props in decl order → __prop_t slot layout
     std::vector<std::string>        m_confNames;
     std::vector<std::string>        m_typeNames;
 };

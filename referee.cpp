@@ -371,6 +371,7 @@ JitWithSpecs    buildJitFromRef(std::istream& refStream, std::string const& refN
     for (auto& F : *built.mod) {
         if (F.isDeclaration()) continue;
         auto name = F.getName().str();
+        if (name == "__prepare__") continue;
         int row = 0, col = 0;
         std::sscanf(name.c_str(), "%d:%d", &row, &col);
         entries.push_back({row, col, std::move(name)});
@@ -484,13 +485,68 @@ bool    runAgainstRdb(std::istream&            refStream,
                     kind, wanted[i]));
         }
     };
-    checkList(astModule->getPropNames(), rdb.props(),
+    std::vector<std::string> csvPropNames;
+    std::map<std::string, std::size_t> csvPropIndices;
+    for (auto const& n : astModule->getPropNames())
+    {
+        if (!astModule->isExprData(n))
+        {
+            csvPropIndices[n] = csvPropNames.size();
+            csvPropNames.push_back(n);
+        }
+    }
+    checkList(csvPropNames, rdb.props(),
               [&](std::string const& n) { return astModule->getProp(n); }, "data");
     checkList(astModule->getConfNames(), rdb.confs(),
               [&](std::string const& n) { return astModule->getConf(n); }, "conf");
 
+    std::size_t numStates = rdb.numStates();
+    std::size_t totalProps = astModule->getPropNames().size();
+    std::size_t stateStride = sizeof(int64_t) + totalProps * sizeof(void*);
+    std::vector<std::uint8_t> runStates(numStates * stateStride, 0);
+
+    // Backing storage for computed (`data x = expr`) props: one byte per state
+    // per prop, which __prepare__ fills before any requirement runs.
+    //
+    // Each computed prop gets its own buffer rather than sharing storage
+    // between props whose live ranges look disjoint. Sharing is not safe here:
+    // a temporal prop reads its dependencies at *other* states, so a prop's
+    // values must survive for the whole trace, not just until the next
+    // declaration that mentions it. At one byte per state per prop the memory
+    // saved would not have been worth the risk in any case.
+    std::map<std::string, std::vector<std::uint8_t>> computedBuffers;
+    for (auto const& name : astModule->getPropNames())
+    {
+        if (astModule->isExprData(name))
+            computedBuffers[name].assign(numStates, 0);
+    }
+
+    for (std::size_t si = 0; si < numStates; si++)
+    {
+        uint8_t* statePtr = runStates.data() + si * stateStride;
+        int64_t t = rdb.time(si);
+        std::memcpy(statePtr, &t, sizeof(t));
+
+        for (std::size_t pi = 0; pi < totalProps; pi++)
+        {
+            auto const& name = astModule->getPropNames()[pi];
+            void* valPtr = astModule->isExprData(name)
+                         ? static_cast<void*>(computedBuffers[name].data() + si)
+                         : const_cast<void*>(rdb.propBlob(si, csvPropIndices[name]));
+            std::memcpy(statePtr + sizeof(int64_t) + pi * sizeof(void*), &valPtr, sizeof(valPtr));
+        }
+    }
+
+    auto prepSymOrErr = js.jit->lookup("__prepare__");
+    if (!prepSymOrErr)
+        throw std::runtime_error("JIT: failed to locate __prepare__ function");
+
+    using PrepFn = void(*)(void*, void*, void*);
+    auto prepFn = (*prepSymOrErr).toPtr<PrepFn>();
+    prepFn(runStates.data(), runStates.data() + (numStates - 1) * stateStride, rdb.confPtr());
+
     return runAllSpecs(*js.jit, js.funcNames,
-                       rdb.ptrFirst(), rdb.ptrLast(), rdb.confPtr(),
+                       runStates.data(), runStates.data() + (numStates - 1) * stateStride, rdb.confPtr(),
                        os);
 }
 

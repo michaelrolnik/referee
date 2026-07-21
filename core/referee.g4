@@ -336,7 +336,8 @@ type        : 'struct' '{' mmbrList '}'                         # TypeStruct
 declType    : 'type' typeID ':' type
             ;
 
-declData    : 'data' dataID ':' type
+declData    : 'data' dataID ':' type        # DeclDataTyped
+            | 'data' dataID '=' expression  # DeclDataExpr
             ;
 
 declConf    : 'conf' confID ':' type

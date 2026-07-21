@@ -1,0 +1,227 @@
+# Temporal-operator coverage test for data=expr.
+# Uses expr_data.csv: 4 real rows.
+#
+# State layout seen by ExprEval (N=6):
+#   si=0  left  sentinel  a=F  b=F   (zero-init; overwritten to 0 by writer)
+#   si=1  t=0             a=T  b=F
+#   si=2  t=1000          a=F  b=T
+#   si=3  t=2000          a=T  b=T
+#   si=4  t=3000          a=F  b=F
+#   si=5  right sentinel  a=F  b=F   (zero-init; overwritten to 0 by writer)
+#
+# For each computed prop the pattern is:
+#   data  abc = <expr>;   -- filled by __prepare__ before requirements run
+#   G(abc == <expr>);     -- re-evaluated inline (must agree at every state)
+#
+# All computed props are boolean (type inferred from expression).
+
+data    a:  boolean;
+data    b:  boolean;
+
+# ── X (next) ──────────────────────────────────────────────────────────────────
+# Xs(a): strong next.  res[i] = a[i+1], false at right boundary.
+#   eval over N=6: [a[1]=T, a[2]=F, a[3]=T, a[4]=F, a[5]=F, false]
+#   real states (si 1-4): F, T, F, F
+data    xs_a    = Xs(a);
+G(xs_a == Xs(a));
+
+# Xw(a): weak next.  Same recurrence, true at right boundary.
+#   eval: [T, F, T, F, F, true]   real: F, T, F, F  (sentinel si=5 overwritten)
+data    xw_a    = Xw(a);
+G(xw_a == Xw(a));
+
+# Xs(b): strong next of b.
+#   eval: [b[1]=F, b[2]=T, b[3]=T, b[4]=F, b[5]=F, false]
+#   real: F, T, T, F
+data    xs_b    = Xs(b);
+G(xs_b == Xs(b));
+
+# Xw(b): weak next of b.
+#   eval: [F, T, T, F, F, true]   real: F, T, T, F
+data    xw_b    = Xw(b);
+G(xw_b == Xw(b));
+
+# ── Y (yesterday / previous) ──────────────────────────────────────────────────
+# Ys(a): strong yesterday.  res[i] = a[i-1], false at left boundary.
+#   eval: [false, a[0]=F, a[1]=T, a[2]=F, a[3]=T, a[4]=F]
+#   real: F, T, F, T
+data    ys_a    = Ys(a);
+G(ys_a == Ys(a));
+
+# Yw(a): weak yesterday.  Same recurrence, true at left boundary (si=0).
+#   eval: [true, a[0]=F, a[1]=T, a[2]=F, a[3]=T, a[4]=F]
+#   real (si 1-4): F, T, F, T   (same as Ys for real states; difference only at si=0)
+data    yw_a    = Yw(a);
+G(yw_a == Yw(a));
+
+# Ys(b): strong yesterday of b.
+#   eval: [false, b[0]=F, b[1]=F, b[2]=T, b[3]=T, b[4]=F]
+#   real: F, F, T, T
+data    ys_b    = Ys(b);
+G(ys_b == Ys(b));
+
+# ── S (since) ─────────────────────────────────────────────────────────────────
+# Ss(a, b): strong since.  res[i] = b[i] || (a[i] && res[i-1]),  base=F.
+#   si0=F
+#   si1= F||(T&&F)=F
+#   si2= T||(F&&F)=T
+#   si3= T||(T&&T)=T
+#   si4= F||(F&&T)=F
+#   real: F, T, T, F
+data    ss_ab   = Ss(a, b);
+G(ss_ab == Ss(a, b));
+
+# Sw(a, b): weak since.  Same recurrence, base=T.
+#   si0=T
+#   si1= F||(T&&T)=T
+#   si2= T||(F&&T)=T
+#   si3= T||(T&&T)=T
+#   si4= F||(F&&T)=F
+#   real: T, T, T, F
+data    sw_ab   = Sw(a, b);
+G(sw_ab == Sw(a, b));
+
+# ── T (trigger) ───────────────────────────────────────────────────────────────
+# T is the dual of S, so the recurrence is conjunctive where S's is
+# disjunctive: res[i] = rhs[i] && (lhs[i] || res[i-1]).
+#
+# Ts(a, b): strong trigger.  res[i] = b[i] && (a[i] || res[i-1]),  base=F.
+#   si0=F
+#   si1= b=F                => F
+#   si2= T&&(F||F)          => F
+#   si3= T&&(T||F)          => T
+#   si4= b=F                => F
+#   real: F, F, T, F
+data    ts_ab   = Ts(a, b);
+G(ts_ab == Ts(a, b));
+
+# Tw(a, b): weak trigger.  Same recurrence, base=T.
+#   si0=T
+#   si1= b=F                => F
+#   si2= T&&(F||F)          => F
+#   si3= T&&(T||F)          => T
+#   si4= b=F                => F
+#   real: F, F, T, F   (b is false at si=1, so the weak base is masked)
+data    tw_ab   = Tw(a, b);
+G(tw_ab == Tw(a, b));
+
+# ── U (until) ─────────────────────────────────────────────────────────────────
+# Us(a, b): strong until.  res[i] = b[i] || (a[i] && res[i+1]),  base=F at si=5.
+#   si5=F
+#   si4= F||(F&&F)=F
+#   si3= T||(T&&F)=T
+#   si2= T||(F&&T)=T
+#   si1= F||(T&&T)=T
+#   si0= F||(F&&T)=F
+#   real: T, T, T, F
+data    us_ab   = Us(a, b);
+G(us_ab == Us(a, b));
+
+# Uw(a, b): weak until.  Same recurrence, base=T at si=5.
+#   si5=T, si4=F||(F&&T)=F, si3=T||(T&&F)=T, si2=T||(F&&T)=T,
+#   si1=F||(T&&T)=T, si0=F||(F&&T)=F
+#   real (si5 overwritten to 0): T, T, T, F
+data    uw_ab   = Uw(a, b);
+G(uw_ab == Uw(a, b));
+
+# ── R (release) ───────────────────────────────────────────────────────────────
+# R is the dual of U, so the recurrence is conjunctive where U's is
+# disjunctive: res[i] = rhs[i] && (lhs[i] || res[i+1]).
+#
+# Rs(a, b): strong release.  res[i] = b[i] && (a[i] || res[i+1]),  base=F at si=5.
+#   si5=F
+#   si4= b=F                => F
+#   si3= T&&(T||F)          => T
+#   si2= T&&(F||T)          => T
+#   si1= b=F                => F
+#   real: F, T, T, F
+data    rs_ab   = Rs(a, b);
+G(rs_ab == Rs(a, b));
+
+# Rw(a, b): weak release.  Same recurrence, base=T at si=5.
+#   si5=T, si4= b=F => F, si3= T&&(T||F) => T, si2= T&&(F||T) => T, si1= b=F => F
+#   real: F, T, T, F   (b is false at si=4, so the weak base is masked)
+data    rw_ab   = Rw(a, b);
+G(rw_ab == Rw(a, b));
+
+# ── Complex composed expressions ──────────────────────────────────────────────
+# Xs(Ys(a)): next-of-yesterday-of-a.
+#   Ys(a) eval: [F, F, T, F, T, F]
+#   Xs(Ys(a))  = shift right by 1: [F, T, F, T, F, false]
+#   real: T, F, T, F
+data    xs_ys_a = Xs(Ys(a));
+G(xs_ys_a == Xs(Ys(a)));
+
+# Ys(Xs(a)): yesterday-of-next-of-a.
+#   Xs(a) eval: [T, F, T, F, F, false]
+#   Ys(Xs(a)) = shift left by 1: [false, T, F, T, F, F]
+#   real: T, F, T, F
+data    ys_xs_a = Ys(Xs(a));
+G(ys_xs_a == Ys(Xs(a)));
+
+# Us(a, Xs(b)): a holds until the very next state has b.
+#   Xs(b) eval: [F, T, T, F, F, false]
+#   Us(a, Xs(b)) backward: si5=F, si4=F||(F&&F)=F, si3=F||(T&&F)=F,
+#                          si2=T||(F&&F)=T, si1=T||(T&&T)=T, si0=F||(F&&T)=F
+#   real: T, T, F, F
+data    us_a_xsb = Us(a, Xs(b));
+G(us_a_xsb == Us(a, Xs(b)));
+
+# Ss(Xs(a), b): since b was true, the next state has a.
+#   Xs(a) eval: [T, F, T, F, F, false]
+#   Ss(Xs(a), b): si0=F, si1=F||(F&&F)=F, si2=T||(T&&F)=T,
+#                 si3=T||(F&&T)=T, si4=F||(F&&T)=F
+#   real: F, T, T, F
+data    ss_xsa_b = Ss(Xs(a), b);
+G(ss_xsa_b == Ss(Xs(a), b));
+
+# Ts(Ys(b), a): trigger with a temporal left argument.
+#   Ys(b) eval: [F, F, F, T, T, F]
+#   Ts(Ys(b), a): res[i] = a[i] && (Ys(b)[i] || res[i-1]), base=F
+#   si0=F, si1= T&&(F||F) => F, si2= a=F => F,
+#   si3= T&&(T||F) => T, si4= a=F => F
+#   real: F, F, T, F
+data    ts_ysb_a = Ts(Ys(b), a);
+G(ts_ysb_a == Ts(Ys(b), a));
+
+# O(a) && F(!b): "a occurred at some past point" AND "b will be false at some future point".
+#   O(a):  [F, T, T, T, T, T]
+#   !b:    [T, T, F, F, T, T]
+#   F(!b): [T, T, T, T, T, F]   (right-to-left: si5=F,si4=T,si3=T,si2=T,si1=T,si0=T)
+#   AND:   [F, T, T, T, T, F]
+#   real:  T, T, T, T
+data    complex1 = O(a) && F(!b);
+G(complex1 == (O(a) && F(!b)));
+
+# H(b => Ys(b)): historically, whenever b held, it also held the step before.
+#   Ys(b) eval: [F, F, F, T, T, F]
+#   b => Ys(b) = !b || Ys(b): [T, T, F, T, T, T]
+#   H(...): si0=T, si1=T&&T=T, si2=F&&T=F, si3=T&&F=F, si4=T&&F=F, si5=T&&F=F
+#   real: T, F, F, F
+data    hist_b_ysb = H(b => Ys(b));
+G(hist_b_ysb == H(b => Ys(b)));
+
+# Negated arguments: exercises the disjunctive (S) and conjunctive (R) forms
+# with a non-atomic operand, so a mix-up between the two families shows up.
+#
+# Sw(!b, a): res[i] = a[i] || (!b[i] && res[i-1]), base=T.
+#   !b: [T,T,F,F,T,T]   a: [F,T,F,T,F,F]
+#   si0=T, si1= a=T => T, si2= F||(F&&T) => F, si3= a=T => T, si4= F||(T&&T) => T
+#   real: T, F, T, T
+data    sw_notb_a = Sw(!b, a);
+G(sw_notb_a == Sw(!b, a));
+
+# Rs(b, !a): res[i] = !a[i] && (b[i] || res[i+1]), base=F at si=5.
+#   !a: [T,F,T,F,T,T]   b: [F,F,T,T,F,F]
+#   si5=F, si4= T&&(F||F) => F, si3= !a=F => F, si2= T&&(T||F) => T, si1= !a=F => F
+#   real: F, T, F, F
+data    rs_b_nota = Rs(b, !a);
+G(rs_b_nota == Rs(b, !a));
+
+# ── Spot-check sanity assertions ──────────────────────────────────────────────
+# At t=2000 (si=3): a=T, b=T.  Both Us(a,b) and Ss(a,b) must be T there.
+F(us_ab && a && b);
+F(ss_ab && a && b);
+
+# xs_b is T at si=1 (the very first real state, because b[si=2]=T).
+xs_b;
