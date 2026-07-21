@@ -905,8 +905,9 @@ llvm::Value*    CompileExprImpl::sub(llvm::Value* lhs, llvm::Value* rhs, std::st
 //  a second reason to stop.
 void    CompileExprImpl::visit(ExprSum*          expr)
 {
+    //  Sum(p, v) -- the discrete twin of Itg: walk the states in the window,
+    //  skip the ones where `p` does not hold, and total `v` over the rest.
     auto    bbHead  = llvm::BasicBlock::Create(*m_context, "Sum-head", m_function);
-    auto    bbStop  = llvm::BasicBlock::Create(*m_context, "Sum-stop", m_function);
     auto    bbBody  = llvm::BasicBlock::Create(*m_context, "Sum-body", m_function);
     auto    bbNext  = llvm::BasicBlock::Create(*m_context, "Sum-next", m_function);
     auto    bbTail  = llvm::BasicBlock::Create(*m_context, "Sum-tail", m_function);
@@ -923,7 +924,7 @@ void    CompileExprImpl::visit(ExprSum*          expr)
     if(expr->time && expr->time->hi)
         timeHi  = m_builder->CreateAdd(now, make(expr->time->hi), "now + hi");
 
-    auto    isInt   = expr->lhs->type() == Factory<TypeInteger>::create();
+    auto    isInt   = expr->rhs->type() == Factory<TypeInteger>::create();
     auto    type    = isInt ? static_cast<llvm::Type*>(m_builder->getInt64Ty())
                             : static_cast<llvm::Type*>(m_builder->getDoubleTy());
     auto    zero    = isInt ? static_cast<llvm::Value*>(
@@ -947,52 +948,41 @@ void    CompileExprImpl::visit(ExprSum*          expr)
     }
     m_builder->CreateCondBr(cont, bbBody, bbTail);
 
-    //  body -- contribute, unless the record sits before the window opens.
-    //  The record satisfying the bound contributes *before* the loop ends:
-    //  a message runs from its SOM to its EOM inclusive, and the EOM packet
-    //  carries payload like any other. Excluding it would also make a
-    //  single-record message, where SOM and EOM coincide, total zero.
+    //  body -- contribute where the condition holds, and not before the
+    //  window opens. Skipped states leave the total alone rather than
+    //  ending the walk, so a gap in `p` does not truncate the sum.
     m_builder->SetInsertPoint(bbBody);
     m_curr.push_back(curr);
-    auto    value   = make(expr->lhs);
+    auto    cond    = make(expr->lhs);
+    auto    value   = make(expr->rhs);
     m_curr.pop_back();
 
-    llvm::Value*    contrib = value;
+    llvm::Value*    take    = cond;
     if(timeLo)
     {
         auto    currT = getTime(curr, "curr->__time__");
-        contrib = m_builder->CreateSelect(
-                    m_builder->CreateICmpSGE(currT, timeLo, "currT >= timeLo"),
-                    value, zero, "contrib");
+        take = m_builder->CreateAnd(take,
+                    m_builder->CreateICmpSGE(currT, timeLo, "currT >= timeLo"));
     }
+    auto    contrib = m_builder->CreateSelect(take, value, zero, "contrib");
     auto    grown   = add(total, contrib, "total'");
-    m_builder->CreateBr(bbStop);
-
-    //  stop -- checked after contributing, so the bound is inclusive.
-    m_builder->SetInsertPoint(bbStop);
-    m_curr.push_back(curr);
-    auto    until   = make(expr->rhs);
-    m_curr.pop_back();
-    auto    bbStopEnd = m_builder->GetInsertBlock();
-    m_builder->CreateCondBr(until, bbTail, bbNext);
+    m_builder->CreateBr(bbNext);
 
     //  next
     m_builder->SetInsertPoint(bbNext);
     auto    currNext = getNext(curr);
+    auto    bbNextEnd = m_builder->GetInsertBlock();
     m_builder->CreateBr(bbHead);
 
     total->addIncoming(zero,  bbEntry);
-    total->addIncoming(grown, bbNext);
+    total->addIncoming(grown, bbNextEnd);
     curr->addIncoming(curr0,    bbEntry);
-    curr->addIncoming(currNext, bbNext);
+    curr->addIncoming(currNext, bbNextEnd);
 
     //  tail
     m_builder->SetInsertPoint(bbTail);
-    auto    result  = m_builder->CreatePHI(type, 2, "sum");
-    result->addIncoming(total, bbHead);
-    result->addIncoming(grown, bbStopEnd);
 
-    m_value = result;
+    m_value = total;
 }
 
 void    CompileExprImpl::visit(ExprInt*          expr)

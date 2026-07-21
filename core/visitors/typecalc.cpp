@@ -343,9 +343,10 @@ void    TypeCalcImpl::visit(ExprMmbr*               expr)
     }
 }
 
-//  Sum(v, q): `v` is what accumulates and must be numeric; `q` says when to
-//  stop and must be boolean. The result carries `v`'s type, so summing
-//  integers stays integral.
+//  Sum(p, v): `p` selects the states that contribute and must be boolean;
+//  `v` is what accumulates and must be numeric. Same shape as Itg, which
+//  integrates `v` over the time `p` holds rather than totalling it per state.
+//  The result carries `v`'s type, so summing integers stays integral.
 void    TypeCalcImpl::visit(ExprSum*              expr)
 {
     safe(expr->time);
@@ -353,13 +354,13 @@ void    TypeCalcImpl::visit(ExprSum*              expr)
     auto    lhs = make(expr->lhs);
     auto    rhs = make(expr->rhs);
 
-    if(!isNumeric(lhs))
-        throw Exception(expr->lhs->where(), "bad type: Sum accumulates a number");
+    if(lhs != typeBoolean)
+        throw Exception(expr->lhs->where(), "bad type: Sum selects states with a condition");
 
-    if(rhs != typeBoolean)
-        throw Exception(expr->rhs->where(), "bad type: Sum stops on a condition");
+    if(!isNumeric(rhs))
+        throw Exception(expr->rhs->where(), "bad type: Sum accumulates a number");
 
-    m_type = lhs;
+    m_type = rhs;
 }
 
 void    TypeCalcImpl::visit(ExprInt*              expr)

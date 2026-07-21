@@ -1,11 +1,13 @@
-# Discrete accumulation over records, bounded by a condition.
+# Discrete accumulation over records, selected by a condition.
 #
-#   Itg(c, v)  integrates v over *time* where c holds        (existing)
-#   Sum(v, q)  totals v over *records*, until q holds        (new)
-#   Cnt(p, q)  counts records where p holds, until q holds   (new)
+#   Itg(c, v)  integrates v over *time* while c holds        (existing)
+#   Sum(c, v)  totals v over the *records* where c holds     (new)
+#   Cnt(c)     counts the records where c holds              (new)
 #
-# The distinction matters: Itg weights each step by its duration, which is
-# right for "how long was the valve open" and wrong for "how many bytes were
+# All three share a shape: a condition selects, states where it fails are
+# skipped, and the walk is bounded only by the [lo:hi] window. What differs is
+# the weight each contributing state carries -- Itg weights by duration, which
+# is right for "how long was the valve open" and wrong for "how many bytes were
 # in this message". A protocol's message-length and packet-count limits are
 # discrete, and were not expressible before.
 #
@@ -17,30 +19,31 @@ type K   : enum { SOM, MID, EOM };
 data k   : K;
 data len : integer;
 
-# ── Bounded by a condition ───────────────────────────────────────────────────
-# Accumulation starts at the current record and includes the first record
-# satisfying the bound. A message runs from its SOM to its EOM inclusive, and
-# the EOM packet carries payload like any other; excluding it would also make a
-# single-record message, where SOM and EOM coincide, total zero.
-G(k.SOM => Cnt(k.MID, k.EOM) <= 8);         # packets per message
-G(k.SOM => Sum(len,   k.EOM) <= 4096);      # bytes per message
+# ── Over the whole remaining trace ───────────────────────────────────────────
+Cnt(true)       == 8;                       # every record
+Cnt(k.SOM)      == 2;                       # two messages
+Cnt(k.EOM)      == 2;
+Cnt(k.MID)      == 4;                       # three in the first, one in the second
+Sum(true, len)  == 121;                     # 10+20+30+40+5 + 7+8+1
+Sum(k.MID, len) == 98;                      # 20+30+40 + 8
 
-# Exact values for the first message: SOM, three MIDs and the EOM.
-Cnt(k.MID, k.EOM) == 3;                     # the EOM is not a MID
-Sum(len,   k.EOM) == 105;                   # 10 + 20 + 30 + 40 + 5
-Cnt(true,  k.EOM) == 5;                     # every record of the message
-
-# A message of one record, where the bound holds immediately, still counts it.
-G(k.EOM => Cnt(true, k.EOM) == 1);
-
-# ── Unbounded: `false` never stops, so it runs to the end of the trace ───────
-Cnt(k.SOM, false) == 2;                     # two messages in the trace
-Cnt(k.EOM, false) == 2;
-Sum(len,   false) == 121;                   # every len in the trace
+# ── Unselected states are skipped, not stopped at ────────────────────────────
+# k.MID is false at t=0 and again at t=4000, and the walk carries on through
+# both. A stopping rule would have given 0 here, not 4.
+Cnt(k.MID)      == 4;
 
 # ── Time-bounded, reusing the existing [lo:hi] ───────────────────────────────
-Cnt[0:2500](k.MID, false) == 2;
-Sum[0:2500](len,   false) == 60;            # 10 + 20 + 30
+Cnt[0:2500](true)         == 3;             # t = 0, 1000, 2000
+Cnt[0:2500](k.MID)        == 2;
+Sum[0:2500](true, len)    == 60;            # 10 + 20 + 30
+Sum[1500:2500](true, len) == 30;            # the window's lower end clips too
 
-# ── Cnt is Sum over an indicator, so they agree ──────────────────────────────
-G(Cnt(k.MID, k.EOM) == Sum(k.MID ? 1 : 0, k.EOM));
+# ── Cnt is Sum over ones, so they agree ──────────────────────────────────────
+G(Cnt(k.MID) == Sum(k.MID, 1));
+G(Cnt[0:3000](k.MID) == Sum[0:3000](k.MID, 1));
+
+# ── Protocol limits, bounded by the window rather than by the message ────────
+# A per-message bound needs a window wide enough to cover one message and no
+# more; the condition selects states, it does not delimit them.
+G(k.SOM => Cnt[0:5000](k.MID) <= 8);        # at most 8 packets per message
+G(k.SOM => Sum[0:5000](true, len) <= 4096); # and at most 4096 bytes

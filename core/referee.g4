@@ -178,10 +178,11 @@ expression  : sign? integer                                     # ExprConst
             | 'Itg' time? '(' expression ',' expression ')'     # ExprInt
             | 'Itg' time? '(' expression ')'                    # ExprInt
 
-            //  Discrete accumulation up to a stopping condition, where I
-            //  integrates over a time window. Cnt is Sum with an indicator.
+            //  Discrete counterparts, shaped like Itg: a condition selects
+            //  the states, and states where it fails are skipped. Cnt(p) is
+            //  Sum(p, 1).
             | 'Sum' time? '(' expression ',' expression ')'     # ExprSum
-            | 'Cnt' time? '(' expression ',' expression ')'     # ExprCnt
+            | 'Cnt' time? '(' expression ')'                    # ExprCnt
 
             | '(' expression ')'                                # ExprParen
 

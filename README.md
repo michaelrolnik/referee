@@ -281,19 +281,19 @@ Temporal operators come in both **future** and **past** flavours, and most come 
 | `Us(p, q)` / `Uw(p, q)` | `Ss(p, q)` / `Sw(p, q)` | strong/weak until / since |
 | `Rs(p, q)` / `Rw(p, q)` | `Ts(p, q)` / `Tw(p, q)` | strong/weak release / triggered |
 | `Itg(v)` / `Itg(c, v)` | — | **integral** over time of a numeric `v`; the two-argument form integrates only while boolean `c` holds |
-| `Sum(v, q)` | — | **total** of numeric `v` over records, from here until `q` holds |
-| `Cnt(p, q)` | — | **count** of records where `p` holds, from here until `q` holds |
+| `Sum(c, v)` | — | **total** of numeric `v` over the records where `c` holds |
+| `Cnt(c)` | — | **count** of the records where `c` holds |
 
 All temporal operators optionally accept a **time bound** `[lo:hi]`, `[:hi]`, or `[lo:]`, giving MTL-style bounded versions such as `G[100:1000](a)` or `Us[1:3](alpha, beta)`.
 
-`Itg` weights each step by its duration; `Sum` and `Cnt` count records. The distinction is the difference between "how long was the valve open" and "how many bytes were in this message" — the second is discrete, and the accumulation stops at a *condition* rather than a time:
+The three accumulators share one shape: a condition selects the states that contribute, states where it fails are skipped rather than ending the walk, and the extent is set by the `[lo:hi]` window. What differs is the weight a contributing state carries — `Itg` weights it by its duration, `Sum` by a value, `Cnt` by one. That is the difference between "how long was the valve open" and "how many bytes were in this message"; the second is discrete, and was not expressible before.
 
 ```text
-G(k.SOM => Cnt(k.MID, k.EOM) <= 8);        // at most 8 packets per message
-G(k.SOM => Sum(len,   k.EOM) <= 4096);     // and at most 4096 bytes
+G(k.SOM => Cnt[0:5000](k.MID) <= 8);        // at most 8 packets per message
+G(k.SOM => Sum[0:5000](true, len) <= 4096); // and at most 4096 bytes
 ```
 
-Accumulation starts at the current record and **includes** the first record satisfying the bound — a message runs from its SOM to its EOM inclusive, and the EOM packet carries payload like any other. Excluding it would also make a single-record message, where the bound holds immediately, total zero. `false` never stops it, so it runs to the end of the trace. `Cnt(p, q)` is `Sum(p ? 1 : 0, q)`, and all three accept a `[lo:hi]` window like every other temporal operator.
+Accumulation runs forward from the current state, so the window is what bounds a per-message requirement — the condition chooses states, it does not delimit them. Without a window the walk reaches the end of the trace. `Cnt(c)` is `Sum(c, 1)`.
 
 A **freeze variable** `name@(... expression ...)` binds the current state to `name`, so subexpressions can reference data at that frozen point — e.g. `x@(F(x.abc.a == 3))` means "there is a future state whose `abc.a` equals the value `abc.a` had at the freeze point". A special `__time__` identifier refers to the current timestamp.
 

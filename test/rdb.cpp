@@ -663,10 +663,12 @@ TEST(Rdb, AccumulateDiagnostics)
     struct Case { char const* src; char const* want; };
 
     Case    cases[] = {
+        // what selects the states must be boolean
+        {"data i : integer;\nSum(i, i) == 0;\n",            "selects states with a condition"},
         // what accumulates must be numeric
         {"data a : boolean;\nSum(a, a) == 0;\n",            "accumulates a number"},
-        // what stops it must be boolean
-        {"data i : integer;\nSum(i, i) == 0;\n",            "stops on a condition"},
+        // Cnt selects too, and takes nothing to accumulate
+        {"data i : integer;\nCnt(i) == 0;\n",               "selects states with a condition"},
     };
 
     int     n = 0;
