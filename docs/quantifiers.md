@@ -197,27 +197,44 @@ Two loose ends worth deciding rather than discovering:
 - **`referee compile file.ref` has no trace**, so an unsized array cannot be resolved. Either it is a clear error ("array size unknown; compile requires a trace or an explicit size") or the subcommand grows a way to supply one.
 - **Multi-dimensional unsized arrays.** `T[][]` can in principle be inferred from the column names too, but it is worth restricting to a single unsized dimension until something needs more.
 
-### Varying per state — expensive, and it undoes this design
+### Varying per state — a Pascal-string layout, and much cheaper than it looks
 
-The length changes from record to record. `TypeArray` already anticipates this: `count == 0` is documented as dynamic, with a `{i16 length, ptr}` layout, and `CompileTypeImpl::visit(TypeArray*)` lowers that case to a struct. Support stops there — `Loader` and the `.rdb` reader both reject it explicitly, `csvHeaders` emits a `#size` placeholder and then expands as though the length were 1, and `visit(ExprIndx*)` would fail its `cast<llvm::ArrayType>`.
+The length changes from record to record. This was written up here as the expensive case, on the assumption baked into the existing scaffolding: `TypeArray` documents `count == 0` as dynamic with a **`{i16 length, ptr}`** layout, and `CompileTypeImpl::visit(TypeArray*)` lowers it to a struct holding a pointer. A fat pointer puts the elements somewhere else, and everything hard follows from that — variable-size blobs, offset indirection in the `.rdb`, and quantifiers that can no longer unroll because the count is not known.
 
-This variant removes the property the whole quantifier design rests on. A quantifier could no longer expand; it would become a runtime loop nested inside the per-state loops the temporal operators already generate. It changes the generated IR, the memory layout and the trace format, and it raises a question the other variants never have to answer: what `xs[i]` *means* when `i` is past the current length, in a language where every expression must have a value.
-
-If per-state variation is genuinely needed, **bounded-dynamic** is the cheap approximation — a static capacity with a runtime length:
+Modelling the array as a **Pascal string** instead removes all of it. Store the length inline, ahead of a fixed capacity:
 
 ```text
-data readings : integer[8];     // capacity
-data n        : integer;        // logical length
+{ i16 length, T elements[capacity] }
 ```
 
-with quantifiers expanding to the capacity under a guard:
+The *slot* is fixed-size; the *logical length* varies per state. That single change undoes each consequence:
+
+| | fat pointer `{len, ptr}` | Pascal string `{len, T[cap]}` |
+| --- | --- | --- |
+| blob size | varies per state | fixed |
+| `.rdb` rows | need offsets and indirection | unchanged, self-describing |
+| quantifier | runtime loop over an unknown count | unrolls to capacity, each element guarded |
+| out-of-range index | undefined, no storage to read | storage exists; the question is semantic, not structural |
+| CSV columns | cannot express a varying count | capacity columns plus one length column |
+
+It also removes the awkwardness of the earlier bounded-dynamic sketch, which paired an array with a *separate* length signal and therefore needed a declaration form to associate the two. Here the length belongs to the array, and nothing has to be tied together by convention.
+
+The trace side already anticipates it: `CsvHeaders` emits a `#size` column for a zero-count dimension, which is exactly the length column this layout wants.
+
+**What actually changes.** One thing, and it is worth being explicit about: `xs.count` stops being a compile-time literal for such arrays and becomes a load of the length field. Everywhere else it stays a constant. Quantifiers still expand at AST-construction time, to the capacity, with each element guarded:
 
 ```text
 all x, i in readings: P(x)
-    ==>  (0 < n => P(readings[0])) && (1 < n => P(readings[1])) && …
+    ==>  (0 < readings.count => P(readings[0]))
+      && (1 < readings.count => P(readings[1]))
+      && …                                        up to the capacity
 ```
 
-Layout stays fixed, the trace keeps fixed columns, expansion stays compile-time, and the temporal lowering is untouched. It would need a declaration form associating the length signal with the array rather than a naming convention. The `#size` column `csvHeaders` already emits suggests something along these lines was the original intent.
+Bounded, unrolled, no loop, and the temporal layer is untouched — the property this whole document rests on survives.
+
+**Still to decide.** The declaration needs to distinguish three things that are now genuinely different: a fixed extent (`T[8]`), an extent fixed by the trace for a whole run (`T[]`, implemented), and a capacity with a per-state length. Something like `T[<= 8]` reads as "at most 8", and `at most` is already REF vocabulary from the quantifiers, so `T[at most 8]` would sit in the house style at the cost of some length. Whichever is chosen, the third form is the one this section describes and the other two already work.
+
+The remaining question is semantic rather than structural: what `xs[i]` *means* when `i` is past the current length. The storage exists, so there is a value to read; whether reading it is legitimate is a language decision. Quantifiers avoid the question entirely by never generating an unguarded index, which suggests the answer is to make a bare out-of-range subscript an error and let quantifiers and `.count` be the supported way to walk such an array.
 
 ## Addressing an array's size from a requirement
 
