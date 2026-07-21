@@ -483,6 +483,53 @@ TEST(Rdb, ImportResolvedViaSearchPath)
     std::remove(rdbPath.c_str());
 }
 
+// Bounded quantifiers over array elements: all / some / one and the counted
+// forms, element-and-index binding, nesting over a 2-D array, composition with
+// temporal operators in both orders, and use inside a computed signal.
+TEST(Rdb, Quantifiers)
+{
+    auto    refPath = std::string(REFEREE_TEST_DATA_DIR) + "/quantifiers.ref";
+    auto    csvPath = std::string(REFEREE_TEST_DATA_DIR) + "/quantifiers.csv";
+    auto    rdbPath = tmpFile("quantifiers");
+
+    referee::db::ingest(refPath, csvPath, /*confPath=*/"", rdbPath);
+
+    std::ifstream       refIn(refPath);
+    std::ostringstream  out;
+    EXPECT_TRUE(Referee::executeRdb(refIn, refPath, rdbPath, out)) << out.str();
+
+    std::remove(rdbPath.c_str());
+}
+
+// A quantifier expands during AST construction, so nothing downstream ever
+// sees one. Rejections therefore have to name the quantifier itself.
+TEST(Rdb, QuantifierDiagnostics)
+{
+    struct Case { char const* src; char const* want; };
+
+    Case    cases[] = {
+        {"data b : boolean;\nall x in b: x;\n",
+         "array to range over"},
+        {"data v : integer[4];\nall x, x in v: x > 0;\n",
+         "twice"},
+    };
+
+    int     n = 0;
+    for (auto const& c : cases)
+    {
+        std::istringstream  src(c.src);
+        try
+        {
+            Referee::parseSchema(src, "<quant" + std::to_string(n++) + ">");
+            ADD_FAILURE() << "expected a rejection for: " << c.src;
+        }
+        catch (std::exception const& e)
+        {
+            EXPECT_NE(std::string(e.what()).find(c.want), std::string::npos) << e.what();
+        }
+    }
+}
+
 // Multi-dimensional arrays: the dimension order, and the agreement between the
 // column names csvHeaders derives and the ones Loader actually reads. No
 // fixture had a 2-D array before, which is how the two came to disagree

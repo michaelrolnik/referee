@@ -125,6 +125,11 @@
       "comment": "Dwyer specification-pattern words. These are reserved in the lexer, so they cannot be used as identifiers -- highlighting them makes that visible.",
       "patterns": [
         {
+          "comment": "Bounded quantifiers over array elements",
+          "name": "keyword.control.quantifier.ref",
+          "match": "\\b(all|some|one|most)\\b"
+        },
+        {
           "name": "keyword.control.pattern.scope.ref",
           "match": "\\b(globally|before|after|between|while|until)\\b"
         },

@@ -85,6 +85,7 @@ public:
     ~Antlr2AST();
 
     std::any visitDeclImport(   referee::refereeParser::DeclImportContext*      ctx) override;
+    std::any visitExprQuant(    referee::refereeParser::ExprQuantContext*       ctx) override;
     std::any visitDeclConf(     referee::refereeParser::DeclConfContext*        ctx) override;
     std::any visitDeclDataTyped(referee::refereeParser::DeclDataTypedContext*   ctx) override;
     std::any visitDeclDataExpr( referee::refereeParser::DeclDataExprContext*    ctx) override;
@@ -210,6 +211,11 @@ private:
     void        importFile(std::string const& path, Position const& where);
 
     Module* module  = nullptr;
+
+    //  Names bound by a quantifier to a concrete expression, innermost last.
+    //  Distinct from Module's context stack, which records that a name exists
+    //  without carrying a value for it.
+    std::vector<std::pair<std::string, Expr*>>  m_bindings;
 
     //  ANTLR objects for every imported file, kept alive for the lifetime of
     //  the visitor: the AST holds interned strings and positions taken from

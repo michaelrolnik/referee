@@ -43,6 +43,13 @@ declaraion  : declType
 declImport  : 'import' string
             ;
 
+quant       : all                                   # QuantAll
+            | some                                  # QuantSome
+            | one                                   # QuantOne
+            | at least integer                      # QuantAtLeast
+            | at most  integer                      # QuantAtMost
+            ;
+
 sign        : '+'
             | '-'
             ;
@@ -133,6 +140,11 @@ expression  : sign? integer                                     # ExprConst
 
             | expression '?' expression ':' expression          # ExprTer
 
+            //  Bounded quantifiers over an array's elements. The body extends
+            //  maximally -- to the enclosing ')' or the terminating ';' -- so
+            //  these sit looser than every operator above.
+            | quant ID (',' ID)? in expression ':' expression   # ExprQuant
+
             | 'G'  time? '(' expression ')'                     # ExprG
             | 'F'  time? '(' expression ')'                     # ExprF
             | 'Xs'       '(' (expression ',')? expression ')'   # ExprXs
@@ -203,6 +215,10 @@ minutes         : 'minutes'         ;
 must            : 'must'            ;
 nanoseconds     : 'nanoseconds'     ;
 never           : 'never'           ;
+all             : 'all'             ;
+some            : 'some'            ;
+one             : 'one'             ;
+most            : 'most'            ;
 occured         : 'occured'         ;
 occurred        : 'occurred'        ;
 once            : 'once'            ;

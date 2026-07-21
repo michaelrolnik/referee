@@ -1,6 +1,6 @@
 # Design: bounded quantifiers over arrays
 
-**Status:** proposal, not implemented.
+**Status:** implemented, except where noted. `all` / `some` / `one` and `at least N` / `at most N` are in; the array-size pseudo-member and everything under *arrays whose size is not in the `.ref`* are not.
 **Scope:** `all` / `some` / `one`, plus `at least N` / `at most N`, quantifying over the elements of an array.
 
 ## The problem
@@ -92,8 +92,8 @@ Each form is defined by expansion over the array's `count`, which is known by th
 | `all x in xs: P` | `P(xs[0]) && P(xs[1]) && … && P(xs[n-1])` |
 | `some x in xs: P` | `P(xs[0]) \|\| … \|\| P(xs[n-1])` |
 | `one x in xs: P` | exactly one disjunct true — the pairwise-exclusive expansion |
-| `at least k …` | disjunction over the `C(n,k)` k-subsets |
-| `at most k …` | negation of `at least k+1` |
+| `at least k …` | `(P₀ ? 1 : 0) + … + (Pₙ₋₁ ? 1 : 0) >= k` |
+| `at most k …` | the same sum, `<= k` |
 
 `one` is sugar: `at least 1 && at most 1`. It is kept because "exactly one" is common enough in safety requirements to deserve reading well.
 
@@ -111,9 +111,9 @@ is either `count(limit > 5) > 2` or `count(limit > 5 > 2)`, and no precedence ru
 
 If a value-returning count is ever genuinely needed, it can be added later in delimited form without disturbing any of this.
 
-### `at least k` blow-up
+### Counting without combinatorial blow-up
 
-The subset expansion is `C(n,k)` terms, which is fine for the sizes REF arrays actually have (a handful) and bad in principle. If it ever matters, the standard fix is a sorting network or a counter chain over the `n` predicates, which is `O(n·k)` and can be substituted without changing the surface language. Not worth building until a real spec needs it.
+An expansion over `C(n,k)` subsets was the obvious reading of "at least k" and is exponential in the worst case. It is not needed: REF already has the conditional operator and integer arithmetic, so the count is a sum of indicators — `(P₀ ? 1 : 0) + … + (Pₙ₋₁ ? 1 : 0)` — compared against the bound. That is linear in the element count, introduces no node type the language lacks, and makes `one` fall out as `sum == 1`.
 
 ## Interaction with the temporal layer: none
 

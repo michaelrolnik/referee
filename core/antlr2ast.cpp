@@ -381,6 +381,109 @@ std::any Antlr2AST::visitExprAnd(       referee::refereeParser::ExprAndContext* 
     return acceptBinary<ExprAnd>(ctx);
 }
 
+//  Bounded quantifiers: `all x in xs: P`, and the counted forms.
+//
+//  The element count is known here, so the whole construct expands during AST
+//  construction and nothing downstream ever sees a quantifier. The body's parse
+//  tree is visited once per element with the binder bound to `xs[k]`, which is
+//  the same trick visitExprAt uses for freeze variables and avoids needing an
+//  AST substitution pass.
+std::any Antlr2AST::visitExprQuant(     referee::refereeParser::ExprQuantContext*   ctx)
+{
+    auto    where   = position(ctx);
+
+    auto    domain  = std::any_cast<Expr*>(ctx->expression(0)->accept(this));
+    TypeCalc::make(module, domain);
+
+    auto    array   = dynamic_cast<TypeArray*>(domain->type());
+    if(array == nullptr)
+        throw Exception(where, "quantifier needs an array to range over");
+    if(array->count == 0)
+        throw Exception(where, "quantifier needs an array of known size");
+
+    auto    ids     = ctx->ID();
+    auto    elemNm  = ids[0]->getText();
+    auto    indxNm  = ids.size() > 1 ? ids[1]->getText() : std::string();
+
+    if(!indxNm.empty() && indxNm == elemNm)
+        throw Exception(where, "quantifier binds '" + elemNm + "' twice");
+
+    //  One term per element, each built with the binders in scope.
+    std::vector<Expr*>  terms;
+    for(unsigned k = 0; k < array->count; k++)
+    {
+        auto    indx    = static_cast<Expr*>(build<ExprConstInteger>(ctx, k));
+        auto    elem    = static_cast<Expr*>(build<ExprIndx>(ctx, domain, indx));
+
+        if(elemNm != "_")
+            m_bindings.push_back({elemNm, elem});
+        if(!indxNm.empty() && indxNm != "_")
+            m_bindings.push_back({indxNm, indx});
+
+        terms.push_back(std::any_cast<Expr*>(ctx->expression(1)->accept(this)));
+
+        if(!indxNm.empty() && indxNm != "_")
+            m_bindings.pop_back();
+        if(elemNm != "_")
+            m_bindings.pop_back();
+    }
+
+    auto    fold    = [&](auto make) {
+        Expr*   acc = terms.front();
+        for(size_t i = 1; i < terms.size(); i++)
+            acc = make(acc, terms[i]);
+        return acc;
+    };
+
+    auto*   quant   = ctx->quant();
+
+    if(dynamic_cast<referee::refereeParser::QuantAllContext*>(quant))
+    {
+        return fold([&](Expr* a, Expr* b) {
+            return static_cast<Expr*>(build<ExprAnd>(ctx, a, b)); });
+    }
+
+    if(dynamic_cast<referee::refereeParser::QuantSomeContext*>(quant))
+    {
+        return fold([&](Expr* a, Expr* b) {
+            return static_cast<Expr*>(build<ExprOr>(ctx, a, b)); });
+    }
+
+    //  The counting forms sum one indicator per element and compare. That is
+    //  linear in the element count, where expanding over k-subsets would be
+    //  combinatorial, and it needs no node types the language lacks.
+    auto    zero    = static_cast<Expr*>(build<ExprConstInteger>(ctx, 0));
+    auto    unit    = static_cast<Expr*>(build<ExprConstInteger>(ctx, 1));
+
+    Expr*   sum     = nullptr;
+    for(auto* term: terms)
+    {
+        auto    ind = static_cast<Expr*>(build<ExprChoice>(ctx, term, unit, zero));
+        sum = sum == nullptr ? ind
+                             : static_cast<Expr*>(build<ExprAdd>(ctx, sum, ind));
+    }
+
+    if(dynamic_cast<referee::refereeParser::QuantOneContext*>(quant))
+        return static_cast<Expr*>(build<ExprEq>(ctx, sum, unit));
+
+    auto    bound   = [&](antlr4::tree::TerminalNode* node) {
+        return static_cast<Expr*>(
+            build<ExprConstInteger>(ctx, parse_decint(node->getText())));
+    };
+
+    if(auto* least = dynamic_cast<referee::refereeParser::QuantAtLeastContext*>(quant))
+        return static_cast<Expr*>(build<ExprGe>(ctx, sum, bound(least->integer()->INTEGER())));
+
+    if(auto* most = dynamic_cast<referee::refereeParser::QuantAtMostContext*>(quant))
+        return static_cast<Expr*>(build<ExprLe>(ctx, sum, bound(most->integer()->INTEGER())));
+
+//  LCOV_EXCL_START
+//  GCOV_EXCL_START
+    throw std::runtime_error(__PRETTY_FUNCTION__);
+//  GCOV_EXCL_STOP
+//  LCOV_EXCL_STOP
+}
+
 std::any Antlr2AST::visitExprAt(        referee::refereeParser::ExprAtContext*      ctx)
 {
     auto    name    = ctx->ID()->getText();
@@ -436,6 +539,13 @@ std::any Antlr2AST::visitExprConst(     referee::refereeParser::ExprConstContext
 std::any Antlr2AST::visitExprData(      referee::refereeParser::ExprDataContext*    ctx)
 {
     auto    name    = ctx->dataID()->getText();
+
+    //  A quantifier binder shadows everything else, innermost first.
+    for(auto it = m_bindings.rbegin(); it != m_bindings.rend(); it++)
+    {
+        if(it->first == name)
+            return it->second;
+    }
 
     if(module->hasContext(name))
     {

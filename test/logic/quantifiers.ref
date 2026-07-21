@@ -1,0 +1,49 @@
+# Bounded quantifiers over array elements.
+#
+#   v = [1, 2, 3, 4]            w = [10, 20, 30, 40]
+#   g = [[1, 2], [3, 4], [5, 6]]
+#
+# Every requirement here is one that must hold; the negative cases are written
+# with `!` so the whole file is expected to pass.
+
+data    v : integer[4];
+data    w : integer[4];
+data    g : integer[3][2];
+
+# ── all / some ───────────────────────────────────────────────────────────────
+all  x in v: x > 0;
+!(all  x in v: x > 2);
+some x in v: x > 3;
+!(some x in v: x > 9);
+
+# ── one: exactly one element satisfies the body ──────────────────────────────
+one x in v: x == 3;
+!(one x in v: x > 2);           # two of them do
+!(one x in v: x > 9);           # none of them do
+
+# ── at least / at most ───────────────────────────────────────────────────────
+at least 2 x in v: x > 2;
+!(at least 3 x in v: x > 2);
+at most 2 x in v: x > 2;
+!(at most 1 x in v: x > 2);
+at least 0 x in v: x > 9;       # trivially true
+at most 4 x in v: x > 0;        # trivially true
+
+# ── element and index together, correlating two arrays ───────────────────────
+all x, i in v: x * 10 == w[i];
+all _, i in v: w[i] > v[i];
+
+# ── nesting over a 2-D array ─────────────────────────────────────────────────
+all  row in g: all  p in row: p > 0;
+!(all  row in g: some p in row: p > 4);
+some row in g: all  p in row: p > 4;
+
+# ── composing with temporal operators, in both orders ────────────────────────
+# These mean different things and both must work.
+G(all p in g[0]: p > 0);
+all p in g[0]: G(p > 0);
+!(all p in g[0]: F(p > 1));
+
+# ── inside a computed signal ─────────────────────────────────────────────────
+data any_big = some x in v: x > 3;
+G(any_big);
