@@ -217,6 +217,52 @@ all x, i in readings: P(x)
 
 Layout stays fixed, the trace keeps fixed columns, expansion stays compile-time, and the temporal lowering is untouched. It would need a declaration form associating the length signal with the array rather than a naming convention. The `#size` column `csvHeaders` already emits suggests something along these lines was the original intent.
 
+## Addressing an array's size from a requirement
+
+There is currently no way to mention an array's extent in an expression. The size is a literal inside the *type* (`size : integer` in the grammar) and never becomes a value, so `limits` has four elements but nothing in a requirement can say "four".
+
+That is tolerable while every size is written in the `.ref`. It stops being tolerable with load-sized arrays: if the specification does not state the size and cannot ask for it, no requirement can constrain it — "at least three sensors are configured" becomes unwritable, and two arrays cannot be required to agree in length.
+
+### The syntax already parses
+
+`limits.size` is accepted by the parser today. It fails later, in the type checker:
+
+```
+$ referee compile sz.ref
+exception: bad type at [3:0 .. 3:11]
+```
+
+`TypeCalcImpl::visit(ExprMmbr*)` opens with `dynamic_cast<TypeComposite*>` on the base type, and `TypeArray` derives from `Visitable<Type, TypeArray>` rather than from `TypeComposite`, so the cast yields null and the member access is rejected before the member name is ever examined.
+
+So a pseudo-member needs **no grammar change at all**. Two branches implement it:
+
+1. `TypeCalcImpl::visit(ExprMmbr*)` — before the composite cast, if the base is a `TypeArray` and the member is the size name, the expression's type is `integer`.
+2. `CompileExprImpl::visit(ExprMmbr*)` — the same case emits `ConstantInt(count)`.
+
+Because the count is known when the AST is built — whether written in the `.ref` or resolved from the trace — it lowers to a **literal**. No runtime cost, no load from the state buffer, and it behaves identically for load-sized arrays.
+
+Multi-dimensional access falls out without extra rules: `grid.count` is the outer extent, `grid[0].count` the inner one.
+
+This also composes with the quantifiers rather than competing with them. Quantifiers cover iteration; the size covers the cases iteration cannot express — constraining the extent itself, or requiring two arrays to agree.
+
+### Choosing the name
+
+`.size`, `.length` and `.count` all parse identically; the choice is readability against a maintenance trap.
+
+`Type::size()` already exists in the implementation and means **size in bytes**. Naming the language feature `.size` puts two different meanings of the word one keystroke apart, in a file where a maintainer implementing this would be reading both. `.count` matches `TypeArray::count` exactly, which is the field the value comes from.
+
+Against that, `.size` and `.length` are what a reader expects for "number of elements", and the audience for a `.ref` file is not reading `syntax.hpp`.
+
+`.count` is the safer choice and `.length` the friendlier one. `.size` has the readability of `.length` and the ambiguity of `.count`, which is the worst combination of the three.
+
+Whichever is chosen, it is only a member *name* — it is resolved by the type of the base, so it does not become a reserved word and does not prevent a struct field called `size` elsewhere.
+
+### Alternatives considered
+
+- **`size(limits)`** — a keyword-with-parens form, the shape `G(…)` and `I(…)` already use. It parses cleanly but needs a grammar rule and a new reserved word, and it reads less like member access than the thing it is.
+- **`#limits`** — impossible. `#` begins a line comment, so `#limits == 4;` silently compiles to a file containing no requirements at all. Worth recording precisely because it *looks* like it works.
+- **`|limits|`** — conflicts with `||`.
+
 ## Explicitly out of scope
 
 **Counting occurrences over time.** The README's design rationale opens with:
