@@ -265,6 +265,44 @@ A REF program does not describe a computation that produces outputs; it describe
 
 Because all requirements are evaluated over the same trace in the same module, any inconsistency between them becomes observable: a trace that satisfies one requirement may violate another, and the set of requirements is collectively checkable — not a collection of independent scripts.
 
+### What a trace means between samples
+
+A trace row is a **sample**: a timestamp plus a complete set of values for every declared `data` signal. Referee's model of what happens *between* two samples is **sample-and-hold** — each sample's values are taken to hold from its own timestamp up to, but not including, the next one. A signal is a piecewise-constant function of time, and a row is the point at which it may change.
+
+Two consequences are worth being explicit about, because they pull in different directions.
+
+**Only time-bounded operators observe the clock.** The unbounded operators (`Xs`, `Ys`, `G`, `F`, `Us`, `Ss`, …) step from sample to sample and never look at a timestamp. `Xs(a)` means "at the next recorded sample", whether that sample is a millisecond later or an hour later:
+
+```text
+__time__,a          __time__,a
+0,false             0,false
+1,true              1000000,true
+```
+
+`Xs(a)` holds at the first state of **both** of these traces. The sampling rate is therefore part of what an unbounded requirement means — `Xs` is "next record", not "next instant". Only the bounded forms (`G[0:2500]`, `Us[1000:3000]`, …) interpret the hold, by intersecting their window with each sample's `[t_i, t_{i+1})` interval:
+
+```text
+__time__,a
+0,false
+1000,true
+
+F[0:500](a);      // FAIL — the window closes at t=500, and `a` is held false to t=1000
+F[0:1500](a);     // PASS — the window reaches t=1000, where the sample says true
+```
+
+**Rows are not sparse, and empty cells are not carried forward.** Every declared column must carry a value in every row. An empty cell is *not* filled from the row above — it reads as the type's zero (`false`, `0`, `0.0`, the empty string), and it does so silently:
+
+```text
+__time__,a,i
+0,true,42
+1000,,            # NOT a=true,i=42 held over — this row reads a=false, i=0
+2000,false,7
+```
+
+So sample-and-hold is what happens between rows, not within them. If you are generating a trace from a system that only reports signals when they change, you have to materialise the held values into complete rows before handing it to Referee; writing only the changed cell will silently zero everything else. Equivalently: **to say "this value changes at time T", add a complete row at T.**
+
+Finally, the packer brackets the trace with sentinel states one time unit outside it (at `firstT - 1` and `lastT + 1`), which is what gives the last real sample a non-empty interval to occupy. A bounded operator evaluated at the final sample therefore sees a one-unit-wide window rather than an open-ended one.
+
 ### Temporal lowering
 
 The binary temporal operators come in two families that are duals of each other, and the distinction drives both the generated code and its correctness:
@@ -476,6 +514,8 @@ The general recipe is:
 2. Inspect the column layout the compiler will expect — for non-trivial structs/arrays the easiest path is to start from a CSV with just the `__time__` column plus one row of zeros, run `referee execute`, and let any column-not-found error tell you the next expected name. The same expansion is performed by `core/visitors/csvHeaders.cpp` if you'd rather read the rules in code.
 3. Produce your CSV with that header, one row per timestamped state, plus a one-row `conf.csv` if the spec uses `conf` declarations.
 4. Run `./build/referee execute spec.ref data.csv --conf conf.csv`.
+
+> **Every row must be complete.** Values are held between samples but *not* within a row: an empty cell reads as the type's zero rather than carrying forward from the row above, and does so silently. If your source only emits a signal when it changes, expand it into full rows before handing it to Referee. See *What a trace means between samples* above — it also covers why the spacing of your samples changes what unbounded operators like `Xs` mean.
 
 > **Limitation.** The driver currently reads the entire trace into memory and runs each requirement function across the whole trace. Streaming / online evaluation (consuming records as they arrive, reporting per-violation timestamps) is on the roadmap — see the *What is missing* section above.
 

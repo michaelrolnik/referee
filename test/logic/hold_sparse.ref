@@ -1,0 +1,15 @@
+# An empty cell is not carried forward from the row above: it reads as the
+# type's zero. This is the counterpart to sample-and-hold -- the hold applies
+# between rows, not within them.
+#
+# Trace (hold_sparse.csv):
+#   t=0     a=true   i=42
+#   t=1000  <empty>  <empty>
+#   t=2000  a=false  i=7
+
+data    a   : boolean;
+data    i   : integer;
+
+# From the first row, the next sample reads false / 0 rather than true / 42.
+Xs(!a);
+Xs(i == 0);

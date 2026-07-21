@@ -1,0 +1,18 @@
+# Sample-and-hold: a sample's values are taken to hold from its own timestamp
+# up to, but not including, the next one.
+#
+# Trace (hold.csv):  t=0 a=false,  t=1000 a=true,  t=2000 a=true
+#
+# A bounded window that closes before the next sample sees only the held value;
+# one that reaches the next sample sees the change. If the hold were ignored --
+# if a bounded operator looked at the next *sample* rather than the next
+# *instant* -- both of these would agree, and one of them would be wrong.
+
+data    a   : boolean;
+
+!F[0:500](a);       # window closes at t=500, where a is still held false
+F[0:1500](a);       # window reaches t=1000, where the sample says true
+
+# The same boundary from the other side.
+G[0:500](!a);
+!G[0:1500](!a);

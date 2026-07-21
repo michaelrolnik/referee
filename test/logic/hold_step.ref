@@ -1,0 +1,8 @@
+# Unbounded operators step from sample to sample and never consult the clock.
+# This file is run against two traces with the same sample sequence but gaps of
+# 1 and 1,000,000 time units; it must give the same answer for both.
+
+data    a   : boolean;
+
+Xs(a);
+!a;

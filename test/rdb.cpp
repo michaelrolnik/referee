@@ -482,6 +482,65 @@ TEST(Rdb, ImportResolvedViaSearchPath)
     std::remove(rdbPath.c_str());
 }
 
+// Sample-and-hold: a sample's values hold from its own timestamp up to, but
+// not including, the next one. A bounded window that closes before the next
+// sample sees only the held value; one that reaches it sees the change. These
+// pin the semantics the README documents, so the two cannot drift apart.
+TEST(Rdb, SampleAndHoldBetweenSamples)
+{
+    auto    refPath = std::string(REFEREE_TEST_DATA_DIR) + "/hold.ref";
+    auto    csvPath = std::string(REFEREE_TEST_DATA_DIR) + "/hold.csv";
+    auto    rdbPath = tmpFile("hold");
+
+    referee::db::ingest(refPath, csvPath, /*confPath=*/"", rdbPath);
+
+    std::ifstream       refIn(refPath);
+    std::ostringstream  out;
+    EXPECT_TRUE(Referee::executeRdb(refIn, refPath, rdbPath, out)) << out.str();
+
+    std::remove(rdbPath.c_str());
+}
+
+// Unbounded operators step from sample to sample and never consult the clock:
+// the same sample sequence must give the same answer whether the gap between
+// two rows is one time unit or a million.
+TEST(Rdb, UnboundedOperatorsIgnoreSampleSpacing)
+{
+    auto    refPath = std::string(REFEREE_TEST_DATA_DIR) + "/hold_step.ref";
+
+    for (auto const* trace : {"/hold_tight.csv", "/hold_loose.csv"})
+    {
+        auto    csvPath = std::string(REFEREE_TEST_DATA_DIR) + trace;
+        auto    rdbPath = tmpFile("step");
+
+        referee::db::ingest(refPath, csvPath, /*confPath=*/"", rdbPath);
+
+        std::ifstream       refIn(refPath);
+        std::ostringstream  out;
+        EXPECT_TRUE(Referee::executeRdb(refIn, refPath, rdbPath, out))
+            << trace << ": " << out.str();
+
+        std::remove(rdbPath.c_str());
+    }
+}
+
+// The hold applies between rows, not within them: an empty cell reads as the
+// type's zero rather than being carried forward from the row above.
+TEST(Rdb, EmptyCellsAreNotCarriedForward)
+{
+    auto    refPath = std::string(REFEREE_TEST_DATA_DIR) + "/hold_sparse.ref";
+    auto    csvPath = std::string(REFEREE_TEST_DATA_DIR) + "/hold_sparse.csv";
+    auto    rdbPath = tmpFile("sparse");
+
+    referee::db::ingest(refPath, csvPath, /*confPath=*/"", rdbPath);
+
+    std::ifstream       refIn(refPath);
+    std::ostringstream  out;
+    EXPECT_TRUE(Referee::executeRdb(refIn, refPath, rdbPath, out)) << out.str();
+
+    std::remove(rdbPath.c_str());
+}
+
 // The nested-scan fallback: bounds that read a `data` signal are not
 // loop-invariant, so the window is not monotone and the buffered lowering does
 // not apply. Nothing else in the suite reaches that code, including the
