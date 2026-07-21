@@ -85,7 +85,7 @@ all row in grid:  all p in row:  p.x < 10;
 
 ## Semantics
 
-Each form is defined by expansion over the array's `count`, which is known at compile time. For `xs : T[n]`:
+Each form is defined by expansion over the array's `count`, which is known by the time the body is built. For `xs : T[n]`:
 
 | Form | Expands to |
 | --- | --- |
@@ -119,7 +119,7 @@ The subset expansion is `C(n,k)` terms, which is fine for the sizes REF arrays a
 
 This is the property that makes the feature cheap, and it is worth stating explicitly.
 
-Because array sizes are static, **quantifiers expand entirely during AST construction**. Nothing reaches `TypeCalc`, `Rewrite`, or `Compile` that those visitors do not already handle: the result is an ordinary tree of `ExprAnd` / `ExprOr` over `ExprIndx` nodes with constant subscripts, which the existing lowering compiles as it always has.
+Because the element count is known when the AST is built, **quantifiers expand entirely during AST construction**. Nothing reaches `TypeCalc`, `Rewrite`, or `Compile` that those visitors do not already handle: the result is an ordinary tree of `ExprAnd` / `ExprOr` over `ExprIndx` nodes with constant subscripts, which the existing lowering compiles as it always has.
 
 Consequently:
 
@@ -162,29 +162,60 @@ Errors worth reporting at the quantifier rather than after expansion, so the mes
 - `k` in `at least k` exceeds the array size
 - binder name shadows a signal, type or freeze variable
 
-## Interaction with dynamic arrays
+## Interaction with arrays whose size is not in the `.ref`
 
-`TypeArray` already models `count == 0` as "dynamic", with a `{i16 length, ptr}` layout, and `CompileTypeImpl::visit(TypeArray*)` lowers that case to a struct rather than an LLVM array. The support stops there: `Loader` and the `.rdb` reader both reject dynamic arrays explicitly, `csvHeaders` emits a `#size` placeholder and then expands as if the length were 1, and `visit(ExprIndx*)` does `cast<llvm::ArrayType>` on the base type, which a dynamic array is not.
+There are two different things "unknown array size" can mean, and they differ enormously in cost. It is worth separating them before either is attempted.
 
-**Dynamic arrays would remove the property this whole design rests on.** If the length is not known at compile time, a quantifier cannot expand — it becomes a runtime loop, inside the temporal evaluation, nested with the per-state loops the temporal operators already generate. That is a different and much larger feature: it changes the generated IR, the memory layout, the trace format, and it raises a semantic question the static version never has to answer — what `xs[i]` *means* when `i` is past the current length, in a language where every expression must have a value.
+### Sized at load time — cheap, and mostly already possible
 
-If dynamic arrays are wanted, the cheap version is **bounded-dynamic**: a static maximum with a runtime length.
+The size is not written in the `.ref`, but it is **fixed for a whole run** and known once the trace has been read:
 
 ```text
-data readings : integer[8];     // capacity 8
+data readings : integer[];      // however many the trace carries
+```
+
+This is far less invasive than it first appears, because of an ordering that already holds: **the trace is opened before the specification is compiled.** `Referee::executeRdb` constructs the `Reader`, and only then does `runAgainstRdb` call `buildJitFromRef`, which calls `Referee::compile`. By the time the `.ref` is parsed, the schema of the data it will run against is in hand.
+
+So the sizes can be supplied *at parse time*, the same way include paths already are, and `visitTypeArray` builds a concrete `TypeArray` immediately. Nothing downstream ever sees an unsized type, which means:
+
+- The LLVM type stays a plain `ArrayType`. No `{length, ptr}` fat pointer, and `visit(ExprIndx*)` — which casts the base to `llvm::ArrayType` — is unchanged.
+- `.rdb` rows stay fixed-size; the format already serialises `TypeArray` with a count, so a resolved array records itself with no format change.
+- Quantifiers still expand at AST-construction time, because the count is concrete by then. Everything in this document still holds.
+- There is no out-of-range question, because there is no per-state variation.
+
+The work is roughly:
+
+1. Grammar: `size : integer | /* empty */`.
+2. `Antlr2AST` takes a size table (declaration name → counts) alongside `includePaths`, consulted when a `[]` is seen.
+3. `ingest()` opens the trace document *before* `parseSchema` rather than after, infers each unsized array's extent from the flattened column names (`readings[0]`, `readings[1]`, … → highest index plus one), and passes the table down. This is the one place the current data flow has to reverse: today the specification determines the expected columns, and here the columns determine part of the specification.
+4. Executing an existing `.rdb` reads the counts from its embedded schema instead.
+
+Two loose ends worth deciding rather than discovering:
+
+- **`referee compile file.ref` has no trace**, so an unsized array cannot be resolved. Either it is a clear error ("array size unknown; compile requires a trace or an explicit size") or the subcommand grows a way to supply one.
+- **Multi-dimensional unsized arrays.** `T[][]` can in principle be inferred from the column names too, but it is worth restricting to a single unsized dimension until something needs more.
+
+### Varying per state — expensive, and it undoes this design
+
+The length changes from record to record. `TypeArray` already anticipates this: `count == 0` is documented as dynamic, with a `{i16 length, ptr}` layout, and `CompileTypeImpl::visit(TypeArray*)` lowers that case to a struct. Support stops there — `Loader` and the `.rdb` reader both reject it explicitly, `csvHeaders` emits a `#size` placeholder and then expands as though the length were 1, and `visit(ExprIndx*)` would fail its `cast<llvm::ArrayType>`.
+
+This variant removes the property the whole quantifier design rests on. A quantifier could no longer expand; it would become a runtime loop nested inside the per-state loops the temporal operators already generate. It changes the generated IR, the memory layout and the trace format, and it raises a question the other variants never have to answer: what `xs[i]` *means* when `i` is past the current length, in a language where every expression must have a value.
+
+If per-state variation is genuinely needed, **bounded-dynamic** is the cheap approximation — a static capacity with a runtime length:
+
+```text
+data readings : integer[8];     // capacity
 data n        : integer;        // logical length
 ```
 
-Quantifiers then expand to the static bound with a guard:
+with quantifiers expanding to the capacity under a guard:
 
 ```text
 all x, i in readings: P(x)
     ==>  (0 < n => P(readings[0])) && (1 < n => P(readings[1])) && …
 ```
 
-Layout stays fixed, the trace format keeps fixed columns, the expansion stays compile-time, and nothing about the temporal lowering changes. The `#size` column `csvHeaders` already emits suggests this was the original intent.
-
-That would need a way to associate the length signal with the array — a declaration form rather than a convention — which is a separate proposal.
+Layout stays fixed, the trace keeps fixed columns, expansion stays compile-time, and the temporal lowering is untouched. It would need a declaration form associating the length signal with the array rather than a naming convention. The `#size` column `csvHeaders` already emits suggests something along these lines was the original intent.
 
 ## Explicitly out of scope
 
