@@ -1,0 +1,266 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "REF",
+  "scopeName": "source.ref",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#declarations" },
+    { "include": "#temporal-operators" },
+    { "include": "#pattern-vocabulary" },
+    { "include": "#time-units" },
+    { "include": "#types" },
+    { "include": "#constants" },
+    { "include": "#freeze" },
+    { "include": "#operators" },
+    { "include": "#identifiers" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.block.ref",
+          "begin": "/\\*",
+          "end": "\\*/"
+        },
+        {
+          "name": "comment.line.double-slash.ref",
+          "match": "//.*$"
+        },
+        {
+          "comment": "REF also accepts '#' as a line comment",
+          "name": "comment.line.number-sign.ref",
+          "match": "#.*$"
+        }
+      ]
+    },
+
+    "strings": {
+      "comment": "STRING in referee.g4 is a restricted character set; anything outside it will not lex, so flag it rather than colouring it as a valid string",
+      "patterns": [
+        {
+          "name": "string.quoted.double.ref",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            {
+              "name": "invalid.illegal.character-not-allowed-in-string.ref",
+              "match": "[^A-Za-z0-9_?!./ \\-]"
+            }
+          ]
+        }
+      ]
+    },
+
+    "declarations": {
+      "patterns": [
+        {
+          "comment": "import \"path.ref\";",
+          "match": "\\b(import)\\b",
+          "captures": {
+            "1": { "name": "keyword.control.import.ref" }
+          }
+        },
+        {
+          "comment": "type Name : ...  -- introduces a type name",
+          "match": "\\b(type)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "keyword.other.declaration.ref" },
+            "2": { "name": "entity.name.type.ref" }
+          }
+        },
+        {
+          "comment": "data Name : T;  or  data Name = expr;",
+          "match": "\\b(data)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "keyword.other.declaration.ref" },
+            "2": { "name": "variable.other.signal.ref" }
+          }
+        },
+        {
+          "comment": "conf Name : T;",
+          "match": "\\b(conf)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "keyword.other.declaration.ref" },
+            "2": { "name": "variable.other.constant.ref" }
+          }
+        }
+      ]
+    },
+
+    "temporal-operators": {
+      "comment": "Reserved operator names. Each requires a '(' or a '[' time bound, which keeps a stray capital from being highlighted as an operator.",
+      "patterns": [
+        {
+          "name": "keyword.operator.temporal.future.ref",
+          "match": "\\b(G|F|Xs|Xw|Us|Uw|Rs|Rw)\\b(?=\\s*[\\(\\[])"
+        },
+        {
+          "name": "keyword.operator.temporal.past.ref",
+          "match": "\\b(H|O|Ys|Yw|Ss|Sw|Ts|Tw)\\b(?=\\s*[\\(\\[])"
+        },
+        {
+          "name": "keyword.operator.temporal.integral.ref",
+          "match": "\\bI\\b(?=\\s*[\\(\\[])"
+        }
+      ]
+    },
+
+    "time-bound": {
+      "patterns": [
+        {
+          "comment": "[lo:hi], [:hi], [lo:] -- bounds must be integers",
+          "name": "meta.time-bound.ref",
+          "begin": "\\[",
+          "end": "\\]",
+          "patterns": [
+            { "include": "#constants" },
+            { "include": "#identifiers" }
+          ]
+        }
+      ]
+    },
+
+    "pattern-vocabulary": {
+      "comment": "Dwyer specification-pattern words. These are reserved in the lexer, so they cannot be used as identifiers -- highlighting them makes that visible.",
+      "patterns": [
+        {
+          "name": "keyword.control.pattern.scope.ref",
+          "match": "\\b(globally|before|after|between|while|until)\\b"
+        },
+        {
+          "name": "keyword.control.pattern.ref",
+          "match": "\\b(afterwards|always|and|at|becomes|been|by|case|continually|every|eventually|followed|for|has|have|holding|holds|if|in|interruption|is|it|least|less|long|must|never|occured|occurred|once|remains|repeatedly|response|run|satisfied|so|than|that|the|then|within|without)\\b"
+        }
+      ]
+    },
+
+    "time-units": {
+      "patterns": [
+        {
+          "name": "keyword.other.unit.ref",
+          "match": "\\b(nanoseconds|microseconds|milliseconds|seconds|minutes)\\b"
+        }
+      ]
+    },
+
+    "types": {
+      "patterns": [
+        {
+          "name": "storage.type.composite.ref",
+          "match": "\\b(struct|enum)\\b"
+        },
+        {
+          "comment": "Not keywords in the grammar -- pre-registered type aliases (core/module.cpp) -- but they behave as builtins",
+          "name": "support.type.primitive.ref",
+          "match": "\\b(boolean|integer|number|string)\\b"
+        }
+      ]
+    },
+
+    "constants": {
+      "patterns": [
+        {
+          "name": "constant.language.boolean.ref",
+          "match": "\\b(true|false)\\b"
+        },
+        {
+          "name": "constant.numeric.hex.ref",
+          "match": "\\b0[xX][0-9a-fA-F]+\\b"
+        },
+        {
+          "name": "constant.numeric.octal.ref",
+          "match": "\\b0[oO][0-7]+\\b"
+        },
+        {
+          "name": "constant.numeric.binary.ref",
+          "match": "\\b0[bB][01]+\\b"
+        },
+        {
+          "comment": "FLOATING, with optional EXPONENT",
+          "name": "constant.numeric.float.ref",
+          "match": "(\\b[0-9]+\\.[0-9]*|\\.[0-9]+)([eE][+-]?[0-9]+)?"
+        },
+        {
+          "name": "constant.numeric.integer.ref",
+          "match": "\\b[0-9]+\\b"
+        }
+      ]
+    },
+
+    "freeze": {
+      "patterns": [
+        {
+          "comment": "name@( ... ) binds the current state to `name`",
+          "match": "\\b([A-Za-z_][A-Za-z0-9_]*)\\s*(@)",
+          "captures": {
+            "1": { "name": "variable.parameter.freeze.ref" },
+            "2": { "name": "keyword.operator.freeze.ref" }
+          }
+        },
+        {
+          "name": "variable.language.time.ref",
+          "match": "\\b__time__\\b"
+        }
+      ]
+    },
+
+    "operators": {
+      "patterns": [
+        {
+          "comment": "Implication and biconditional bind looser than the logical operators but tighter than the comparisons -- see the precedence table in the README, which is not C's",
+          "name": "keyword.operator.logical.implication.ref",
+          "match": "<=>|=>"
+        },
+        {
+          "name": "keyword.operator.comparison.ref",
+          "match": "==|!=|<=|>=|<|>"
+        },
+        {
+          "name": "keyword.operator.logical.ref",
+          "match": "&&|\\|\\||\\^|!"
+        },
+        {
+          "name": "keyword.operator.arithmetic.ref",
+          "match": "\\+|-|\\*|/|%"
+        },
+        {
+          "name": "keyword.operator.ternary.ref",
+          "match": "\\?|:"
+        },
+        {
+          "name": "punctuation.accessor.ref",
+          "match": "\\."
+        },
+        {
+          "name": "punctuation.terminator.ref",
+          "match": ";"
+        },
+        {
+          "name": "punctuation.separator.ref",
+          "match": ","
+        }
+      ]
+    },
+
+    "identifiers": {
+      "patterns": [
+        {
+          "comment": "Member access on a signal: `lock.ON`, `pos.x`. Enum members are reached through the signal, never through the type.",
+          "match": "\\b([A-Za-z_][A-Za-z0-9_]*)\\s*(?=\\.)",
+          "captures": {
+            "1": { "name": "variable.other.ref" }
+          }
+        },
+        {
+          "name": "variable.other.member.ref",
+          "match": "(?<=\\.)\\s*[A-Za-z_][A-Za-z0-9_]*"
+        },
+        {
+          "name": "variable.other.ref",
+          "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b"
+        }
+      ]
+    }
+  }
+}

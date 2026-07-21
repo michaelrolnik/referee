@@ -1,0 +1,113 @@
+{
+  "import": {
+    "prefix": "import",
+    "body": "import \"${1:common/types.ref}\";",
+    "description": "Pull another REF file into this one"
+  },
+  "data signal": {
+    "prefix": "data",
+    "body": "data\t${1:name}\t: ${2|boolean,integer,number,string|};",
+    "description": "Declare a time-varying signal"
+  },
+  "computed signal": {
+    "prefix": "datax",
+    "body": "data\t${1:name}\t= ${2:expression};",
+    "description": "Declare a signal derived from other signals"
+  },
+  "conf value": {
+    "prefix": "conf",
+    "body": "conf\t${1:name}\t: ${2|integer,number,boolean,string|};",
+    "description": "Declare a value constant for the whole trace"
+  },
+  "type alias": {
+    "prefix": "type",
+    "body": "type\t${1:Name}\t: ${2:boolean};",
+    "description": "Declare a named type"
+  },
+  "enum type": {
+    "prefix": "enum",
+    "body": "type\t${1:Name}\t: enum { ${2:ON}, ${3:OFF} };",
+    "description": "Declare an enumeration"
+  },
+  "struct type": {
+    "prefix": "struct",
+    "body": [
+      "type\t${1:Name}\t: struct {",
+      "\t${2:field}\t: ${3:number};",
+      "};"
+    ],
+    "description": "Declare a structure"
+  },
+
+  "globally always": {
+    "prefix": "globally-always",
+    "body": "globally, it is always the case that ${1:P} holds;",
+    "description": "Universality under the global scope"
+  },
+  "globally never": {
+    "prefix": "globally-never",
+    "body": "globally, it is never the case that ${1:P} holds;",
+    "description": "Absence under the global scope"
+  },
+  "eventually": {
+    "prefix": "eventually",
+    "body": "globally, ${1:P} eventually holds within ${2:100} ${3|milliseconds,seconds,minutes,microseconds,nanoseconds|};",
+    "description": "Existence with a time bound"
+  },
+  "response": {
+    "prefix": "response",
+    "body": "globally, if ${1:P} has occurred, then in response ${2:S} eventually holds within ${3:100} ${4|milliseconds,seconds,minutes|};",
+    "description": "Response pattern"
+  },
+  "precedence": {
+    "prefix": "precedence",
+    "body": "globally, if ${1:P} holds, then it must have been the case that ${2:S} has occurred before it;",
+    "description": "Precedence pattern"
+  },
+  "minimum duration": {
+    "prefix": "minduration",
+    "body": "globally, once ${1:P} becomes satisfied it remains so for at least ${2:2} ${3|seconds,milliseconds,minutes|};",
+    "description": "Minimum duration pattern"
+  },
+  "between scope": {
+    "prefix": "between",
+    "body": "between ${1:P} and ${2:Q}, it is always the case that ${3:R} holds;",
+    "description": "Between-and scope"
+  },
+  "after until scope": {
+    "prefix": "afteruntil",
+    "body": "after ${1:P} until ${2:Q}, it is always the case that ${3:R} holds;",
+    "description": "After-until scope"
+  },
+
+  "globally G": {
+    "prefix": "G",
+    "body": "G(${1:P});",
+    "description": "Globally"
+  },
+  "eventually F": {
+    "prefix": "F",
+    "body": "F(${1:P});",
+    "description": "Eventually"
+  },
+  "bounded globally": {
+    "prefix": "Gb",
+    "body": "G[${1:0}:${2:1000}](${3:P});",
+    "description": "Globally, time-bounded"
+  },
+  "until": {
+    "prefix": "Us",
+    "body": "Us(${1:P}, ${2:Q});",
+    "description": "Strong until"
+  },
+  "since": {
+    "prefix": "Ss",
+    "body": "Ss(${1:P}, ${2:Q});",
+    "description": "Strong since"
+  },
+  "freeze": {
+    "prefix": "freeze",
+    "body": "${1:t}@(${2:F(alarm && (__time__ - ${1:t}.__time__ <= 5))})",
+    "description": "Freeze the current state and refer back to it"
+  }
+}

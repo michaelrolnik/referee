@@ -1,0 +1,10 @@
+{
+  "name": "referee-ref-grammar-test",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Tokenizes sample.ref with the VS Code TextMate engine and checks the scopes.",
+  "dependencies": {
+    "vscode-oniguruma": "^2.0.1",
+    "vscode-textmate": "^9.0.0"
+  }
+}

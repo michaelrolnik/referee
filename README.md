@@ -19,6 +19,7 @@ In short: Referee connects human-readable requirement intent to executable verif
 - A CLI with two subcommands:
   - `referee compile file.ref [-I dir]…` — emits LLVM IR for a given `.ref` file.
   - `referee execute file.ref trace.{csv,yaml,rdb} [--conf conf.{csv,yaml}] [-I dir]…` — JIT-compiles the requirements and evaluates them against a trace, reporting `PASS`/`FAIL` per requirement (and exiting non-zero if any requirement fails). Column names in the CSV/YAML must match the layout produced by `csvHeaders` (e.g. `__time__`, `pos.x`, `limits[0]`, …); see `test/logic/data.csv` and `test/logic/conf.csv` for working examples. `.rdb` traces (see below) are read with no per-row processing — only pointer fix-up.
+- An **editor plugin** (`editors/vscode/`) giving syntax highlighting, bracket/comment handling and specification-pattern snippets for `.ref` files in VS Code and its forks (Cursor, Antigravity, VSCodium). Its keyword lists are generated from `core/referee.g4` rather than hand-written, and the grammar is tested against the same TextMate engine the editors use. See *Editor support* below.
 - A companion `rdb` binary for packing CSV/YAML traces into the on-disk **RDB** format consumed directly by `referee execute`:
   - `rdb build spec.ref trace.csv [--conf conf.csv] [-I dir]… -o trace.rdb` — packs a CSV/YAML trace into a `.rdb` whose state-buffer section is byte-for-byte the layout the JIT consumes (see *Referee Database* below).
   - `rdb dump trace.rdb` — pretty-prints the schema, conf, and per-state rows using the AST types embedded in the file.
@@ -26,7 +27,7 @@ In short: Referee connects human-readable requirement intent to executable verif
 **What is missing**
 
 - **Streaming / online ingestion.** `referee execute` currently materialises the whole trace before invoking the JIT functions (CSV/YAML are parsed top-to-bottom into per-state blobs; `.rdb` is read into a single buffer). A streaming driver that feeds records to the JIT-compiled requirement functions as they arrive (and reports violation locations live) is not implemented yet — the on-disk `.rdb` layout is already mmap-friendly, so this is a Reader-side change rather than a format change.
-- **VSCode / LSP plugin** for editing REF files with diagnostics, as envisioned in the original design.
+- **A language server.** The editor plugin does highlighting only, so there are no in-editor diagnostics, completion, hover or go-to-definition — errors still come from running `referee compile`. The compiler already produces positioned diagnostics (`file:row:col`), so the missing piece is the LSP plumbing rather than the analysis.
 - **Product-specific model exporters/importers** to adapt arbitrary system logs into the canonical trace format.
 
 ## Design rationale
@@ -443,6 +444,56 @@ ninja -C build-cov coverage-gcovr-xml      # meson-logs/coverage.xml
 The report covers `core/`, `rdb/`, `referee.cpp` and `main.cpp` — an include-filter rather than an exclude list, because gcovr's exclude patterns did not reliably keep the test tree out, and gtest's own branches alone moved the branch figure by 14 points. Branches arising from exception cleanup are excluded too: every C++ statement that can throw carries a hidden edge to its unwind path, and counting those buried the real conditionals (they took branch coverage from 86% to 39% while saying nothing about how well the code is exercised).
 
 Current figures: **95% of lines**, **89% of branches**, **89% of functions**. What remains is concentrated in `core/builder.hpp`, an operator-overloading DSL for constructing AST nodes whose unused operators are dead weight rather than untested logic, and in template machinery that is emitted but never instantiated.
+
+# Editor support
+
+`editors/vscode/` is a syntax-highlighting extension for `.ref` files. It works in VS Code and its forks — Cursor, Antigravity, VSCodium — which all consume the same extension format.
+
+It highlights the temporal operators (future and past scoped separately, and only where one is actually applied, so a stray capital is left alone), the whole Dwyer specification-pattern vocabulary, declarations with their declared names, freeze variables and `__time__`, and every literal form. The keyword lists are generated from `core/referee.g4` rather than written by hand, so they track the grammar exactly. There are also snippets for the common specification patterns.
+
+Highlighting is all it does — see *What is missing* above.
+
+## Installing it
+
+The extension is not published to a marketplace; install it from this checkout. Copy it into your editor's extension directory and reload the window:
+
+```bash
+cd editors/vscode
+DEST=~/.vscode/extensions/michaelrolnik.referee-ref-0.1.0      # adjust per the table below
+mkdir -p "$DEST"
+cp -r package.json language-configuration.json syntaxes snippets README.md "$DEST/"
+```
+
+Then run **Developer: Reload Window** from the command palette, open a `.ref` file, and check that the status bar reads **REF**.
+
+**Which directory** depends on the editor, and on whether you are working locally or over SSH. For a remote window the extension has to live on the **remote** machine, not on your laptop:
+
+| Editor | Local | Remote (SSH) |
+| --- | --- | --- |
+| VS Code | `~/.vscode/extensions/` | `~/.vscode-server/extensions/` |
+| Cursor | `~/.cursor/extensions/` | `~/.cursor-server/extensions/` |
+| Antigravity | `~/.antigravity/extensions/` | `~/.antigravity-ide-server/extensions/` |
+
+If you are unsure, pick whichever already exists and holds your installed extensions.
+
+Alternatively, package a `.vsix` and install that — the more reliable route on a remote window, since it registers the extension with the server rather than relying on a directory scan:
+
+```bash
+cd editors/vscode
+npx @vscode/vsce package --allow-missing-repository
+```
+
+then Extensions view → `…` → **Install from VSIX…**.
+
+## Testing the grammar
+
+```bash
+cd editors/vscode/test
+npm install
+node tokenize.cjs
+```
+
+This tokenizes a sample against the same TextMate engine the editors use and asserts the resulting scopes. It is worth running after any grammar edit, because Oniguruma is stricter than JavaScript's regex engine and an invalid pattern makes the editor drop the grammar **silently** — the file simply renders unhighlighted, with no error reported anywhere.
 
 # Running referee
 

@@ -1,0 +1,53 @@
+{
+  "name": "referee-ref",
+  "displayName": "REF (Referee)",
+  "description": "Syntax highlighting and editing support for REF requirement specifications.",
+  "version": "0.1.0",
+  "publisher": "michaelrolnik",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/michaelrolnik/referee.git"
+  },
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "keywords": [
+    "ref",
+    "referee",
+    "temporal logic",
+    "ltl",
+    "requirements"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "ref",
+        "aliases": [
+          "REF",
+          "ref"
+        ],
+        "extensions": [
+          ".ref"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "ref",
+        "scopeName": "source.ref",
+        "path": "./syntaxes/ref.tmLanguage.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "ref",
+        "path": "./snippets/ref.json"
+      }
+    ]
+  }
+}

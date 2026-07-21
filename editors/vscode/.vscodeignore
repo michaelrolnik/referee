@@ -1,0 +1,6 @@
+# The grammar test is a development tool; it pulls in a TextMate engine that has
+# no business shipping inside the extension.
+test/**
+.gitignore
+.vscodeignore
+*.vsix

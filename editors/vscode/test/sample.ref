@@ -1,0 +1,26 @@
+// line comment
+# hash comment
+/* block
+   comment */
+import "common/types.ref";
+
+type    State   : enum { ON, OFF };
+type    Point   : struct { x : number; y : number; };
+data    lock    : State;
+data    pos     : Point;
+data    a       : boolean;
+data    both    = a && lock.ON;
+conf    limit   : integer;
+
+G(a);
+F[0:1500](a);
+Us(a, lock.ON);
+Ss[100:200](a, a);
+I(pos.x);
+t@(F(a && (__time__ - t.__time__ <= 5)));
+globally, it is always the case that a holds;
+before lock.ON, a eventually holds within 100 milliseconds;
+pos.x > 1.5 || limit == 0xFF;
+a ? 1 : 2;
+"a string";
+a == true || a != false;
