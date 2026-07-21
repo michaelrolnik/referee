@@ -1,7 +1,7 @@
 /*
  *  MIT License
  *  
- *  Copyright (c) 2022 Michael Rolnik
+ *  Copyright (c) 2022-2026 Michael Rolnik
  *  
  *  Permission is hereby granted, free of charge, to any person obtaining a copy
  *  of this software and associated documentation files (the "Software"), to deal
@@ -27,6 +27,8 @@
 #include "spdlog/fmt/fmt.h"
 #include <spdlog/fmt/ostr.h>
 
+#include <vector>
+
 #include <CLI/App.hpp>
 #include "CLI/Formatter.hpp"
 #include "CLI/Config.hpp"
@@ -40,12 +42,24 @@ int main(int argc, char * argv[])
 
     app.add_flag("--debug", flDebug, "produce debug logs");
 
+    // Extra directories searched for `import` targets that are not found next
+    // to the file importing them. Repeatable, searched in the order given.
+    // Registered per subcommand rather than on the app so that it can be given
+    // after the subcommand name, which is where users expect to type it.
+    std::vector<std::string>    includePaths;
+    auto    addIncludeOption = [&](CLI::App* sub) {
+        sub->add_option("-I,--include", includePaths,
+            "Directory to search for imported .ref files (repeatable)")
+            ->check(CLI::ExistingDirectory);
+    };
+
     // compile subcommand: emits LLVM IR to stdout
     std::string compileRef;
     auto        compile = app.add_subcommand("compile", "Compile REF file to LLVM IR");
     compile->add_option("reffile", compileRef, "REF file to compile")
         ->required()
         ->check(CLI::ExistingFile);
+    addIncludeOption(compile);
 
     // execute subcommand
     std::string runRef;
@@ -67,6 +81,7 @@ int main(int argc, char * argv[])
         ->add_option("--conf", runConf,
             "Conf file (.csv / .yml / .yaml); not used when datafile is .rdb")
         ->check(CLI::ExistingFile);
+    addIncludeOption(execute);
 
     try {
         app.parse(argc, argv);
@@ -77,7 +92,7 @@ int main(int argc, char * argv[])
         if(app.got_subcommand("compile"))
         {
             std::ifstream   is(compileRef, std::ios_base::in);
-            if (!Referee::printIR(is, compileRef)) return 1;
+            if (!Referee::printIR(is, compileRef, std::cout, includePaths)) return 1;
         }
         else if(app.got_subcommand("execute"))
         {
@@ -91,7 +106,8 @@ int main(int argc, char * argv[])
             bool            allPass;
             if (isRdb)
             {
-                allPass = Referee::executeRdb(refStream, runRef, runData);
+                allPass = Referee::executeRdb(refStream, runRef, runData,
+                                              std::cout, includePaths);
             }
             else
             {
@@ -102,7 +118,8 @@ int main(int argc, char * argv[])
                 allPass = Referee::execute(
                     refStream, runRef,
                     dataStream, runData,
-                    runConf.empty() ? nullptr : &confStream, runConf);
+                    runConf.empty() ? nullptr : &confStream, runConf,
+                    std::cout, includePaths);
             }
             if (!allPass) return 1;
         }

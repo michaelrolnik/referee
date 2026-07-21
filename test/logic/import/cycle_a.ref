@@ -1,0 +1,3 @@
+# Half of a deliberate import cycle; the other half imports this file back.
+import  "cycle_b.ref";
+data    a   : boolean;

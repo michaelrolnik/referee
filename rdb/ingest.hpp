@@ -1,7 +1,7 @@
 /*
  *  MIT License
  *
- *  Copyright (c) 2022 Michael Rolnik
+ *  Copyright (c) 2022-2026 Michael Rolnik
  *
  *  Permission is hereby granted, free of charge, to any person obtaining a copy
  *  of this software and associated documentation files (the "Software"), to deal
@@ -26,6 +26,7 @@
 
 #include <iosfwd>
 #include <string>
+#include <vector>
 
 namespace referee::db
 {
@@ -42,16 +43,20 @@ namespace referee::db
 ///
 /// `*Name` arguments are used both for loader extension probing
 /// (`.csv` vs `.yaml`) and for error messages.
+/// `includePaths` are forwarded to the schema parse, so a spec that pulls its
+/// `data`/`conf` declarations in via `import` packs the same as an inline one.
 void    ingest(std::istream&        refIn,   std::string const& refName,
                std::istream&        dataIn,  std::string const& dataName,
                std::istream*        confIn,  std::string const& confName,
-               std::ostream&        out);
+               std::ostream&        out,
+               std::vector<std::string> const& includePaths = {});
 
 /// File-paths convenience wrapper around the stream-based variant.
 /// `confPath` may be empty for "no conf file".
 void    ingest(std::string const& refPath,
                std::string const& dataPath,
                std::string const& confPath,
-               std::string const& outRdbPath);
+               std::string const& outRdbPath,
+               std::vector<std::string> const& includePaths = {});
 
 } // namespace referee::db

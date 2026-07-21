@@ -1,7 +1,7 @@
 /*
  *  MIT License
  *
- *  Copyright (c) 2022 Michael Rolnik
+ *  Copyright (c) 2022-2026 Michael Rolnik
  *
  *  Permission is hereby granted, free of charge, to any person obtaining a copy
  *  of this software and associated documentation files (the "Software"), to deal
@@ -2546,7 +2546,7 @@ void Compile::make(llvm::LLVMContext* context, llvm::Module* module, Module* ref
     for(auto expr: exprs)
     {
         auto    pos         = expr->where();
-        auto    funcName    = std::to_string(pos.beg.row) + ":" + std::to_string(pos.beg.col) + " .. " + std::to_string(pos.end.row) + ":" + std::to_string(pos.end.col);
+        auto    funcName    = pos.text();
         auto    funcType    = llvm::FunctionType::get(builder->getInt1Ty(), {propPtrType, propPtrType, confPtrType}, false);
         auto    funcBody    = llvm::Function::Create(funcType, llvm::Function::ExternalLinkage, funcName, module);
         auto    funcArgs    = funcBody->args().begin();
@@ -2578,7 +2578,7 @@ void Compile::make(llvm::LLVMContext* context, llvm::Module* module, Module* ref
     for(auto spec: specs)
     {
         auto    pos         = spec->where();
-        auto    funcName    = std::to_string(pos.beg.row) + ":" + std::to_string(pos.beg.col) + " .. " + std::to_string(pos.end.row) + ":" + std::to_string(pos.end.col);
+        auto    funcName    = pos.text();
         auto    funcType    = llvm::FunctionType::get(builder->getInt1Ty(), {propPtrType, propPtrType, confPtrType}, false);
         auto    funcBody    = llvm::Function::Create(funcType, llvm::Function::ExternalLinkage, funcName, module);
         auto    funcArgs    = funcBody->args().begin();

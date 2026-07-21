@@ -1,0 +1,2 @@
+# Names a file that does not exist, to pin the diagnostic.
+import  "no_such_file.ref";

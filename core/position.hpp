@@ -1,7 +1,7 @@
 /*
  *  MIT License
  *  
- *  Copyright (c) 2022 Michael Rolnik
+ *  Copyright (c) 2022-2026 Michael Rolnik
  *  
  *  Permission is hereby granted, free of charge, to any person obtaining a copy
  *  of this software and associated documentation files (the "Software"), to deal
@@ -22,10 +22,12 @@
  *  SOFTWARE.
  */
 
-#pragma once 
+#pragma once
+
+#include <string>
 
 struct Location
-{   
+{
     Location() = default;
     Location(unsigned row, unsigned col): row(row), col(col) {}
 
@@ -37,6 +39,38 @@ struct Position
 {
     Position() = default;
     Position(Location beg, Location end): beg(beg), end(end) {}
+    Position(Location beg, Location end, char const* file)
+        : file(file), beg(beg), end(end) {}
+
+    //  Which source file this node came from, as a path relative to the root
+    //  .ref.  Null/empty for the root file itself, so a single-file program
+    //  keeps its original `row:col .. row:col` labels unchanged.
+    //
+    //  Interned by Strings, so copying a Position stays cheap even though
+    //  every AST node carries one.
+    char const* file    = nullptr;
+
+    //  `row:col .. row:col`, prefixed with the file for anything that came in
+    //  through an import.  This doubles as the requirement's label in the
+    //  PASS/FAIL report and as the name of its generated LLVM function, so it
+    //  has to distinguish two requirements that sit at the same line and
+    //  column in different files.
+    std::string text() const
+    {
+        std::string out;
+
+        if (file != nullptr && *file != '\0')
+        {
+            out += file;
+            out += ":";
+        }
+
+        out += std::to_string(beg.row) + ":" + std::to_string(beg.col)
+            +  " .. "
+            +  std::to_string(end.row) + ":" + std::to_string(end.col);
+
+        return out;
+    }
 
     Location    beg;
     Location    end;

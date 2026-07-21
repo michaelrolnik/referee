@@ -1,7 +1,7 @@
 /*
  *  MIT License
  *  
- *  Copyright (c) 2022 Michael Rolnik
+ *  Copyright (c) 2022-2026 Michael Rolnik
  *  
  *  Permission is hereby granted, free of charge, to any person obtaining a copy
  *  of this software and associated documentation files (the "Software"), to deal
@@ -190,7 +190,8 @@ Referee::Compiled& Referee::Compiled::operator=(Compiled&&) noexcept = default;
 Referee::Compiled::~Compiled()                                      = default;
 
 Referee::Compiled   Referee::compile(std::istream& is, std::string name,
-                                     llvm::DataLayout const* dataLayout)
+                                     llvm::DataLayout const* dataLayout,
+                                     std::vector<std::string> const& includePaths)
 {
     Compiled    out;
 
@@ -251,7 +252,7 @@ Referee::Compiled   Referee::compile(std::istream& is, std::string name,
     static std::atomic<unsigned>    s_uniq{0};
     auto    uniqName    = name + "#compile:" + std::to_string(s_uniq.fetch_add(1));
 
-    out.astOwner    = std::make_unique<Antlr2AST>(uniqName);
+    out.astOwner    = std::make_unique<Antlr2AST>(uniqName, name, includePaths);
     auto*   tree    = parser.program();
     out.ast         = std::any_cast<::Module*>(out.astOwner->visitProgram(tree));
 
@@ -274,7 +275,8 @@ Referee::Schema::Schema(Schema&&) noexcept                      = default;
 Referee::Schema& Referee::Schema::operator=(Schema&&) noexcept  = default;
 Referee::Schema::~Schema()                                      = default;
 
-Referee::Schema     Referee::parseSchema(std::istream& is, std::string name)
+Referee::Schema     Referee::parseSchema(std::istream& is, std::string name,
+                                         std::vector<std::string> const& includePaths)
 {
     Schema  out;
     antlr4::ANTLRInputStream    input(is);
@@ -290,17 +292,18 @@ Referee::Schema     Referee::parseSchema(std::istream& is, std::string name)
     static std::atomic<unsigned>    s_uniq{0};
     auto    uniqName    = name + "#schema:" + std::to_string(s_uniq.fetch_add(1));
 
-    out.astOwner    = std::make_unique<Antlr2AST>(uniqName);
+    out.astOwner    = std::make_unique<Antlr2AST>(uniqName, name, includePaths);
     auto*   tree    = parser.program();
     out.ast         = std::any_cast<::Module*>(out.astOwner->visitProgram(tree));
     return out;
 }
 
-bool    Referee::printIR(std::istream& is, std::string name, std::ostream& os)
+bool    Referee::printIR(std::istream& is, std::string name, std::ostream& os,
+                         std::vector<std::string> const& includePaths)
 {
     try
     {
-        auto    built   = compile(is, name);
+        auto    built   = compile(is, name, nullptr, includePaths);
         auto    raw     = llvm::raw_os_ostream(os);
         built.mod->print(raw, nullptr);
         return true;
@@ -330,7 +333,8 @@ struct JitWithSpecs
     ::Module*                               astModule = nullptr;
 };
 
-JitWithSpecs    buildJitFromRef(std::istream& refStream, std::string const& refName)
+JitWithSpecs    buildJitFromRef(std::istream& refStream, std::string const& refName,
+                                std::vector<std::string> const& includePaths)
 {
     JitWithSpecs    out;
 
@@ -362,21 +366,41 @@ JitWithSpecs    buildJitFromRef(std::istream& refStream, std::string const& refN
             throw std::runtime_error("Failed to define debug symbol");
     }
 
-    auto    built = Referee::compile(refStream, refName, &out.jit->getDataLayout());
+    auto    built = Referee::compile(refStream, refName, &out.jit->getDataLayout(), includePaths);
     out.astOwner  = std::move(built.astOwner);
     out.astModule = built.ast;
 
-    struct FuncEntry { int row, col; std::string name; };
+    // Requirement functions are named "[file:]row:col .. row:col". Report them
+    // grouped by file and then in source order, so a program assembled from
+    // imports still reads top-to-bottom per file.
+    struct FuncEntry { std::string file; int row, col; std::string name; };
     std::vector<FuncEntry>  entries;
     for (auto& F : *built.mod) {
         if (F.isDeclaration()) continue;
         auto name = F.getName().str();
         if (name == "__prepare__") continue;
-        int row = 0, col = 0;
-        std::sscanf(name.c_str(), "%d:%d", &row, &col);
-        entries.push_back({row, col, std::move(name)});
+
+        auto        head = name.substr(0, name.find(" .. "));   // "[file:]row:col"
+        std::string file;
+        int         row = 0, col = 0;
+
+        auto        colonB = head.rfind(':');
+        if (colonB != std::string::npos)
+        {
+            auto    colonA = head.rfind(':', colonB - 1);
+            auto    rowTxt = colonA == std::string::npos
+                           ? head.substr(0, colonB)
+                           : head.substr(colonA + 1, colonB - colonA - 1);
+            if (colonA != std::string::npos)
+                file = head.substr(0, colonA);
+
+            std::sscanf(rowTxt.c_str(), "%d", &row);
+            std::sscanf(head.c_str() + colonB + 1, "%d", &col);
+        }
+        entries.push_back({std::move(file), row, col, std::move(name)});
     }
     std::sort(entries.begin(), entries.end(), [](FuncEntry const& a, FuncEntry const& b) {
+        if (a.file != b.file) return a.file < b.file;
         return a.row != b.row ? a.row < b.row : a.col < b.col;
     });
     for (auto& e : entries)
@@ -460,9 +484,10 @@ namespace {
 bool    runAgainstRdb(std::istream&            refStream,
                       std::string const&       refName,
                       referee::db::Reader&     rdb,
-                      std::ostream&            os)
+                      std::ostream&            os,
+                      std::vector<std::string> const& includePaths)
 {
-    auto    js          = buildJitFromRef(refStream, refName);
+    auto    js          = buildJitFromRef(refStream, refName, includePaths);
     auto*   astModule   = js.astModule;
 
     auto    checkList   = [](std::vector<std::string> const& wanted,
@@ -556,7 +581,8 @@ bool    Referee::execute(std::istream& refStream, std::string refName,
                          std::istream& csvStream, std::string csvName,
                          std::istream* confStream,
                          std::string   confName,
-                         std::ostream& os)
+                         std::ostream& os,
+                         std::vector<std::string> const& includePaths)
 {
     // Funnel CSV/YAML execution through the same RDB pipeline that the
     // `.rdb` path uses: ingest the inputs into an in-memory `.rdb`, then
@@ -575,7 +601,7 @@ bool    Referee::execute(std::istream& refStream, std::string refName,
         referee::db::ingest(refForIngest, refName,
                             csvStream,    csvName,
                             confStream,   confName,
-                            rdbBuf);
+                            rdbBuf,       includePaths);
     }
 
     auto                rdbStr = std::move(rdbBuf).str();
@@ -583,13 +609,14 @@ bool    Referee::execute(std::istream& refStream, std::string refName,
     referee::db::Reader rdb(std::move(bytes), csvName);
 
     std::istringstream  refForExec(refSrc);
-    return runAgainstRdb(refForExec, refName, rdb, os);
+    return runAgainstRdb(refForExec, refName, rdb, os, includePaths);
 }
 
 bool    Referee::executeRdb(std::istream& refStream, std::string refName,
                             std::string const& rdbPath,
-                            std::ostream& os)
+                            std::ostream& os,
+                            std::vector<std::string> const& includePaths)
 {
     referee::db::Reader     rdb(rdbPath);
-    return runAgainstRdb(refStream, refName, rdb, os);
+    return runAgainstRdb(refStream, refName, rdb, os, includePaths);
 }

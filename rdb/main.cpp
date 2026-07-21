@@ -1,7 +1,7 @@
 /*
  *  MIT License
  *
- *  Copyright (c) 2022 Michael Rolnik
+ *  Copyright (c) 2022-2026 Michael Rolnik
  *
  *  Permission is hereby granted, free of charge, to any person obtaining a copy
  *  of this software and associated documentation files (the "Software"), to deal
@@ -32,6 +32,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 int main(int argc, char* argv[])
 {
@@ -56,6 +57,12 @@ int main(int argc, char* argv[])
         ->check(CLI::ExistingFile);
     buildCmd->add_option("-o,--out", outFile,
         "Output .rdb path")->required();
+    // The schema parse resolves `import` the same way `referee` does, so a
+    // spec split across files packs identically to an inline one.
+    std::vector<std::string>    includePaths;
+    buildCmd->add_option("-I,--include", includePaths,
+        "Directory to search for imported .ref files (repeatable)")
+        ->check(CLI::ExistingDirectory);
 
     auto*   dumpCmd = app.add_subcommand(
         "dump",
@@ -69,7 +76,7 @@ int main(int argc, char* argv[])
         app.parse(argc, argv);
 
         if (buildCmd->parsed())
-            referee::db::ingest(refFile, dataFile, confFile, outFile);
+            referee::db::ingest(refFile, dataFile, confFile, outFile, includePaths);
         else if (dumpCmd->parsed())
             referee::db::dump(dumpFile, std::cout);
     }

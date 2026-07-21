@@ -1,7 +1,7 @@
 /*
  *  MIT License
  *
- *  Copyright (c) 2022 Michael Rolnik
+ *  Copyright (c) 2022-2026 Michael Rolnik
  *
  *  Permission is hereby granted, free of charge, to any person obtaining a copy
  *  of this software and associated documentation files (the "Software"), to deal
@@ -35,6 +35,10 @@ statement   : declaraion
 declaraion  : declType
             | declData
             | declConf
+            | declImport
+            ;
+
+declImport  : 'import' string
             ;
 
 sign        : '+'
@@ -64,7 +68,9 @@ floating    : FLOATING EXPONENT?
             | INTEGER  EXPONENT
             ;
 
-STRING      : '"' [a-zA-Z_0-9?!.]* '"' ;
+//  '/', '-' and ' ' are here so that `import "sub dir/my-types.ref"` lexes;
+//  they are equally legal inside an ordinary string literal.
+STRING      : '"' [a-zA-Z_0-9?!./\- ]* '"' ;
 string      : STRING;
 
 ID          : [a-zA-Z_][a-zA-Z0-9_]*

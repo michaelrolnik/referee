@@ -1,0 +1,5 @@
+# Same definitions, reached through a symlink: realpath resolution has to see
+# through it, or these declarations arrive twice and the program is rejected.
+# This requirement sits at the same line and column as the one in one.ref.
+import  "../defs/alias.ref";
+G(b || !b);

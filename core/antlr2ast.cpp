@@ -1,7 +1,7 @@
 /*
  *  MIT License
  *
- *  Copyright (c) 2022 Michael Rolnik
+ *  Copyright (c) 2022-2026 Michael Rolnik
  *
  *  Permission is hereby granted, free of charge, to any person obtaining a copy
  *  of this software and associated documentation files (the "Software"), to deal
@@ -34,9 +34,171 @@
 #include "strings.hpp"
 #include "factory.hpp"
 
-Antlr2AST::Antlr2AST(std::string name)
-    : module(Factory<Module>::create(name))
+#include <algorithm>
+#include <filesystem>
+#include <fstream>
+
+//  Owns the ANTLR machinery for one imported file.  The AST keeps pointers
+//  into token text, so none of this may be destroyed before the visitor is.
+struct Antlr2AST::ParsedFile
 {
+    std::string                                     text;
+    std::unique_ptr<antlr4::ANTLRInputStream>       input;
+    std::unique_ptr<referee::refereeLexer>          lexer;
+    std::unique_ptr<antlr4::CommonTokenStream>      tokens;
+    std::unique_ptr<referee::refereeParser>         parser;
+};
+
+Antlr2AST::Antlr2AST(std::string name, std::string path, std::vector<std::string> searchPaths)
+    : module(Factory<Module>::create(name))
+    , m_searchPaths(std::move(searchPaths))
+{
+    if (!path.empty())
+    {
+        std::error_code ec;
+        auto            abs = std::filesystem::weakly_canonical(path, ec);
+        auto            dir = (ec ? std::filesystem::path(path) : abs).parent_path();
+
+        m_rootDir       = dir.string();
+        m_currentDir    = m_rootDir;
+
+        //  The root file's own nodes stay unlabelled, so a single-file program
+        //  produces exactly the labels it always did.
+        //
+        //  It goes on the in-progress stack as well as the seen set: the root
+        //  is being visited for as long as this object lives, so an import
+        //  that leads back to it is a cycle and should say so rather than
+        //  silently no-op and then fail with an unresolved name.
+        auto    rootPath = (ec ? std::filesystem::path(path) : abs).string();
+        m_imported.insert(rootPath);
+        m_importStack.push_back(rootPath);
+    }
+}
+
+Antlr2AST::~Antlr2AST() = default;
+
+std::string Antlr2AST::resolveImport(std::string const& spec)
+{
+    namespace fs = std::filesystem;
+
+    std::vector<fs::path>   candidates;
+
+    //  An absolute target is taken as-is; otherwise the file doing the
+    //  importing wins, so a tree of specs relocates as a unit.
+    if (fs::path(spec).is_absolute())
+    {
+        candidates.push_back(spec);
+    }
+    else
+    {
+        candidates.push_back(fs::path(m_currentDir.empty() ? "." : m_currentDir) / spec);
+        for (auto const& dir : m_searchPaths)
+            candidates.push_back(fs::path(dir) / spec);
+    }
+
+    for (auto const& cand : candidates)
+    {
+        std::error_code ec;
+        if (fs::is_regular_file(cand, ec))
+        {
+            auto    canon = fs::weakly_canonical(cand, ec);
+            return  ec ? cand.string() : canon.string();
+        }
+    }
+
+    return {};
+}
+
+void    Antlr2AST::importFile(std::string const& path, Position const& where)
+{
+    namespace fs = std::filesystem;
+
+    //  Cycles are checked before import-once, not after: a file that is still
+    //  being visited is in both containers, and reporting it as "already
+    //  imported" would let the importer carry on referring to declarations
+    //  that have not been processed yet.
+    if (std::find(m_importStack.begin(), m_importStack.end(), path) != m_importStack.end())
+    {
+        std::string chain;
+        for (auto const& p : m_importStack)
+            chain += fs::path(p).filename().string() + " -> ";
+        chain += fs::path(path).filename().string();
+
+        throw Exception(where, "import cycle: " + chain);
+    }
+
+    //  Import-once. Re-folding a file would re-add its `data`/`conf`
+    //  declarations, which Module rejects outright, so a diamond of imports
+    //  would otherwise be an error rather than the ordinary thing it is.
+    if (m_imported.contains(path))
+        return;
+
+    std::ifstream   in(path);
+    if (!in.is_open())
+        throw Exception(where, "cannot open imported file '" + path + "'");
+
+    auto    pf  = std::make_unique<ParsedFile>();
+    pf->text.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+
+    pf->input   = std::make_unique<antlr4::ANTLRInputStream>(pf->text);
+    pf->lexer   = std::make_unique<referee::refereeLexer>(pf->input.get());
+    pf->tokens  = std::make_unique<antlr4::CommonTokenStream>(pf->lexer.get());
+    pf->parser  = std::make_unique<referee::refereeParser>(pf->tokens.get());
+
+    auto*   parser  = pf->parser.get();
+    m_parsed.push_back(std::move(pf));
+
+    auto*   tree    = parser->program();
+
+    //  Label nodes with the imported file's path relative to the root .ref, so
+    //  requirement names are stable regardless of where the tree lives on disk.
+    std::error_code ec;
+    auto            rel = m_rootDir.empty()
+                        ? fs::path(path).filename()
+                        : fs::relative(path, m_rootDir, ec);
+    if (ec || rel.empty())
+        rel = fs::path(path).filename();
+
+    auto    saveFile    = m_currentFile;
+    auto    saveDir     = m_currentDir;
+
+    m_imported.insert(path);
+    m_importStack.push_back(path);
+    m_currentFile   = Strings::instance()->getString(rel.string());
+    m_currentDir    = fs::path(path).parent_path().string();
+
+    //  Visiting folds the imported program into the same Module, in place --
+    //  which is what makes a definitions file usable by the statements that
+    //  follow the import.
+    tree->accept(this);
+
+    m_currentFile   = saveFile;
+    m_currentDir    = saveDir;
+    m_importStack.pop_back();
+}
+
+std::any Antlr2AST::visitDeclImport(    referee::refereeParser::DeclImportContext*  ctx)
+{
+    auto    quoted  = ctx->string()->getText();
+    auto    spec    = quoted.substr(1, quoted.size() - 2);      //  strip the quotes
+    auto    where   = position(ctx);
+
+    if (spec.empty())
+        throw Exception(where, "empty import path");
+
+    auto    path    = resolveImport(spec);
+    if (path.empty())
+    {
+        std::string tried = m_currentDir.empty() ? std::string(".") : m_currentDir;
+        for (auto const& dir : m_searchPaths)
+            tried += ", " + dir;
+
+        throw Exception(where, "cannot find imported file '" + spec + "' (searched: " + tried + ")");
+    }
+
+    importFile(path, where);
+
+    return nullptr;
 }
 
 template<typename Type, typename Ctxt>
@@ -128,7 +290,8 @@ Position    Antlr2AST::position(antlr4::ParserRuleContext* rule)
             start->getCharPositionInLine()),
         Location(
             stop->getLine(),
-            stop->getCharPositionInLine() + stop->getText().length())
+            stop->getCharPositionInLine() + stop->getText().length()),
+        m_currentFile
     );
 }
 
@@ -622,6 +785,8 @@ std::any Antlr2AST::visitStatement(     referee::refereeParser::StatementContext
 */
     }
 
+    //  declaraion covers declImport too, and the base visitor walks into
+    //  whichever alternative matched.
     if (ctx->declaraion())
     {
         ctx->declaraion()->accept(this);

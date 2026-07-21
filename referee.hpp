@@ -1,7 +1,7 @@
 /*
  *  MIT License
  *  
- *  Copyright (c) 2022 Michael Rolnik
+ *  Copyright (c) 2022-2026 Michael Rolnik
  *  
  *  Permission is hereby granted, free of charge, to any person obtaining a copy
  *  of this software and associated documentation files (the "Software"), to deal
@@ -27,6 +27,7 @@
 #include <iostream>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace llvm {
     class LLVMContext;
@@ -72,14 +73,20 @@ public:
     ///     plain IR dumps and for round-tripping through `llvm::parseIR`).
     ///
     /// Throws on parse / type / lowering errors.
+    /// `includePaths` are searched, in order, when an `import` target is not
+    /// found next to the file that imported it. `name` is used as the root
+    /// file's own path, so relative imports resolve against its directory and
+    /// requirement labels are recorded relative to it.
     static Compiled compile(std::istream& is, std::string name,
-                            llvm::DataLayout const* dataLayout = nullptr);
+                            llvm::DataLayout const* dataLayout = nullptr,
+                            std::vector<std::string> const& includePaths = {});
 
     /// Convenience wrapper around `compile()` that prints the resulting IR
     /// to `os`. Catches and reports exceptions to stderr. Returns true on
     /// success, false if compilation failed.
     static bool     printIR(std::istream& is, std::string name,
-                            std::ostream& os = std::cout);
+                            std::ostream& os = std::cout,
+                            std::vector<std::string> const& includePaths = {});
 
     /// Compile REF source, JIT it, and evaluate every requirement against
     /// the CSV trace in `csvStream` (and the optional configuration in
@@ -89,7 +96,8 @@ public:
                             std::istream& csvStream,  std::string csvName,
                             std::istream* confStream = nullptr,
                             std::string   confName   = "",
-                            std::ostream& os         = std::cout);
+                            std::ostream& os         = std::cout,
+                            std::vector<std::string> const& includePaths = {});
 
     /// Cheap, LLVM-free parse of REF source into an AST `::Module`. Useful
     /// for tooling (RDB ingestors, dumpers, IDE plumbing) that needs the
@@ -111,7 +119,8 @@ public:
         Schema(Schema const&)            = delete;
         Schema& operator=(Schema const&) = delete;
     };
-    static Schema   parseSchema(std::istream& is, std::string name);
+    static Schema   parseSchema(std::istream& is, std::string name,
+                                std::vector<std::string> const& includePaths = {});
 
     /// Compile REF source, JIT it, and evaluate every requirement against
     /// a packed `.rdb` trace whose state buffer is *already* the layout the
@@ -120,5 +129,6 @@ public:
     /// `data` / `conf` declarations; otherwise execute throws.
     static bool     executeRdb(std::istream& refStream, std::string refName,
                                std::string const& rdbPath,
-                               std::ostream& os = std::cout);
+                               std::ostream& os = std::cout,
+                               std::vector<std::string> const& includePaths = {});
 };

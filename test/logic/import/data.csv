@@ -1,0 +1,4 @@
+__time__,lock,a,b
+0,ON,true,false
+1000,OFF,false,true
+2000,ON,true,true

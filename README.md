@@ -10,16 +10,17 @@ In short: Referee connects human-readable requirement intent to executable verif
 
 **What is implemented**
 
-- A REF language front end: lexer, parser, and grammar (`core/referee.g4`) covering typed declarations (`type`, `data`, `conf`), structs, enums, arrays, and Dwyer-style property specification patterns (e.g. `globally, ...`, `before ..., ... eventually holds after N milliseconds`, `between ... and ..., it is always the case that ...`).
+- A REF language front end: lexer, parser, and grammar (`core/referee.g4`) covering typed declarations (`type`, `data`, `conf`, `import`), structs, enums, arrays, and Dwyer-style property specification patterns (e.g. `globally, ...`, `before ..., ... eventually holds after N milliseconds`, `between ... and ..., it is always the case that ...`).
 - A typed AST and a set of semantic visitors (`canonic`, `negated`, `rewrite`, `typecalc`, `printer`, `csvHeaders`).
 - Lowering of temporal formulas (LTL/TPTL/MTL-flavoured, including strong/weak next `Xs`/`Xw`, bounded until/release, freeze variables, past operators) to **LLVM IR**, followed by standard LLVM optimization passes. `Us`/`Uw`/`Rs`/`Rw`/`Ss`/`Sw`/`Ts`/`Tw` are lowered to linear passes over the trace rather than the naive nested scan, bounded forms included — see *Temporal lowering* below.
+- **`import`** — split a specification across files: shared definition files, or one index file pulling in a directory of small requirement files. Resolved relative to the importing file plus `-I` search paths, imported once per real path, with file-qualified requirement labels. See *Splitting a specification across files* below.
 - **Computed signals** (`data Name = expression;`) — named derived signals, including temporal ones, evaluated once per state for the whole trace by a generated `__prepare__` pass and then read like any other signal. See *Computed signals* below.
 - A JIT-based test harness (`test/logic.cpp`) that compiles REF files, JITs them against a synthetic trace (`state_t[]` + `conf_t`), and asserts that each requirement evaluates to `true` (pass) or `false` (fail) over that trace. See `test/logic/pass.ref` and `test/logic/fail.ref` for the intended execution model.
 - A CLI with two subcommands:
-  - `referee compile file.ref` — emits LLVM IR for a given `.ref` file.
-  - `referee execute file.ref trace.{csv,yaml,rdb} [--conf conf.{csv,yaml}]` — JIT-compiles the requirements and evaluates them against a trace, reporting `PASS`/`FAIL` per requirement (and exiting non-zero if any requirement fails). Column names in the CSV/YAML must match the layout produced by `csvHeaders` (e.g. `__time__`, `pos.x`, `limits[0]`, …); see `test/logic/data.csv` and `test/logic/conf.csv` for working examples. `.rdb` traces (see below) are read with no per-row processing — only pointer fix-up.
+  - `referee compile file.ref [-I dir]…` — emits LLVM IR for a given `.ref` file.
+  - `referee execute file.ref trace.{csv,yaml,rdb} [--conf conf.{csv,yaml}] [-I dir]…` — JIT-compiles the requirements and evaluates them against a trace, reporting `PASS`/`FAIL` per requirement (and exiting non-zero if any requirement fails). Column names in the CSV/YAML must match the layout produced by `csvHeaders` (e.g. `__time__`, `pos.x`, `limits[0]`, …); see `test/logic/data.csv` and `test/logic/conf.csv` for working examples. `.rdb` traces (see below) are read with no per-row processing — only pointer fix-up.
 - A companion `rdb` binary for packing CSV/YAML traces into the on-disk **RDB** format consumed directly by `referee execute`:
-  - `rdb build spec.ref trace.csv [--conf conf.csv] -o trace.rdb` — packs a CSV/YAML trace into a `.rdb` whose state-buffer section is byte-for-byte the layout the JIT consumes (see *Referee Database* below).
+  - `rdb build spec.ref trace.csv [--conf conf.csv] [-I dir]… -o trace.rdb` — packs a CSV/YAML trace into a `.rdb` whose state-buffer section is byte-for-byte the layout the JIT consumes (see *Referee Database* below).
   - `rdb dump trace.rdb` — pretty-prints the schema, conf, and per-state rows using the AST types embedded in the file.
 
 **What is missing**
@@ -59,19 +60,54 @@ Comments use `//`, `#`, or C-style `/* ... */`. Identifiers follow the usual C c
 - **Boolean literals:** `true`, `false`.
 - **Integer literals:** decimal (`42`), binary (`0b1010`), octal (`0o755`), and hexadecimal (`0xFF` / `0xff`). Integers are arbitrary-width at the source level and lowered to 64-bit at runtime.
 - **Floating-point literals:** `1.5`, `.25`, `3.14e-2`, `1E6`. Used wherever the `number` type is expected.
-- **String literals:** `"..."` containing ASCII letters, digits, `_`, `.`, `?`, `!`. Strings are first-class values of type `string` and participate in `==` / `!=` comparisons.
+- **String literals:** `"..."` containing ASCII letters, digits, `_`, `.`, `?`, `!`, `/`, `-`, and spaces (the last three so that `import` targets can name paths). Strings are first-class values of type `string` and participate in `==` / `!=` comparisons.
 - **Signed literals:** a leading `+` / `-` in front of a numeric literal is part of the literal, not a separate unary operator, so `-3` is an integer constant while `- x` is unary negation on `x`.
 - **Reserved keywords.** In addition to the temporal-logic operator names (`G`, `F`, `Xs`, `Xw`, `Us`, `Uw`, `Rs`, `Rw`, `H`, `O`, `Ys`, `Yw`, `Ss`, `Sw`, `Ts`, `Tw`, `I`), the spec-pattern vocabulary is reserved: `after`, `afterwards`, `always`, `and`, `at`, `becomes`, `been`, `before`, `between`, `by`, `case`, `continually`, `eventually`, `every`, `followed`, `for`, `globally`, `has`, `have`, `holding`, `holds`, `if`, `in`, `interruption`, `is`, `it`, `least`, `less`, `long`, `must`, `never`, `occurred`, `once`, `remains`, `repeatedly`, `response`, `run`, `satisfied`, `so`, `than`, `that`, `the`, `then`, `until`, `while`, `within`, `without`, plus the time units `nanoseconds`, `microseconds`, `milliseconds`, `seconds`, `minutes`.
 
 ### Declarations and Types
 
-Three declaration kinds introduce names into the program:
+Four declaration kinds introduce names into the program:
 
 - `type Name : T;` — a named type alias. It defines a new, reusable type but does not reserve any runtime storage.
 - `data Name : T;` — a **time-varying signal** sampled once per trace record. It is effectively a field of the per-timestamp `state_t` struct.
 - `conf Name : T;` — a **configuration value** that is constant for the whole trace. It is effectively a field of the `conf_t` struct shared by all records.
+- `import "path.ref";` — pull another REF file into this one (see *Splitting a specification across files* below).
 
 Splitting `data` from `conf` is a deliberate modeling choice: signals that change per event (sensor readings, state machine outputs) live in `data`, while things that are set at the start of a run and never change (thresholds, limits, operating mode) live in `conf`. The compiler uses that distinction to generate a correct trace/config memory layout (see `core/visitors/csvHeaders.cpp`, which derives CSV column names from `data` declarations).
+
+#### Splitting a specification across files
+
+`import` folds another REF file into the current one, at the point of the import:
+
+```text
+import "common/types.ref";
+import "reqs/door.ref";
+```
+
+Everything the imported file declares — types, signals, configuration — becomes visible to the statements that follow, and any requirements it contains are compiled and checked alongside the importing file's own. That covers both of the shapes this exists for: a *definitions* file that several specifications share, and an *index* file that pulls a directory of small requirement files into one run.
+
+**Resolution.** A relative path is resolved against the directory of the file containing the import, so a tree of specifications can be moved as a unit. If that misses, each `-I <dir>` given on the command line is tried in order:
+
+```bash
+./build/referee execute -I ./shared spec.ref trace.csv
+./build/rdb     build   -I ./shared spec.ref trace.csv -o trace.rdb
+```
+
+`rdb build` takes the same flag because it has to resolve the same imports to derive the schema.
+
+**Each file is imported once**, keyed on its real path. A diamond — two requirement files that both import the same definitions — is therefore the ordinary case rather than a duplicate-declaration error, and symlinks and `..` round-trips to the same file are recognised as the same file. Two *different* files declaring the same name is still an error, and says so.
+
+An import that leads back to a file already being read is reported as a cycle rather than quietly skipped, because the importer would otherwise carry on referring to declarations that have not been processed yet.
+
+**Requirement labels become file-qualified.** A requirement that came in through an import is reported (and named in the emitted IR) as `path/to/file.ref:row:col .. row:col`, with the path relative to the root file. Requirements in the root file itself stay unqualified, so a single-file specification is labelled exactly as it was before imports existed:
+
+```text
+13:0 .. 13:21                            PASS
+reqs/one.ref:5:0 .. 5:10                 PASS
+reqs/two.ref:5:0 .. 5:10                 PASS
+```
+
+The qualification is load-bearing, not cosmetic: the last two requirements sit at the same line and column in different files, and would otherwise collide into one name.
 
 #### Computed signals
 

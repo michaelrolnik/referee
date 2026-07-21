@@ -1,0 +1,5 @@
+# Imports by bare name: there is no types.ref next to this file, so it can only
+# be found by way of a search path (-I / includePaths).
+import  "types.ref";
+
+G(a || !a);

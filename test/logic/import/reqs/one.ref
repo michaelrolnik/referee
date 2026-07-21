@@ -1,0 +1,5 @@
+# Reaches the definitions through a relative path, and carries a requirement
+# at the same line:column as reqs/two.ref -- the pair only stay distinguishable
+# because labels are qualified by file.
+import  "../defs/types.ref";
+G(a || !a);

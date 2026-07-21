@@ -1,7 +1,7 @@
 /*
  *  MIT License
  *
- *  Copyright (c) 2022 Michael Rolnik
+ *  Copyright (c) 2022-2026 Michael Rolnik
  *
  *  Permission is hereby granted, free of charge, to any person obtaining a copy
  *  of this software and associated documentation files (the "Software"), to deal
@@ -387,6 +387,101 @@ TEST(Rdb, ExprDataChainedDependencies)
 // *contains* a freeze is still eligible. expr_freeze.ref pins both directions,
 // including a negative that only holds if the inner operator was never
 // precomputed.
+// `import` folds another .ref into the same program. main.ref reaches its
+// definitions file five ways -- directly, through each of two requirement
+// files, through a path with a '..' round-trip, and through a symlink -- so
+// this only passes if import-once is keyed on the real path. The two imported
+// requirements also sit at the same line and column, which collide unless
+// requirement labels are qualified by file.
+TEST(Rdb, ImportDiamondAndLabels)
+{
+    auto    refPath = std::string(REFEREE_TEST_DATA_DIR) + "/import/main.ref";
+    auto    csvPath = std::string(REFEREE_TEST_DATA_DIR) + "/import/data.csv";
+    auto    rdbPath = tmpFile("import");
+
+    referee::db::ingest(refPath, csvPath, /*confPath=*/"", rdbPath);
+
+    // The schema is the union of what the imports declare.
+    referee::db::Reader r(rdbPath);
+    EXPECT_EQ(r.numProps(), 3u);        // lock, a, b -- each exactly once
+
+    std::ifstream       refIn(refPath);
+    std::ostringstream  out;
+    bool                allPass = Referee::executeRdb(refIn, refPath, rdbPath, out);
+    EXPECT_TRUE(allPass) << out.str();
+
+    auto    report = out.str();
+    // Imported requirements are qualified; the root file's own are not.
+    EXPECT_NE(report.find("reqs/one.ref:5:0 .. 5:10"), std::string::npos) << report;
+    EXPECT_NE(report.find("reqs/two.ref:5:0 .. 5:10"), std::string::npos) << report;
+    EXPECT_NE(report.find("13:0 .. 13:21"),            std::string::npos) << report;
+
+    std::remove(rdbPath.c_str());
+}
+
+// A cycle is reported as a cycle, rather than silently no-op'ing and then
+// failing later on a name the importer could not see yet.
+TEST(Rdb, ImportCycleIsReported)
+{
+    auto    refPath = std::string(REFEREE_TEST_DATA_DIR) + "/import/cycle_a.ref";
+
+    // parseSchema, not executeRdb: the failure has to come from the parse, and
+    // executeRdb would open the trace first and fail on that instead.
+    std::ifstream       refIn(refPath);
+    try
+    {
+        Referee::parseSchema(refIn, refPath);
+        FAIL() << "expected an import cycle to be rejected";
+    }
+    catch (std::exception const& e)
+    {
+        EXPECT_NE(std::string(e.what()).find("import cycle"), std::string::npos)
+            << e.what();
+    }
+}
+
+// An unresolvable import names what it looked for and where it looked.
+TEST(Rdb, ImportMissingFileIsReported)
+{
+    auto    refPath = std::string(REFEREE_TEST_DATA_DIR) + "/import/missing.ref";
+
+    std::ifstream       refIn(refPath);
+    try
+    {
+        Referee::parseSchema(refIn, refPath);
+        FAIL() << "expected a missing import to be rejected";
+    }
+    catch (std::exception const& e)
+    {
+        EXPECT_NE(std::string(e.what()).find("cannot find imported file"), std::string::npos)
+            << e.what();
+    }
+}
+
+// An import unresolvable next to the importing file is found on a search path.
+TEST(Rdb, ImportResolvedViaSearchPath)
+{
+    auto    refPath = std::string(REFEREE_TEST_DATA_DIR) + "/import/via_path.ref";
+    auto    csvPath = std::string(REFEREE_TEST_DATA_DIR) + "/import/data.csv";
+    auto    searchDir = std::string(REFEREE_TEST_DATA_DIR) + "/import/defs";
+    auto    rdbPath = tmpFile("import-path");
+
+    // Without the search path the import cannot be resolved at all.
+    EXPECT_THROW(
+        referee::db::ingest(refPath, csvPath, "", rdbPath),
+        std::exception);
+
+    referee::db::ingest(refPath, csvPath, "", rdbPath, {searchDir});
+
+    std::ifstream       refIn(refPath);
+    std::ostringstream  out;
+    bool                allPass = Referee::executeRdb(refIn, refPath, rdbPath, out,
+                                                      {searchDir});
+    EXPECT_TRUE(allPass) << out.str();
+
+    std::remove(rdbPath.c_str());
+}
+
 // Time-bounded operators on the linear lowering, over an irregularly spaced
 // trace. Covers conf-valued bounds against their literal equivalents, one-sided
 // bounds on the past operators (which used to crash the compiler), degenerate

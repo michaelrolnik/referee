@@ -1,0 +1,14 @@
+# Root of a diamond: types.ref is reachable five ways from here -- directly,
+# through each of the two requirement files, through a path with a '..'
+# round-trip, and through a symlink. Import-once keyed on the real path is what
+# keeps that from being a duplicate-declaration error.
+import  "defs/types.ref";
+import  "reqs/one.ref";
+import  "reqs/two.ref";
+import  "./defs/../defs/types.ref";
+import  "defs/alias.ref";
+
+# The root file's own requirements stay unqualified, so a single-file program
+# is labelled exactly as it was before imports existed.
+G(a || b || !a || !b);
+lock.ON || lock.OFF;

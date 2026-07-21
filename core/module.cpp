@@ -1,7 +1,7 @@
 /*
  *  MIT License
  *  
- *  Copyright (c) 2022 Michael Rolnik
+ *  Copyright (c) 2022-2026 Michael Rolnik
  *  
  *  Permission is hereby granted, free of charge, to any person obtaining a copy
  *  of this software and associated documentation files (the "Software"), to deal
@@ -42,11 +42,9 @@ void    Module::addType(std::string const& name, Type* type)
 {
     if(m_name2type.contains(name))
     {
-//  LCOV_EXCL_START 
-//  GCOV_EXCL_START 
-        throw std::runtime_error(__PRETTY_FUNCTION__);
-//  GCOV_EXCL_STOP
-//  LCOV_EXCL_STOP
+        throw std::runtime_error(
+            "duplicate type declaration '" + name + "'"
+            " -- declared twice, possibly via two imports that both define it");
     }
     m_name2type[name]   = type;
     m_typeNames.push_back(name);
@@ -56,11 +54,9 @@ void    Module::addProp(std::string const& name, Type* data)
 {
     if(m_name2data.contains(name))
     {
-//  LCOV_EXCL_START 
-//  GCOV_EXCL_START 
-        throw std::runtime_error(__PRETTY_FUNCTION__);
-//  GCOV_EXCL_STOP
-//  LCOV_EXCL_STOP
+        throw std::runtime_error(
+            "duplicate data declaration '" + name + "'"
+            " -- declared twice, possibly via two imports that both define it");
     }
     m_name2data[name]   = data;
     m_propNames.push_back(name);
@@ -70,11 +66,9 @@ void    Module::addPropExpr(std::string const& name, Type* type, Expr* expr)
 {
     if(m_name2data.contains(name))
     {
-//  LCOV_EXCL_START 
-//  GCOV_EXCL_START 
-        throw std::runtime_error(__PRETTY_FUNCTION__);
-//  GCOV_EXCL_STOP
-//  LCOV_EXCL_STOP
+        throw std::runtime_error(
+            "duplicate data declaration '" + name + "'"
+            " -- declared twice, possibly via two imports that both define it");
     }
     m_name2data[name]   = type;     // in the shared type map → typecalc resolves it
     m_name2expr[name]   = expr;     // expression for ingest-time evaluation
@@ -85,11 +79,9 @@ void    Module::addConf(std::string const& name, Type* data)
 {
     if(m_name2conf.contains(name))
     {
-//  LCOV_EXCL_START 
-//  GCOV_EXCL_START 
-        throw std::runtime_error(__PRETTY_FUNCTION__);
-//  GCOV_EXCL_STOP
-//  LCOV_EXCL_STOP
+        throw std::runtime_error(
+            "duplicate conf declaration '" + name + "'"
+            " -- declared twice, possibly via two imports that both define it");
     }
     m_name2conf[name]   = data;
     m_confNames.push_back(name);

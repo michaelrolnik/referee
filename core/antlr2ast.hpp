@@ -1,7 +1,7 @@
 /*
  *  MIT License
  *  
- *  Copyright (c) 2022 Michael Rolnik
+ *  Copyright (c) 2022-2026 Michael Rolnik
  *  
  *  Permission is hereby granted, free of charge, to any person obtaining a copy
  *  of this software and associated documentation files (the "Software"), to deal
@@ -31,13 +31,27 @@
 #include "position.hpp"
 #include "module.hpp"
 
+#include <memory>
+#include <set>
+#include <string>
+#include <vector>
+
 
 class Antlr2AST
     : public referee::refereeBaseVisitor
 {
 public:
-    Antlr2AST(std::string name);
+    //  `path` is the root .ref's own path -- imports are resolved relative to
+    //  the directory of the file containing them, and node labels are recorded
+    //  relative to this file.  `searchPaths` are consulted, in order, when the
+    //  relative lookup misses.  Both may be empty, which disables imports that
+    //  are not resolvable from the process working directory.
+    Antlr2AST(std::string name,
+              std::string path = "",
+              std::vector<std::string> searchPaths = {});
+    ~Antlr2AST();
 
+    std::any visitDeclImport(   referee::refereeParser::DeclImportContext*      ctx) override;
     std::any visitDeclConf(     referee::refereeParser::DeclConfContext*        ctx) override;
     std::any visitDeclDataTyped(referee::refereeParser::DeclDataTypedContext*   ctx) override;
     std::any visitDeclDataExpr( referee::refereeParser::DeclDataExprContext*    ctx) override;
@@ -153,5 +167,28 @@ private:
 
     Position    position(antlr4::ParserRuleContext* rule);
 
+    //  Resolve an import target: first against the directory of the file doing
+    //  the importing, then against each search path in turn.  Returns the
+    //  canonical path, or empty if nothing matched.
+    std::string resolveImport(std::string const& spec);
+
+    //  Parse `path` and fold its declarations and requirements into the same
+    //  Module, as though they had been written at the point of the import.
+    void        importFile(std::string const& path, Position const& where);
+
     Module* module  = nullptr;
+
+    //  ANTLR objects for every imported file, kept alive for the lifetime of
+    //  the visitor: the AST holds interned strings and positions taken from
+    //  these token streams.
+    struct  ParsedFile;
+    std::vector<std::unique_ptr<ParsedFile>>    m_parsed;
+
+    std::vector<std::string>    m_searchPaths;
+    std::string                 m_rootDir;      //  directory of the root .ref
+    std::string                 m_currentDir;   //  directory of the file being visited
+    char const*                 m_currentFile   = nullptr;  //  label, relative to root
+
+    std::set<std::string>       m_imported;     //  canonical paths already folded in
+    std::vector<std::string>    m_importStack;  //  in-progress, for cycle reporting
 };

@@ -1,7 +1,7 @@
 /*
  *  MIT License
  *  
- *  Copyright (c) 2022 Michael Rolnik
+ *  Copyright (c) 2022-2026 Michael Rolnik
  *  
  *  Permission is hereby granted, free of charge, to any person obtaining a copy
  *  of this software and associated documentation files (the "Software"), to deal
@@ -56,7 +56,7 @@ public:
     {
         std::ostringstream  os;
 
-        os << info << " at [" << position.beg.row << ":" << position.beg.col << " .. " << position.end.row << ":" << position.end.col << "]";
+        os << info << " at [" << position.text() << "]";
 
         message     = os.str();
     }

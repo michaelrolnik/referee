@@ -1,0 +1,7 @@
+# Shared definitions, pulled in by several files below. Nothing here is a
+# requirement -- this is the "definitions file" shape imports exist for.
+type    State   : enum { ON, OFF };
+
+data    lock    : State;
+data    a       : boolean;
+data    b       : boolean;

@@ -1,7 +1,7 @@
 /*
  *  MIT License
  *
- *  Copyright (c) 2022 Michael Rolnik
+ *  Copyright (c) 2022-2026 Michael Rolnik
  *
  *  Permission is hereby granted, free of charge, to any person obtaining a copy
  *  of this software and associated documentation files (the "Software"), to deal
@@ -55,10 +55,11 @@ namespace referee::db
 void    ingest(std::istream&        refIn,   std::string const& refName,
                std::istream&        dataIn,  std::string const& dataName,
                std::istream*        confIn,  std::string const& confName,
-               std::ostream&        out)
+               std::ostream&        out,
+               std::vector<std::string> const& includePaths)
 {
     // 1. Schema: cheap AST-only parse of the REF stream.
-    auto    schema      = Referee::parseSchema(refIn, refName);
+    auto    schema      = Referee::parseSchema(refIn, refName, includePaths);
     auto*   astModule   = schema.ast;
 
     // 2. Build the in-memory blob set for each state, exactly the way
@@ -176,7 +177,8 @@ void    ingest(std::istream&        refIn,   std::string const& refName,
 void    ingest(std::string const& refPath,
                std::string const& dataPath,
                std::string const& confPath,
-               std::string const& outRdbPath)
+               std::string const& outRdbPath,
+               std::vector<std::string> const& includePaths)
 {
     std::ifstream   refIn(refPath);
     if (!refIn)
@@ -200,7 +202,7 @@ void    ingest(std::string const& refPath,
     if (!out)
         throw std::runtime_error(fmt::format("rdb: cannot create '{}'", outRdbPath));
 
-    ingest(refIn, refPath, dataIn, dataPath, confInPtr, confPath, out);
+    ingest(refIn, refPath, dataIn, dataPath, confInPtr, confPath, out, includePaths);
 }
 
 } // namespace referee::db
