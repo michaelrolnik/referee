@@ -25,13 +25,41 @@ func in_range: (number, number, number) -> boolean;
 
 A `func` is a declaration, like `data` and `conf`, and lives with them at the top of a file — so it can be `import`ed, and a project can keep one `crc.ref` that every specification shares.
 
-Parameter and return types are REF types. Arrays pass as a pointer plus an extent, so `(byte[], integer)` becomes two C parameters for the array and one for the integer:
+Parameter and return types are REF types.
+
+#### Passing arrays
+
+An array crosses the boundary as a descriptor:
 
 ```c
-uint8_t crc8(const uint8_t *arg0, int64_t arg0_count, int64_t arg1);
+typedef struct { size_t count; const uint8_t *data; } ref_slice_byte;
+
+uint8_t crc8(ref_slice_byte arg0, int64_t arg1);
 ```
 
-Passing the extent rather than relying on the declared one matters: the array's extent is fixed for a run, but the *meaningful* length usually is not — that is what the `len` companion signal is for in all three MCTP examples. The C function needs the real length, and the caller passes it.
+This is a *synthesised* type, not a mirror of storage. In memory a REF array is `llvm::ArrayType::get(elem, N)` — flat, contiguous, exactly C's `T data[N]`, with `N` fixed for the run. The descriptor is built at the call: two stores, or nothing at all once the optimiser sees through it.
+
+Flattening to a pointer-and-length parameter pair, which is the obvious alternative, fails on one case and it is not a rare one: **an array inside a struct has nowhere to put its count.** Passing `Pkt` — which holds `raw : byte[]` — cannot expand into extra parameters, so the descriptor has to be a type rather than a calling convention. Making it a type everywhere is the consistent choice.
+
+Passing it **by value** is correct here, and does not contradict the by-pointer rule for structs below. A descriptor is two 8-byte scalars, which SysV classifies unambiguously as INTEGER,INTEGER and passes in two registers. The by-pointer rule exists for REF-declared structs, whose size and field types are arbitrary and whose classification is therefore fragile; a two-scalar synthesised aggregate has none of that risk.
+
+##### `count` is capacity, not length
+
+Worth being blunt about, because the descriptor invites the opposite reading. `count` is the array's *extent* — the number of elements it has, which for a per-record variable-length payload is the padded maximum. `raw : byte[]` is 64 octets in every record of a 64-octet capture, whether or not all 64 are meaningful.
+
+So the descriptor does not remove the length argument:
+
+```text
+data pec_ok = crc8(pkt.raw, len - 1) == pkt.raw[len - 1];
+```
+
+`crc8` gets capacity 64 from the descriptor and the real length 63 from `len`. What the descriptor buys is that the callee can *check* — `assert(n <= s.count)` — which the flattened form cannot express at all, since there was nothing to check against.
+
+The way to make `count` mean length is slicing (`pkt.raw[0:len]`), which is a language feature rather than an ABI one. It is listed under open questions; if it lands, the second argument goes away.
+
+##### Fixed-width or `size_t`
+
+`size_t` is what a C programmer expects and is 8 bytes on every host referee JITs for. It is 4 on ILP32, which matters only for an AOT checker cross-compiled to a 32-bit target — and there the generated header and the compiled object disagree silently. If AOT cross-compilation is ever in scope, this should be `uint64_t` and the header should say why.
 
 #### Passing structs
 
@@ -224,7 +252,8 @@ The tiers should be built in that order, because each one removes reasons to nee
 1. **Should a `func` be callable from a pattern body?** Accumulators and looping temporals are barred there ("cannot be temporal"). A call is not temporal, so it would be allowed by default — but a call inside a scoped pattern is evaluated per scope instance, and the cost is invisible. Probably allow, and document.
 2. **Failure signalling.** What does a `func` do when its input is malformed — return a sentinel, or is there an error channel? A sentinel that collides with a valid value is a silent wrong verdict. The simplest answer is that `func` results are total: the specification guards the call, not the callee.
 3. **Should `--library` be recorded in the `.rdb`?** Traces are meant to outlive the specification. If a verdict depended on a binary, the trace arguably should say which — but a trace is a recording and a library is not part of it.
-4. **Extents for multi-dimensional arrays.** `(byte[][], integer)` would pass two extents plus a pointer; the flattening convention needs stating before anything relies on it.
+4. **Multi-dimensional arrays.** A descriptor of descriptors does not exist in memory — storage is flat, so `byte[][]` would need an array of inner descriptors materialised per call, which is O(rows) work for something rare in this domain. The alternatives are a strided descriptor (`{count, stride, data}`) or leaving 2-D out of v1. Leaving it out is probably right until something needs it.
+5. **Slicing.** `pkt.raw[0:len]` would make a descriptor's `count` the meaningful length rather than the capacity, and remove the separate length argument from every call. It is a language feature with uses well beyond this one — it is also what "the first `len` octets" wants to say in a quantifier — so it should be designed on its own merits, not as an ABI convenience.
 5. **Should `-L` accept a file as well as a directory?** `-L plugins/libmctp.so` is unambiguous and would suit a build that produces one object. It costs nothing to allow, but two ways to say the same thing is its own tax.
 6. **What names a symbol?** Plain C linkage means `func crc8` looks for `crc8`. That is what makes the generated header usable as-is, and it also means the specification's namespace and the C namespace are the same one. A prefix (`ref_crc8`) would isolate them at the cost of every header being uglier.
 7. **Does `referee header` need to emit the reverse** — a stub `.c` with empty bodies — so the first build is a copy-paste rather than transcription? Cheap, and it is where the signature mismatches would otherwise happen.
