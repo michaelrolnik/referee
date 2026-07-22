@@ -10,6 +10,7 @@
 
 data i : integer;
 data r : number;
+data name : string;
 
 # Integer forms. There is no integer-abs instruction, so these are a compare
 # and a select rather than a call.
@@ -49,3 +50,25 @@ G(std::math::floor(r) == std::math::ceil(r) - 1 || r == std::math::floor(r));
 # The result really is an integer: it compares against one without widening,
 # and integer division would not typecheck on a number.
 G(std::math::floor(r) * 2 >= 2);
+
+# ── std::string ──────────────────────────────────────────────────────────────
+# Host functions linked into referee and registered with the JIT -- the same
+# arrangement `debug` uses -- rather than intrinsics, because there are none.
+# Still no .so and no -L.
+#
+# Every one returns a number or a boolean. None returns a *string*: with no
+# allocator and no ownership model, a function building one would have nobody
+# to free it. Hence no substr, no concat, no to_upper.
+G(std::string::len(name) > 0);
+G(std::string::nth(name, 0) == 97);             # 'a'
+G(std::string::nth(name, 999) == -1);           # out of range, not a segfault
+G(std::string::starts(name, "alpha"));
+G(std::string::compare(name, name) == 0);
+G(std::string::find(name, "lph") == 1);
+G(std::string::find(name, "zzz") == -1);        # absent, testable without a second call
+G(std::string::ends(name, "a") <=> std::string::len(name) == 5);
+G(std::string::len(name) >= std::string::find(name, "a") + 1);
+
+# `at` would have been the obvious name and is a reserved word -- it is part of
+# the `at least` / `at most` quantifier vocabulary, so it cannot be an
+# identifier. Hence `nth`.

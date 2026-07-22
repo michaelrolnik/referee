@@ -364,13 +364,19 @@ make overloading possible, since two signatures hash differently. What is left
 is to let `Module::addFunc` hold more than one signature per name and to
 resolve a call against them. Then `abs` serves both and `fabs` retires.
 
-**Not built:** `std::string`. It needs host functions registered with the JIT
-rather than intrinsics -- the mechanism already exists, since `debug` is
-registered exactly that way. The set stops where it does for a reason: with no
-allocator and no ownership model, a string function can return a number or a
-boolean but not a *new string*. So `len`, `at`, `starts`, `ends`, `contains`,
-`find`, `compare` -- and no `substr`, `concat` or `to_upper`, which would mean
-deciding who owns the result.
+**Built:** `std::string` -- `len`, `nth`, `compare`, `starts`, `ends`, `find`.
+These are host functions linked into referee and registered with the JIT, the
+same arrangement `debug` uses, because there is no intrinsic for them. Still
+no `.so` and no `-L`.
+
+Every one returns a number or a boolean. None returns a *string*, deliberately:
+with no allocator and no ownership model, a function building a new string
+would have nobody to free it. So there is no `substr`, `concat` or `to_upper`
+-- adding them means deciding who owns the result, which is a bigger question
+than the functions are worth.
+
+`nth` rather than the obvious `at`: `at` is reserved, being part of the
+`at least` / `at most` quantifier vocabulary, so it cannot be an identifier.
 
 `crc8` / `crc16` / `crc32` with named polynomials belong here too, and would
 remove the motivating case for external functions entirely.

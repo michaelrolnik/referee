@@ -356,6 +356,23 @@ TEST(Diagnostics, RejectsBadBuiltinCalls)
         EXPECT_THROW(parseSnippet(src, "bi" + std::to_string(n++)), std::exception) << src;
 }
 
+// The string built-ins take a string first, and an index or a second string
+// after it.
+TEST(Diagnostics, RejectsBadStringBuiltins)
+{
+    char const* cases[] = {
+        "data sa : integer;\nG(std::string::len(sa) > 0);\n",
+        "data sb : string;\nG(std::string::nth(sb, sb) == 0);\n",
+        "data sc : string;\ndata sd : integer;\nG(std::string::starts(sc, sd));\n",
+        "data se : string;\nG(std::string::len(se, se) > 0);\n",
+        "data sf : string;\nG(std::string::nth(sf) == 0);\n",
+    };
+
+    int     n = 0;
+    for (auto const* src : cases)
+        EXPECT_THROW(parseSnippet(src, "sb" + std::to_string(n++)), std::exception) << src;
+}
+
 // Slicing: what may be sliced, and by what.
 TEST(Diagnostics, RejectsBadSlices)
 {

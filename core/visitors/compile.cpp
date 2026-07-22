@@ -1489,6 +1489,38 @@ void    CompileExprImpl::visit( ExprCall*       expr)
         //  Rounded to a whole number, then narrowed: the result is an integer
         //  because that is what a specification wants to compare and index
         //  with, and REF has no cast to get there otherwise.
+        //  Host functions, resolved from the process the same way `debug` is.
+        //  Not intrinsics, because there are none -- but still no .so and no
+        //  -L, since referee links them itself.
+        case Builtin::Kind::StrLen:
+        case Builtin::Kind::StrAt:
+        case Builtin::Kind::StrCmp:
+        case Builtin::Kind::StrStarts:
+        case Builtin::Kind::StrEnds:
+        case Builtin::Kind::StrFind:
+        {
+            auto    sym  = bi->kind == Builtin::Kind::StrLen    ? "__ref_str_len"
+                         : bi->kind == Builtin::Kind::StrAt     ? "__ref_str_at"
+                         : bi->kind == Builtin::Kind::StrCmp    ? "__ref_str_cmp"
+                         : bi->kind == Builtin::Kind::StrStarts ? "__ref_str_starts"
+                         : bi->kind == Builtin::Kind::StrEnds   ? "__ref_str_ends"
+                                                                : "__ref_str_find";
+
+            std::vector<llvm::Type*>    params(a.size(), m_builder->getPtrTy());
+            if(bi->kind == Builtin::Kind::StrAt)
+                params[1] = m_builder->getInt64Ty();
+
+            auto    ret  = (bi->kind == Builtin::Kind::StrStarts
+                         || bi->kind == Builtin::Kind::StrEnds)
+                         ? static_cast<llvm::Type*>(m_builder->getInt1Ty())
+                         : static_cast<llvm::Type*>(m_builder->getInt64Ty());
+
+            m_value = m_builder->CreateCall(
+                        m_module->getOrInsertFunction(sym,
+                            llvm::FunctionType::get(ret, params, false)), a);
+            return;
+        }
+
         case Builtin::Kind::Floor:
         case Builtin::Kind::Ceil:
         case Builtin::Kind::Round:

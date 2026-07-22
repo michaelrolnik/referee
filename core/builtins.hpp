@@ -25,7 +25,22 @@ struct  Builtin
         Sin,  Cos,  Pow,
         Floor, Ceil, Round, Trunc,  //  number -> *integer*: REF has no cast,
                                     //  so this is the only way to convert
+
+        //  Strings. Unlike the maths, these are host functions linked into
+        //  referee and registered with the JIT -- the same mechanism `debug`
+        //  uses -- because there is no intrinsic for them.
+        //
+        //  Every one returns a number or a boolean. None returns a *string*,
+        //  and that is deliberate: with no allocator and no ownership model,
+        //  a function that built a new string would have nobody to free it.
+        //  So there is no substr, no concat, no to_upper.
+        StrLen, StrAt, StrCmp, StrStarts, StrEnds, StrFind,
     };
+
+    static bool     isString(Kind k)
+    {
+        return k >= Kind::StrLen;
+    }
 
     char const*         name;
     Kind                kind;
@@ -64,6 +79,15 @@ inline std::vector<Builtin> const&  builtins()
         { "std::math::ceil",  Builtin::Kind::Ceil,  1, true,  false },
         { "std::math::round", Builtin::Kind::Round, 1, true,  false },
         { "std::math::trunc", Builtin::Kind::Trunc, 1, true,  false },
+
+        //  arity counts REF arguments; the string kinds take strings, with
+        //  StrAt taking a string and an index.
+        { "std::string::len",      Builtin::Kind::StrLen,    1, false, false },
+        { "std::string::nth",       Builtin::Kind::StrAt,     2, false, false },
+        { "std::string::compare",  Builtin::Kind::StrCmp,    2, false, false },
+        { "std::string::starts",   Builtin::Kind::StrStarts, 2, false, false },
+        { "std::string::ends",     Builtin::Kind::StrEnds,   2, false, false },
+        { "std::string::find",     Builtin::Kind::StrFind,   2, false, false },
     };
 
     return table;

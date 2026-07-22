@@ -652,6 +652,30 @@ void    TypeCalcImpl::visit(ExprCall*               expr)
                 "'" + expr->name + "' takes " + std::to_string(bi->arity)
                 + " argument(s), " + std::to_string(expr->args.size()) + " given");
 
+        //  The string kinds take a string first; `at` and `find` take an
+        //  index or a second string after it.
+        if(Builtin::isString(bi->kind))
+        {
+            if(make(expr->args[0]) != typeString)
+                throw Exception(expr->args[0]->where(),
+                    "bad type: argument 1 of '" + expr->name + "' must be a string");
+
+            if(bi->arity == 2)
+            {
+                auto    second = widen(make(expr->args[1]));
+                auto    wants  = bi->kind == Builtin::Kind::StrAt ? typeInteger : typeString;
+
+                if(second != wants)
+                    throw Exception(expr->args[1]->where(),
+                        std::string("bad type: argument 2 of '") + expr->name + "' must be "
+                        + (bi->kind == Builtin::Kind::StrAt ? "an integer" : "a string"));
+            }
+
+            m_type = (bi->kind == Builtin::Kind::StrStarts
+                   || bi->kind == Builtin::Kind::StrEnds) ? typeBoolean : typeInteger;
+            return;
+        }
+
         auto    want = bi->takesNumber ? typeNumber : typeInteger;
 
         for(std::size_t i = 0; i < expr->args.size(); i++)

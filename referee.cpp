@@ -29,6 +29,7 @@
 
 #include <atomic>
 #include <filesystem>
+#include <cstring>
 #include <set>
 #include <iostream>
 
@@ -353,6 +354,60 @@ bool    Referee::printIR(std::istream& is, std::string name, std::ostream& os,
 }
 
 namespace {
+//  The host side of `std::string`. Linked into referee and registered with
+//  the JIT, so a specification using them needs no .so and no -L -- the same
+//  arrangement as `debug`.
+//
+//  Every one returns a number or a boolean. None returns a string: with no
+//  allocator and no ownership model, a function building a new string would
+//  have nobody to free it.
+extern "C" {
+
+std::int64_t    __ref_str_len(char const* s)
+{
+    return s ? static_cast<std::int64_t>(std::strlen(s)) : 0;
+}
+
+//  Out of range yields -1 rather than reading past the end. There is no
+//  bounds checking elsewhere in the language, but here the alternative is a
+//  segfault in the checker rather than a wrong answer about the trace.
+std::int64_t    __ref_str_at(char const* s, std::int64_t i)
+{
+    if (s == nullptr || i < 0 || static_cast<std::size_t>(i) >= std::strlen(s))
+        return -1;
+
+    return static_cast<unsigned char>(s[i]);
+}
+
+std::int64_t    __ref_str_cmp(char const* a, char const* b)
+{
+    return std::strcmp(a ? a : "", b ? b : "");
+}
+
+bool            __ref_str_starts(char const* s, char const* p)
+{
+    if (s == nullptr || p == nullptr) return false;
+    auto n = std::strlen(p);
+    return std::strlen(s) >= n && std::strncmp(s, p, n) == 0;
+}
+
+bool            __ref_str_ends(char const* s, char const* p)
+{
+    if (s == nullptr || p == nullptr) return false;
+    auto ls = std::strlen(s), lp = std::strlen(p);
+    return ls >= lp && std::strcmp(s + ls - lp, p) == 0;
+}
+
+//  -1 when absent, so a caller can test for it without a second call.
+std::int64_t    __ref_str_find(char const* s, char const* p)
+{
+    if (s == nullptr || p == nullptr) return -1;
+    auto at = std::strstr(s, p);
+    return at ? static_cast<std::int64_t>(at - s) : -1;
+}
+
+} // extern "C"
+
 // JIT setup shared by execute() / executeRdb(): create LLJIT, compile the
 // .ref pinned to the JIT's data layout, expose process symbols, register
 // the host `debug(int64)` callback, add the IR module, and collect the
@@ -497,6 +552,21 @@ JitWithSpecs    buildJitFromRef(std::istream& refStream, std::string const& refN
             llvm::orc::ExecutorAddr::fromPtr(&debugCallback),
             llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable,
         };
+
+        auto    host = [&](char const* name, auto* fn)
+        {
+            symMap[Mangle(name)] = {
+                llvm::orc::ExecutorAddr::fromPtr(fn),
+                llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable,
+            };
+        };
+
+        host("__ref_str_len",    &__ref_str_len);
+        host("__ref_str_at",     &__ref_str_at);
+        host("__ref_str_cmp",    &__ref_str_cmp);
+        host("__ref_str_starts", &__ref_str_starts);
+        host("__ref_str_ends",   &__ref_str_ends);
+        host("__ref_str_find",   &__ref_str_find);
         if (auto Err = out.jit->getMainJITDylib().define(
                 llvm::orc::absoluteSymbols(std::move(symMap))))
             throw std::runtime_error("Failed to define debug symbol");
