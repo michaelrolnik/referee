@@ -33,6 +33,8 @@
 #include <vector>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <sstream>
+#include <cstring>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -179,11 +181,22 @@ TEST(Cli, StaleObjectIsRefusedRatherThanCalled)
     write(csv, "__time__,i\n0,5\n");
 
     ASSERT_EQ(run(quote(REFEREE_BIN) + " header " + quote(ref) + " -o " + quote(hdr)).status, 0);
-    write(src, "#include \"" + hdr + "\"\n"
-               "referee_Dir referee_classify(int64_t x) { return x > 0 ? 1 : 2; }\n");
+    //  Generated stub, so the manifest comes with it.
+    auto    stub = run(quote(REFEREE_BIN) + " header " + quote(ref) + " --stub --header-name "
+                       + quote(hdr) + " -o " + quote(src));
+    ASSERT_EQ(stub.status, 0) << stub.output;
+    {
+        std::ifstream       in(src);
+        std::stringstream   buf;  buf << in.rdbuf();
+        auto                text = buf.str();
+        auto                at   = text.find("/*  TODO  */\n    return 0;\n");
+        ASSERT_NE(at, std::string::npos);
+        text.replace(at, std::strlen("/*  TODO  */\n    return 0;\n"), "return arg0 > 0 ? 1 : 2;\n");
+        write(src, text);
+    }
 
     auto    so = dir + "/liba.so";
-    ASSERT_EQ(run("cc -shared -fPIC " + quote(src) + " -o " + quote(so) + " 2>&1").status, 0);
+    ASSERT_EQ(run("cc -shared -fPIC " + quote(src) + " -o " + quote(so) + " -I " + quote(dir) + " 2>&1").status, 0);
 
     auto    ok = run(quote(REFEREE_BIN) + " execute " + quote(ref) + " " + quote(csv)
                      + " -L " + quote(dir) + " 2>&1");
@@ -197,8 +210,13 @@ TEST(Cli, StaleObjectIsRefusedRatherThanCalled)
     auto    bad = run(quote(REFEREE_BIN) + " execute " + quote(ref) + " " + quote(csv)
                       + " -L " + quote(dir) + " 2>&1");
     EXPECT_NE(bad.status, 0) << bad.output;
-    EXPECT_NE(bad.output.find("was not found"), std::string::npos) << bad.output;
-    EXPECT_NE(bad.output.find("structural hash"), std::string::npos) << bad.output;
+
+    //  The object *does* implement classify, against the old layout. Saying
+    //  "not found" would send someone to write a function that already
+    //  exists; the manifest lets referee say which problem this is.
+    EXPECT_NE(bad.output.find("different layout"), std::string::npos) << bad.output;
+    EXPECT_NE(bad.output.find("expected"), std::string::npos)         << bad.output;
+    EXPECT_NE(bad.output.find("found"), std::string::npos)            << bad.output;
 
     for (auto const* f : {"a.ref", "a.h", "a.c", "a.csv", "liba.so"})
         std::remove((dir + "/" + f).c_str());

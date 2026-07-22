@@ -499,6 +499,33 @@ static void     bindExternalFunctions(llvm::orc::LLJIT&               jit,
             }
         }
 
+        //  Not found. Ask each object what it does implement, so a function
+        //  that was never written can be told from one built against an older
+        //  version of this specification.
+        if (definedBy.empty())
+        {
+            struct  Entry { char const* name; char const* symbol; };
+
+            for (std::size_t h = 0; h < handles.size(); h++)
+            {
+                auto*   table = reinterpret_cast<Entry const*>(dlsym(handles[h], "referee_manifest"));
+                auto*   count = reinterpret_cast<unsigned const*>(dlsym(handles[h], "referee_manifest_count"));
+
+                if (table == nullptr || count == nullptr)
+                    continue;               //  hand-written, no manifest: fall through
+
+                for (unsigned e = 0; e < *count; e++)
+                    if (name == table[e].name && symbol != table[e].symbol)
+                        throw std::runtime_error(fmt::format(
+                            "external function '{}' is implemented against a different layout\n"
+                            "  expected  {}\n"
+                            "  found     {}   in {}\n"
+                            "  a type its signature depends on has changed."
+                            " Regenerate the header and rebuild.",
+                            name, symbol, table[e].symbol, objects[h]));
+            }
+        }
+
         if (definedBy.empty())
             throw std::runtime_error(fmt::format(
                 "external function '{}' is declared but '{}' was not found in: {}\n"
@@ -1253,6 +1280,22 @@ void    Referee::emitHeader(std::string const& refPath,
     //  is right, and a reader can rename them when implementing.
     if (!mod.getFuncNames().empty())
         os << "/*\n"
+           << " *  A plugin describes itself. `--stub` defines the table below;\n"
+           << " *  referee reads it to tell a function that was never implemented\n"
+           << " *  from one implemented against an older version of this\n"
+           << " *  specification -- which are opposite problems with opposite\n"
+           << " *  fixes, and otherwise both surface as \"not found\".\n"
+           << " *\n"
+           << " *  It is optional: a hand-written implementation without it still\n"
+           << " *  works, and simply gets the vaguer diagnostic.\n"
+           << " */\n"
+           << "typedef struct referee_entry {\n"
+           << "    const char* name;       /*  as written in the .ref  */\n"
+           << "    const char* symbol;     /*  with its structural hash  */\n"
+           << "} referee_entry;\n\n"
+           << "extern const referee_entry referee_manifest[];\n"
+           << "extern const unsigned      referee_manifest_count;\n\n"
+           << "/*\n"
            << " *  Implement these.\n"
            << " *\n"
            << " *  The symbol carries a structural hash of the signature, so a change to\n"
@@ -1353,6 +1396,15 @@ void    Referee::emitStub(std::string const& refPath,
         os << "/*  The specification declares no external functions.  */\n";
         return;
     }
+
+    //  The self-description referee reads back. Emitted here rather than in
+    //  the header because it has to be *defined* once, in the object.
+    os << "const referee_entry referee_manifest[] = {\n";
+    for (auto const& funcName : mod.getFuncNames())
+        for (auto const& decl : mod.funcsNamed(funcName))
+            os << "    { \"" << funcName << "\", \"" << mod.symbolFor(funcName, decl) << "\" },\n";
+    os << "};\n"
+       << "const unsigned referee_manifest_count = sizeof(referee_manifest) / sizeof(referee_manifest[0]);\n\n";
 
     for (auto const& funcName : mod.getFuncNames())
       for (auto const& decl : mod.funcsNamed(funcName))
