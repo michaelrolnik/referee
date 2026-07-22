@@ -6,13 +6,17 @@
 
 ## Shape: newline-delimited JSON
 
-One JSON document per line. The first line is a header; every line after it is one requirement.
+One JSON document per line: a header, then the trace's signals, then one requirement per line.
 
 ```
-{"kind":"header", ...}
+{"kind":"header",      ...}
+{"kind":"signal",      ...}
+{"kind":"signal",      ...}
 {"kind":"requirement", ...}
 {"kind":"requirement", ...}
 ```
+
+Signals come before requirements because requirements reference them, so a reader that streams has every signal in hand by the time it needs one.
 
 Why not a single document: a run over a long trace is large, requirements are independent, and NDJSON streams — a writer never has to hold the whole thing, and a reader can stop early. It is also one line of pandas (`read_json(lines=True)`), which is what keeps the visualiser cheap.
 
