@@ -454,7 +454,15 @@ std::any Antlr2AST::visitExprQuant(     referee::refereeParser::ExprQuantContext
     auto    domain  = std::any_cast<Expr*>(ctx->expression(0)->accept(this));
     TypeCalc::make(module, domain);
 
-    auto    array   = dynamic_cast<TypeArray*>(domain->type());
+    //  A slice ranges over its underlying array and guards each term with its
+    //  bounds. Expansion is compile-time, so a runtime extent cannot drive it
+    //  -- but it does not need to: expanding over the full extent and testing
+    //  `lo <= i && i < hi` per term is exactly what one writes by hand today,
+    //  and it keeps the guard next to the element it guards.
+    auto*   slice   = dynamic_cast<ExprSlice*>(domain);
+    auto*   base    = slice != nullptr ? slice->arg : domain;
+
+    auto    array   = dynamic_cast<TypeArray*>(base->type());
     if(array == nullptr)
         throw Exception(where, "quantifier needs an array to range over");
     if(array->count == 0)
@@ -476,19 +484,38 @@ std::any Antlr2AST::visitExprQuant(     referee::refereeParser::ExprQuantContext
     if(!indxNm.empty() && indxNm == elemNm)
         throw Exception(where, "quantifier binds '" + elemNm + "' twice");
 
+    //  `all` is vacuously true outside the slice, so its terms are guarded by
+    //  implication. Every other form asks whether elements *exist* or counts
+    //  them, so theirs are guarded by conjunction and an element outside the
+    //  slice simply does not count.
+    auto*   quantCtx = ctx->quant();
+    auto    isAll    = dynamic_cast<referee::refereeParser::QuantAllContext*>(quantCtx) != nullptr;
+
     //  One term per element, each built with the binders in scope.
     std::vector<Expr*>  terms;
     for(unsigned k = 0; k < array->count; k++)
     {
         auto    indx    = static_cast<Expr*>(build<ExprConstInteger>(ctx, k));
-        auto    elem    = static_cast<Expr*>(build<ExprIndx>(ctx, domain, indx));
+        auto    elem    = static_cast<Expr*>(build<ExprIndx>(ctx, base, indx));
 
         if(elemNm != "_")
             m_bindings.push_back({elemNm, elem});
         if(!indxNm.empty() && indxNm != "_")
             m_bindings.push_back({indxNm, indx});
 
-        terms.push_back(std::any_cast<Expr*>(ctx->expression(1)->accept(this)));
+        auto    body    = std::any_cast<Expr*>(ctx->expression(1)->accept(this));
+
+        if(slice != nullptr)
+        {
+            auto    lo      = static_cast<Expr*>(build<ExprLe>(ctx, slice->lo, indx));
+            auto    hi      = static_cast<Expr*>(build<ExprLt>(ctx, indx, slice->hi));
+            auto    guard   = static_cast<Expr*>(build<ExprAnd>(ctx, lo, hi));
+
+            body = isAll ? static_cast<Expr*>(build<ExprImp>(ctx, guard, body))
+                         : static_cast<Expr*>(build<ExprAnd>(ctx, guard, body));
+        }
+
+        terms.push_back(body);
 
         if(!indxNm.empty() && indxNm != "_")
             m_bindings.pop_back();
@@ -503,7 +530,7 @@ std::any Antlr2AST::visitExprQuant(     referee::refereeParser::ExprQuantContext
         return acc;
     };
 
-    auto*   quant   = ctx->quant();
+    auto*   quant   = quantCtx;
 
     if(dynamic_cast<referee::refereeParser::QuantAllContext*>(quant))
     {

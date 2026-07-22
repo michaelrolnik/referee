@@ -404,11 +404,13 @@ The tiers should be built in that order, because each one removes reasons to nee
    `hi - lo` and the pointer is offset to element `lo`. So a call can be given
    exactly the octets that are real, with no length argument to keep in step.
 
-   Not yet built for quantifiers, and it needs a different lowering there:
-   expansion is compile-time, so a runtime extent cannot drive it. The way in
-   is to desugar — `all x in pkt[0:len]: P` becomes expansion over the full
-   extent with each conjunct guarded by `i < len`, which is exactly what
-   people write by hand today.
+   **Also built for quantifiers**, with the different lowering it needs there:
+   expansion is compile-time, so a runtime extent cannot drive it. Instead the
+   quantifier ranges over the underlying array's full extent and guards each
+   term with the slice bounds -- `all` by implication, since it is vacuously
+   true outside the slice, and the existence and counting forms by
+   conjunction, since what lies outside simply does not count. The fixture
+   asserts the desugaring against the hand-written guard.
 
    Bounds are not checked. A slice wider than its array reads past it, as an
    out-of-range index already does; there is no bounds checking to be
