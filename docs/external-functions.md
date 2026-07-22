@@ -23,6 +23,28 @@ func decode  : (byte[], integer) -> integer;
 func in_range: (number, number, number) -> boolean;
 ```
 
+Names may be namespaced with `::`, to any depth:
+
+```text
+func std::math::sqrt : (number) -> number;
+func bits::popcount  : (integer) -> integer;
+```
+
+This is a **lexical convention, not a scoping construct** — `std::math::sqrt`
+is a function whose name contains `::`. There are no resolution rules, no
+`using`, nothing to learn, and nothing that blocks real namespaces later.
+
+`.` could not have been used: it is member access, and the parser resolves the
+head of a dotted name as a signal, so `math.sin` competes with a legitimate
+`data math : struct { sin : … }` and does not parse at all today. `::` appears
+nowhere else in the grammar, and reads usefully differently — `math::sqrt` is
+a name from elsewhere, `pkt.len` is a part of this value.
+
+The C symbol mangles `::` to `__`, since `:` is not an identifier character:
+`std::math::sqrt` binds to `referee_std__math__sqrt`. Three places have to
+agree on that — the code generator, the header emitter and the loader's
+lookup — so it lives in one function they all call.
+
 A `func` is a declaration, like `data` and `conf`, and lives with them at the top of a file — so it can be `import`ed, and a project can keep one `crc.ref` that every specification shares.
 
 Parameter and return types are REF types.
@@ -313,7 +335,36 @@ sum x in xs: x.len
 
 It cannot be a `func`, because it needs the quantifier's compile-time expansion over an extent — the same machinery `all` and `one` already use. It is the single most-missed thing in all three MCTP examples: it is why `message_body_is_bounded` is written out one term per packet slot, and why "bytes from SOM to EOM" needs either a time window or a quadratic freeze. This is the highest-value item in this document and it does not depend on external functions at all.
 
-**Tier 2 — built-in pure functions**, implemented inside referee and lowered directly to IR: `crc8`, `crc16`, `crc32` with named polynomials, `popcount`, `bswap`, `min`, `max`, `abs`. These keep the determinism guarantee (no external binary), work identically in the JIT and in an AOT checker, and cover most of what people would otherwise reach for `func` to do. They need no header generation and no ABI.
+**Tier 2 — built-in pure functions**, namespaced under `std::`, implemented
+inside referee rather than shipped as a `.so`. This is the important choice:
+a user should not need a plugin directory to call `sqrt`. Built in, they need
+no `-L`, no install, no ABI and no header, and they keep the property that a
+`.ref` plus a trace determines the verdict.
+
+```text
+std::math::abs     std::math::min      std::math::max
+std::math::sqrt    std::math::pow      std::math::hypot
+std::math::exp     std::math::log      std::math::log2
+std::math::sin     std::math::cos      std::math::atan2
+std::math::floor   std::math::ceil     std::math::round    std::math::trunc
+
+std::string::len       std::string::at        std::string::compare
+std::string::starts    std::string::ends      std::string::contains
+std::string::find
+```
+
+Two notes on the selection. `floor` / `ceil` / `round` / `trunc` should return
+**integer**, not number: REF has no cast, so number-to-integer conversion is
+currently not expressible at all, and this is the natural place to close that.
+
+And the string set stops where it does for a reason: with no allocator and no
+ownership model, a string function can return a number or a boolean but not a
+*new string*. So there is no `substr`, no `concat`, no `to_upper`. Adding them
+means deciding who owns the result, which is a bigger question than the
+functions are worth.
+
+`crc8` / `crc16` / `crc32` with named polynomials belong here too, and would
+remove the motivating case for external functions entirely.
 
 **Tier 3 — the escape hatch**, which is this document. For the genuinely domain-specific: a vendor's decode, a lookup table, a calculation that already exists.
 
@@ -337,4 +388,10 @@ The tiers should be built in that order, because each one removes reasons to nee
 5. **Should `-L` accept a file as well as a directory?** `-L plugins/libmctp.so` is unambiguous and would suit a build that produces one object. It costs nothing to allow, but two ways to say the same thing is its own tax.
 6. ~~What names a symbol?~~ **Settled: `referee_`.** See *Symbol naming* above.
 7. **May a `func` shadow a built-in?** Once tier 2 exists, `crc8` is both a built-in name and a plausible `func` name. Silently preferring one is a trap either way. Reserving the built-in names is the simpler rule, and `func` can always pick another.
-8. **Does `referee header` need to emit the reverse** — a stub `.c` with empty bodies — so the first build is a copy-paste rather than transcription? Cheap, and it is where the signature mismatches would otherwise happen.
+8. ~~Does `referee header` need to emit the reverse — a stub `.c`?~~ **Built.**
+   `referee header spec.ref --stub --header-name spec.h -o impl.c` writes the
+   skeleton: every declared function with its exact signature, parameters
+   voided so `-Wextra` stays quiet, and a zero return of the right kind. The
+   generated pair compiles together untouched at `-Wall -Wextra -Werror`. The
+   prototype spelling lives in one function the header and the stub both call,
+   so they cannot drift.

@@ -321,6 +321,36 @@ G(k.SOM => Sum[0:5000](true, len) <= 4096); // and at most 4096 bytes
 
 Accumulation runs forward from the current state, so the window is what bounds a per-message requirement — the condition chooses states, it does not delimit them. Without a window the walk reaches the end of the trace. `Cnt(c)` is `Sum(c, 1)`.
 
+### External functions
+
+Some requirements need arithmetic the language cannot express and should not grow syntax for. The motivating one is concrete: MCTP over SMBus ends every packet with a PEC, a CRC-8 over the transaction. REF has no fold over an array and no function abstraction, so the only spelling in the language itself is the fully unrolled polynomial — eight shift/xor steps per octet, across every octet.
+
+A `func` declares a native function; the implementation is a `.so` referee loads at run time.
+
+```text
+func crc8 : (byte[], integer) -> byte;
+
+data pec_ok = crc8(pkt, len - 1) == pkt[len - 1];
+
+globally, it is always the case that pec_ok holds;
+```
+
+```bash
+referee header spec.ref -o spec.h                              # types + prototypes
+referee header spec.ref --stub --header-name spec.h -o impl.c  # a skeleton to fill in
+cc -shared -fPIC -I . impl.c -o plugins/libspec.so
+referee execute spec.ref trace.csv -L plugins
+```
+
+The generated header is the load-bearing piece: C cannot diagnose a signature mismatch — it is undefined behaviour, not an error — so referee emits the header and, with `--stub`, the implementation skeleton too, from the same table it uses to compile the call. The specification alone is enough; no trace is needed.
+
+- **Symbols carry a `referee_` prefix.** `func read` binds to `referee_read` and so cannot reach `read(2)`, and referee inspects only `referee_*`, so one plugin's private helpers cannot collide with another's.
+- **Names may be namespaced** with `::` to any depth — `func std::math::sqrt`, mangled to `referee_std__math__sqrt`. It is a lexical convention, not a scoping construct. `.` could not be used: it is member access.
+- **Arrays cross as a `{count, data}` descriptor**, structs by `const` pointer, enums and other primitives by value. `count` is the array's *extent*, not the meaningful length, so a caller with a shorter payload passes its own length — and the callee can check it.
+- **`-L` takes a `.so` or a directory of them**, repeatable. Loading is deterministic, a duplicate entry point is an error rather than a race, resolution never falls back to the host process, and a specification declaring no `func` never scans the path at all.
+
+Everything resolves before the first trace row is read. See `docs/external-functions.md` for the design, and `examples/extfunc/` for a worked example.
+
 A **freeze variable** `name@(... expression ...)` binds the current state to `name`, so subexpressions can reference data at that frozen point — e.g. `x@(F(x.abc.a == 3))` means "there is a future state whose `abc.a` equals the value `abc.a` had at the freeze point". A special `__time__` identifier refers to the current timestamp.
 
 ```text

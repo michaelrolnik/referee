@@ -16,7 +16,7 @@ G(a);
 F[0:1500](a);
 Us(a, lock.ON);
 Ss[100:200](a, a);
-I(pos.x);
+Itg(pos.x >= 0.0, pos.x);
 t@(F(a && (__time__ - t.__time__ <= 5)));
 globally, it is always the case that a holds;
 before lock.ON, a eventually holds within 100 milliseconds;
@@ -36,3 +36,5 @@ all      _, i in v: w[i] > v[i];
 G(a || !a);
 @"late-alarm-check"
 G(b || !b);
+
+func std::math::sqrt : (number) -> number;

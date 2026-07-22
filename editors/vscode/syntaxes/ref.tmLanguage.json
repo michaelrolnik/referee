@@ -4,6 +4,12 @@
   "scopeName": "source.ref",
   "patterns": [
     {
+      "include": "#declfunc"
+    },
+    {
+      "include": "#funcname"
+    },
+    {
       "include": "#comments"
     },
     {
@@ -319,6 +325,33 @@
           "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b"
         }
       ]
+    },
+    "funcname": {
+      "comment": "A func name may be namespaced with ::, to any depth.",
+      "match": "\\b([a-zA-Z_][a-zA-Z0-9_]*)(?:(::)([a-zA-Z_][a-zA-Z0-9_]*))+\\b",
+      "captures": {
+        "1": {
+          "name": "entity.name.namespace.ref"
+        },
+        "2": {
+          "name": "punctuation.separator.namespace.ref"
+        },
+        "3": {
+          "name": "entity.name.function.ref"
+        }
+      }
+    },
+    "declfunc": {
+      "comment": "func <name>, where the name may be namespaced with ::",
+      "match": "\\b(func)\\s+([A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*)",
+      "captures": {
+        "1": {
+          "name": "keyword.other.declaration.ref"
+        },
+        "2": {
+          "name": "entity.name.function.ref"
+        }
+      }
     }
   }
 }
