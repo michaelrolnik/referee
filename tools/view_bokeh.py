@@ -15,7 +15,7 @@ import argparse, json, sys
 
 import pandas as pd
 from bokeh.layouts import column
-from bokeh.models import ColumnDataSource, HoverTool, Range1d
+from bokeh.models import ColumnDataSource, CustomJS, HoverTool, Range1d, Select
 from bokeh.plotting import figure, output_file, save
 
 TRUE, FALSE, ABSENT, OTHER = "#33aa77", "#f2f2f2", "#ffffff", "#dbe8f5"
@@ -135,8 +135,30 @@ def render(lines, path):
     #  network, so it can be attached to a CI artifact, mailed, or read on a
     #  machine that has never heard of bokeh. A viewer whose output only works
     #  online is a viewer whose output cannot be filed against a bug.
+    #  One requirement at a time. Past about three the page is a wall, and
+    #  scrolling is the wrong way to find one.
+    #
+    #  Each requirement panel already holds only the rows that requirement
+    #  reads -- the format answers that, since rows carry `ref` into the signal
+    #  lines -- so hiding the others hides the irrelevant signals with them.
+    #  The all-signals overview shows only in "all" mode, where it is context
+    #  rather than noise competing with the requirement in view.
+    names   = [r.get("name") or r["where"] for r in reqs]
+    reqfrom = 1 if signals else 0
+
+    pick = Select(title="show", value="all", options=["all"] + names, width=440)
+    pick.js_on_change("value", CustomJS(
+        args=dict(panels=panels, reqfrom=reqfrom, names=names),
+        code="""
+        const want = this.value;
+        for (let i = 0; i < panels.length; i++) {
+            if (i < reqfrom) { panels[i].visible = (want === "all"); continue; }
+            panels[i].visible = (want === "all") || (names[i - reqfrom] === want);
+        }
+        """))
+
     output_file(path, title="referee run", mode="inline")
-    save(column(*panels))
+    save(column(pick, *panels))
 
 
 def main():
