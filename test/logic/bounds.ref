@@ -1,0 +1,21 @@
+# An index outside the length the data turned out to carry.
+#
+# `v` has three elements at the first state and one at the second. The
+# unguarded read below is outside it, and used to answer with whatever byte sat
+# next to the array -- which is how an assertion in arrays_pinned.ref came to
+# pass: it read one element past a slice and landed on exactly the value it was
+# comparing against.
+
+data v : integer[];
+
+@unguarded
+G(v[1] > 0);
+
+@guarded_by_and
+G(v.count > 1 && v[1] > 0 || v.count <= 1);
+@guarded_by_imp
+G(v.count > 1 => v[1] > 0);
+@guarded_by_ternary
+G(v.count > 1 ? v[1] > 0 : true);
+@guarded_by_quantifier
+G(all x, i in v: x == v[i]);

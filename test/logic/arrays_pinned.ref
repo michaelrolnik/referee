@@ -48,6 +48,116 @@ all v, i in pkt: i >= rec.len => true;
 all v in rec.raw: v >= 0;
 all row, i in grid: row[0] == i * 2 + 1;
 
+# ── .count is a runtime value on a slice ─────────────────────────────────────
+# The first place `.count` is a load rather than a folded constant, and the
+# shape every unbounded array will use once they carry their own length. A
+# sized array's count stays a constant beside it.
+G(pkt.count == 4);
+G(pkt[0:rec.len].count == rec.len);
+G(pkt[1:3].count == 2);
+G(pkt[0:0].count == 0);
+
+# A slice of a slice. The inner one bounds the outer -- so an outer slice
+# cannot reach past what it was taken from, whatever indices it names -- and
+# the offsets compose rather than restarting at the array.
+G(pkt[0:rec.len][0:2].count == 2);
+G(pkt[0:2][0:9].count == 2);
+G(pkt[1:4][0:9].count == 3);
+G(pkt[1:4][1:3][0:9].count == 2);
+
+# Indexing a slice. The index is an offset from the slice's own first element,
+# not from the array it was taken from -- so these compose with nesting and
+# with a runtime index. Casting a slice's {count, pointer} to an array type is
+# what happened before, and it aborted inside LLVM rather than answering
+# wrongly, which was the fortunate version.
+G(pkt[1:4][0] == pkt[1]);
+G(pkt[2:4][1] == pkt[3]);
+# Guarded, because `rec.len` is 2 at the second state and this asked for the
+# third element. It passed before bounds checking: the read went one past the
+# slice and landed on `pkt[2]`, which is exactly what it was comparing against.
+G(rec.len > 2 => pkt[0:rec.len][2] == pkt[2]);
+G(pkt[1:4][1:3][0] == pkt[2]);
+G(pkt[0:rec.len][rec.len - 1] == pkt[rec.len - 1]);
+G(all v, i in pkt[0:rec.len]: v == pkt[i]);
+
+# ── A slice bound to a name is still a slice ─────────────────────────────────
+# Every rule above was written against the *syntax* -- "is this expression an
+# ExprSlice?" -- and a computed signal is where syntax and meaning part
+# company. `s` below holds a descriptor and is spelled like an ordinary
+# signal, and `s.count` answered 0, the declared extent of an unsized array,
+# without complaining. Indexing it crashed, which was the honest half.
+data head = pkt[0:2];
+data tail = pkt[1:4];
+data span = pkt[0:rec.len];
+
+G(head.count == 2);
+G(tail.count == 3);
+G(span.count == rec.len);                # a count that is not a constant at all
+
+G(head[0] == pkt[0]);
+G(tail[0] == pkt[1]);
+G(tail[2] == pkt[3]);
+G(span[rec.len - 1] == pkt[rec.len - 1]);
+
+G(tail[0:2].count == 2);                # and it slices again like any other
+G(tail[0:2][1] == pkt[2]);
+
+# ── A quantifier's index is an index into what it quantifies ─────────────────
+# `v` was the slice's element and `i` was the underlying array's index, so the
+# two named positions in different arrays. The tautology below -- the element
+# at position i is the element at position i -- was false, which is how it was
+# noticed. Every slice quantifier in this tree starts at 0, where the two
+# readings agree, which is why nothing caught it.
+G(all v, i in pkt[1:4]: v == pkt[1:4][i]);
+G(all v, i in pkt[1:4]: v == pkt[i + 1]);       # and the shift is exactly lo
+G(some v, i in pkt[1:4]: i == 0);               # the first element is at 0
+G(none v, i in pkt[1:4]: i >= 3);               # and there are three of them
+G(all v, i in pkt: v == pkt[i]);                # unsliced, the two coincide
+
+# ── Quantifying an array that carries its own length ─────────────────────────
+# There is no extent to expand over, so the body is built once with a binder
+# standing in for the index and the whole thing lowers to a loop. A written
+# extent still unrolls, so this is reachable only where expansion was not.
+G(all v in head: v > 0);
+G(some v, i in head: i == 0);
+G(none v in head: v == 99);
+G(one v, i in head: i == 1);
+G(at least 2 v in head: v > 0);
+G(at most 1 v, i in head: i == 0);
+
+# The index is an index into the domain here too, which is the property that
+# had to be settled before this could be written at all.
+G(all v, i in head: v == head[i]);
+
+# The count is read per state, and so is the pointer. `span` is three elements
+# at the first state and two at the second, holding different values; a stale
+# descriptor would satisfy neither of these.
+G(all v, i in span: v == pkt[i]);
+G(all v, i in span: i < rec.len);
+G(some v, i in span: i == rec.len - 1);
+G(rec.len == 3 => (some v in span: v == 9));    # 9 is in the span only at t=0
+G(rec.len == 2 => (none v in span: v == 9));    # and out of it at t=1000
+
+# An empty domain: `all` holds over nothing and `some` does not.
+data none0 = pkt[2:2];
+G(all v in none0: false);
+G(none v in none0: true);
+G(!(some v in none0: true));
+
+# Nested, which is a loop inside a loop and the reason the back edge leaves
+# from wherever the body ended rather than from where it started.
+G(all v in head: all w in tail: v + w > 0);
+G(pkt[0:rec.len].count != pkt.count);
+G(pkt[0:rec.len].count + 1 == rec.len + 1);
+
+# Clamped to the array, and floored at zero. An inverted slice is empty and a
+# slice wider than its array is the array -- neither describes more elements
+# than exist, which matters because this count is what the descriptor carries
+# across the external-function boundary.
+G(pkt[3:1].count == 0);
+G(pkt[0:9].count == 4);
+G(pkt[0:0].count == 0);
+
 # ── Slices carry a runtime length over a static extent ───────────────────────
 # This is the closest thing to the new kind that exists today, and it is the
 # shape the descriptor should agree with.

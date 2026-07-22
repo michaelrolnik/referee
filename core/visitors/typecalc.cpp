@@ -56,6 +56,8 @@ struct TypeCalcImpl
              , ExprXor
              , ExprCall
              , ExprSlice
+             , ExprCount
+             , ExprBinder
              , ExprBand
              , ExprBor
              , ExprShl
@@ -153,6 +155,8 @@ struct TypeCalcImpl
     void    visit(ExprXor*              expr) override;
     void    visit(ExprCall*             expr) override;
     void    visit(ExprSlice*            expr) override;
+    void    visit(ExprCount*            expr) override;
+    void    visit(ExprBinder*           expr) override;
     void    visit(ExprBand*          expr) override;
     void    visit(ExprBor*           expr) override;
     void    visit(ExprShl*           expr) override;
@@ -446,6 +450,17 @@ void    TypeCalcImpl::visit(ExprIndx*               expr)
 //  LCOV_EXCL_STOP
     }
 
+    //  An extent written down and an index written down are both known here,
+    //  so an index outside it is a mistake the compiler can name rather than a
+    //  read of whatever sits next to the array. `T[]` carries its length with
+    //  the data, so its check has to wait until there is data.
+    if(base->count != 0)
+        if(auto* konst = dynamic_cast<ExprConstInteger*>(expr->rhs))
+            if(konst->value < 0 || konst->value >= static_cast<std::int64_t>(base->count))
+                throw Exception(expr->where(),
+                    "index " + std::to_string(konst->value) + " is outside the array, "
+                    "which has " + std::to_string(base->count) + " element(s)");
+
     m_type  = base->type;
 }
 
@@ -639,6 +654,26 @@ void    TypeCalcImpl::visit(ExprSlice*              expr)
         throw Exception(expr->hi->where(), "bad type: a slice bound must be an integer");
 
     m_type = Factory<TypeArray>::create(array->type, 0u);
+}
+
+//  A binder is a position in an array, so an integer -- always, and without
+//  looking at what introduced it.
+void    TypeCalcImpl::visit(ExprBinder*             expr)
+{
+    m_type = typeInteger;
+}
+
+void    TypeCalcImpl::visit(ExprCount*              expr)
+{
+    auto*   array = dynamic_cast<TypeArray*>(make(expr->arg));
+
+    if(array == nullptr)
+        throw Exception(expr->arg->where(), "quantifier needs an array to range over");
+
+    if(make(expr->body) != typeBoolean)
+        throw Exception(expr->body->where(), "bad type: a quantifier's body must be a boolean");
+
+    m_type = typeInteger;
 }
 
 void    TypeCalcImpl::visit(ExprCall*               expr)

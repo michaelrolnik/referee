@@ -23,6 +23,9 @@
  */
 
 #include "loader.hpp"
+
+#include <cstring>
+#include <deque>
 #include "strings.hpp"
 
 #include <stdexcept>
@@ -39,18 +42,166 @@ struct LoaderImpl
 {
     using GetCell = Loader::GetCell;
 
+    //  An array with no written extent whose elements are still to be placed.
+    //  The descriptor is sixteen bytes in the middle of the fixed layout; the
+    //  elements go after everything else, so writing them where they are found
+    //  would push every following member sideways.
+    struct Pending
+    {
+        std::size_t     slot;       //  where the descriptor sits in m_buf
+        std::string     prefix;     //  column prefix of the array itself
+        TypeArray*      type;
+    };
+
     std::vector<uint8_t>& m_buf;
     GetCell const&        m_getCell;
+    Loader::Caps const&   m_caps;
     std::string           m_prefix;
+    std::deque<Pending>   m_pending;
 
-    LoaderImpl(std::vector<uint8_t>& buf, GetCell const& getCell)
-        : m_buf(buf), m_getCell(getCell)
+    LoaderImpl(std::vector<uint8_t>& buf, GetCell const& getCell, Loader::Caps const& caps)
+        : m_buf(buf), m_getCell(getCell), m_caps(caps)
     {}
 
     void run(std::string const& prefix, Type* type)
     {
         m_prefix = prefix;
         type->accept(*this);
+    }
+
+    //  The column path an array's capacity is recorded under: the prefix with
+    //  its subscripts elided, plus which of that path's dimensions this is.
+    static std::pair<std::string, unsigned> pathOf(std::string const& prefix)
+    {
+        std::string     path;
+        bool            skip = false;
+
+        for(char c: prefix)
+        {
+            if      (c == '[')  skip = true;
+            else if (c == ']')  skip = false;
+            else if (!skip)     path += c;
+        }
+
+        //  `g[0]` is dimension 1 of path `g`; `msg[0].raw` is dimension 0 of
+        //  `msg.raw`, since the subscripts that count are the ones on this
+        //  name rather than on something it is reached through.
+        unsigned        dim  = 0;
+        auto            dot  = prefix.rfind('.');
+
+        for(std::size_t i = (dot == std::string::npos ? 0 : dot + 1); i < prefix.size(); i++)
+            if(prefix[i] == '[')
+                dim++;
+
+        return {path, dim};
+    }
+
+    //  How many elements this array's columns can hold. Absent from the table
+    //  means the trace carries no columns for it, which is an empty array --
+    //  not an error, since a specification may mention a signal a particular
+    //  capture never recorded.
+    unsigned capacity(std::string const& prefix) const
+    {
+        auto [path, dim] = pathOf(prefix);
+        auto it          = m_caps.find(path);
+
+        if(it == m_caps.end() || dim >= it->second.size())
+            return 0;
+
+        return it->second[dim];
+    }
+
+    //  Whether a cell holds an element. `-` says it does not, and so does an
+    //  empty cell.
+    bool absent(std::string const& col) const
+    {
+        auto    text = m_getCell(col);
+
+        return  text.empty() || text == "-";
+    }
+
+    //  Whether an element is there at all, which is not a question about one
+    //  cell once the elements are structs or arrays: `g[0]` is never a column,
+    //  so asking for it directly said "absent" and every array of anything
+    //  compound loaded as empty. An element is present if any leaf beneath it
+    //  is.
+    bool present(std::string const& prefix, Type* type)
+    {
+        if(auto* st = dynamic_cast<TypeStruct*>(type))
+        {
+            for(auto const& m: st->members)
+                if(present(prefix + "." + m.name, m.data))
+                    return true;
+
+            return false;
+        }
+
+        if(auto* ar = dynamic_cast<TypeArray*>(type))
+        {
+            auto    n = ar->count != 0 ? ar->count : capacity(prefix);
+
+            for(unsigned k = 0; k < n; k++)
+                if(present(prefix + "[" + std::to_string(k) + "]", ar->type))
+                    return true;
+
+            return false;
+        }
+
+        return !absent(prefix);
+    }
+
+    //  Place the elements of every deferred array, after the fixed layout is
+    //  complete. Elements may themselves defer -- an array of structs holding
+    //  arrays -- so this drains a queue rather than looping over a snapshot.
+    void settle()
+    {
+        while(!m_pending.empty())
+        {
+            auto    job = m_pending.front();
+            m_pending.pop_front();
+
+            auto    cap = capacity(job.prefix);
+            auto    n   = 0u;
+            auto    gap = false;
+
+            for(unsigned k = 0; k < cap; k++)
+            {
+                //  An array has no holes, so a present element after an absent
+                //  one is not a shorter array with a gap in it -- it is a file
+                //  that means something the type cannot express, and guessing
+                //  which end to believe is how a count and its cells come to
+                //  disagree.
+                if(!present(job.prefix + "[" + std::to_string(k) + "]", job.type->type))
+                {
+                    gap = true;
+                    continue;
+                }
+
+                if(gap)
+                    throw std::runtime_error(
+                        "array '" + job.prefix + "' has a gap: element " + std::to_string(k)
+                        + " is present but an earlier one is not");
+
+                n = k + 1;
+            }
+
+            alignBuffer(m_buf, job.type->type->alignment());
+
+            auto    data = m_buf.size();
+            for(unsigned k = 0; k < n; k++)
+                run(job.prefix + "[" + std::to_string(k) + "]", job.type->type);
+
+            //  The offset is relative to the descriptor rather than to the
+            //  start of the blob, so it survives the blob being placed
+            //  anywhere -- which it is, twice: appended into the file's blob
+            //  section, then mapped at whatever address the reader has.
+            std::int64_t    count = n;
+            std::int64_t    delta = static_cast<std::int64_t>(data)
+                                  - static_cast<std::int64_t>(job.slot);
+
+            std::memcpy(m_buf.data() + job.slot,     &count, sizeof(count));
+            std::memcpy(m_buf.data() + job.slot + 8, &delta, sizeof(delta));
+        }
     }
 
     //  Written like an integer, stored in one byte. Out-of-range is rejected
@@ -130,9 +281,12 @@ struct LoaderImpl
     {
         auto prefix = m_prefix;
         if (type->count == 0) {
-            throw std::runtime_error(
-                "dynamic arrays (count=0) are not supported in CSV/YAML loader: column '" +
-                prefix + "'");
+            //  `{size_t count; T const* data;}`, with the pointer written as a
+            //  self-relative offset until the reader knows where the blob
+            //  landed. Reserved here and filled by settle().
+            alignBuffer(m_buf, 8);
+            m_pending.push_back({m_buf.size(), prefix, type});
+            m_buf.insert(m_buf.end(), 16, 0);
         } else {
             for (unsigned i = 0; i < type->count; i++)
                 run(prefix + "[" + std::to_string(i) + "]", type->type);
@@ -143,7 +297,11 @@ struct LoaderImpl
 void Loader::load(std::vector<uint8_t>& buf,
                       std::string const&    prefix,
                       Type*                 type,
-                      GetCell const&        getCell)
+                      GetCell const&        getCell,
+                      Caps const&           caps)
 {
-    LoaderImpl(buf, getCell).run(prefix, type);
+    LoaderImpl  impl(buf, getCell, caps);
+
+    impl.run(prefix, type);
+    impl.settle();
 }

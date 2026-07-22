@@ -78,6 +78,8 @@ struct RewriteImpl
              , ExprXor
              , ExprCall
              , ExprSlice
+             , ExprCount
+             , ExprBinder
              , ExprBand
              , ExprBor
              , ExprShl
@@ -160,6 +162,8 @@ public:
     void    visit(ExprXor*          expr) override;
     void    visit(ExprCall*         expr) override;
     void    visit(ExprSlice*        expr) override;
+    void    visit(ExprCount*        expr) override;
+    void    visit(ExprBinder*       expr) override;
     void    visit(ExprBand*      expr) override;
     void    visit(ExprBor*       expr) override;
     void    visit(ExprShl*       expr) override;
@@ -624,6 +628,22 @@ void    RewriteImpl::visit( ExprSlice*          expr)
 {
     m_expr = Factory<ExprSlice>::create(expr->where(),
                 make(expr->arg), make(expr->lo), make(expr->hi));
+}
+
+//  The binder is rebuilt unchanged: it is interned by id, so the copy is the
+//  same node, and the body's references to it keep pointing at the binder its
+//  own `ExprCount` introduces.
+void    RewriteImpl::visit( ExprBinder*         expr)
+{
+    m_expr = Factory<ExprBinder>::create(expr->where(), expr->id, expr->name);
+}
+
+void    RewriteImpl::visit( ExprCount*          expr)
+{
+    m_expr = Factory<ExprCount>::create(expr->where(),
+                make(expr->arg),
+                dynamic_cast<ExprBinder*>(make(expr->binder)),
+                make(expr->body));
 }
 
 void    RewriteImpl::visit( ExprCall*           expr)

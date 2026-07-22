@@ -218,7 +218,7 @@ public:
     }
 
     size_t size() override {
-        if (count == 0) return 16; // {i16 length, padding, ptr}
+        if (count == 0) return 16; // {size_t count; T const* data;}
         size_t ea = type->alignment(), es = type->size();
         return ((es + ea - 1) / ea * ea) * count;
     }
@@ -533,6 +533,67 @@ public:
     Expr* const     arg;
     Expr* const     lo;
     Expr* const     hi;
+};
+
+//  The position a quantifier's loop has reached.
+//
+//  A quantifier over an array with a written extent is expanded when the AST
+//  is built: one term per element, each with the binder bound to a constant.
+//  Over an array that carries its own length there is nothing to expand -- the
+//  count arrives with the data -- so the body is built *once* with this node
+//  standing in for the index, and code generation supplies a value per
+//  iteration.
+//
+//  It is a leaf with no meaning outside the `ExprCount` that introduces it,
+//  which is why it carries an id: two quantifiers in one expression are two
+//  different `i`s, and interning by name alone would make them one.
+class ExprBinder final
+    : public Visitable<ExprNullary, ExprBinder>
+{
+public:
+    ExprBinder(unsigned id, std::string name)
+        : id(id)
+        , name(name)
+    {
+    }
+
+public:
+    unsigned const      id;
+    std::string const   name;
+};
+
+//  How many of an array's elements satisfy a body -- `Cnt` over elements
+//  rather than over states.
+//
+//  Every quantifier form is a comparison on this: `all` is "as many as there
+//  are", `none` is zero, `one` is one, `at least k` is `>= k`. That is the
+//  same reduction the counting forms already used when they expanded to a sum
+//  of indicators, except it is one node rather than n, which is the only form
+//  available when n is not known until the trace is read.
+//
+//  It does cost `all` and `some` their short circuit: the loop always runs to
+//  the end. Expansion never short-circuited either -- it built every term and
+//  let the folded `&&` do it -- so nothing is lost that was there before.
+class ExprCount final
+    : public Visitable<Expr, ExprCount>
+{
+public:
+    ExprCount(Expr* arg, ExprBinder* binder, Expr* body)
+        : arg(arg)
+        , binder(binder)
+        , body(body)
+    {
+    }
+
+    bool    is_temporal() override
+    {
+        return arg->is_temporal() || body->is_temporal();
+    }
+
+public:
+    Expr* const         arg;
+    ExprBinder* const   binder;
+    Expr* const         body;
 };
 
 //  A call to an external function. Variadic in a way no other node is, so it

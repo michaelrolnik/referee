@@ -263,6 +263,10 @@ private:
     unsigned                    m_declDim = 0;  //  which of its dimensions
     bool                        m_inFuncSig = false;    //  inside a `func` signature
     bool                        m_allowUnsized = false; //  extents may stay unresolved
+    //  Distinguishes one quantifier's binder from another's. Two `i`s in one
+    //  expression are two different positions, and the factory interns by
+    //  arguments -- so without this they would be one node.
+    unsigned                    m_binderId = 0;
     std::string                 m_rootDir;      //  directory of the root .ref
     std::string                 m_currentDir;   //  directory of the file being visited
     char const*                 m_currentFile   = nullptr;  //  label, relative to root

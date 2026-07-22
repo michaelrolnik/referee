@@ -116,6 +116,19 @@ G(none v, i in pkt[2:2]: true);
 # octets that are real, with no second parameter to keep in step.
 G(__time__ == 0 => crc8(pkt[0:3], 3) == 0xC1);
 
+# The descriptor's count and `.count` come from one helper, so they cannot
+# disagree -- and both are clamped, so a callee is never told there are more
+# elements than the row holds.
+G(capacity(pkt[0:len]) == pkt[0:len].count);
+G(capacity(pkt[0:99]) == pkt.count);
+G(capacity(pkt[3:1]) == 0);
+
+# A nested slice reaches C with the composed offset and the inner bound, not
+# the array's.
+G(first(pkt[1:4]) == pkt[1]);
+G(first(pkt[1:4][1:3]) == pkt[2]);
+G(capacity(pkt[1:4][0:9]) == 3);
+
 # ── Composites as arguments ──────────────────────────────────────────────────
 # Both of these compiled before they worked. A struct-valued expression is
 # never loaded, so referee passed the pointer to a function declared taking the

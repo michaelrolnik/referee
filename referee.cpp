@@ -665,6 +665,49 @@ bool    runAllSpecs(llvm::orc::LLJIT& jit,
                     std::ostream* explain = nullptr)
 {
     using SpecFn = bool(*)(void*, void*, void*);
+
+    //  An index outside its array cannot be answered, and it cannot be turned
+    //  into a verdict inside the generated code either: a requirement returns
+    //  one boolean and this decides what it means, so returning `false` from
+    //  inside a negated requirement would read as a pass. The generated code
+    //  raises a flag and answers the read from a zeroed buffer instead; the
+    //  requirement runs to completion and fails here, named by the requirement
+    //  rather than by a position -- identical index expressions intern to one
+    //  AST node, so the node's position names an arbitrary occurrence of it.
+    //
+    //  The globals are absent from a module that indexes nothing, so every
+    //  lookup is optional.
+    auto    slot = [&](char const* n) -> void*
+    {
+        auto    sym = jit.lookup(n);
+        if (!sym) { llvm::consumeError(sym.takeError()); return nullptr; }
+        return sym->toPtr<void*>();
+    };
+
+    auto*   oobFlag = static_cast<std::uint8_t*>(slot("__oob_flag__"));
+    auto*   oobIndx = static_cast<std::int64_t*>(slot("__oob_indx__"));
+    auto*   oobCnt  = static_cast<std::int64_t*>(slot("__oob_cnt__"));
+
+    auto    faulted = [&](std::string& why)
+    {
+        if (oobFlag == nullptr || *oobFlag == 0)
+            return false;
+
+        why = fmt::format("index {} is outside an array of {}",
+                          oobIndx ? *oobIndx : 0,
+                          oobCnt  ? *oobCnt  : 0);
+        *oobFlag = 0;
+        return true;
+    };
+
+    //  __prepare__ has already run, so a computed signal that indexed out of
+    //  range is reported before any requirement is blamed for it.
+    {
+        std::string why;
+        if (faulted(why))
+            os << std::left << std::setw(40) << "<computed signal>" << " FAIL  " << why << "\n";
+    }
+
     bool allPass = true;
     for (auto const& name : funcNames)
     {
@@ -677,12 +720,18 @@ bool    runAllSpecs(llvm::orc::LLJIT& jit,
             continue;
         }
 
-        auto fn     = symOrErr->toPtr<SpecFn>();
-        bool result = fn(frst, last, conf);
+        auto        fn     = symOrErr->toPtr<SpecFn>();
+        bool        result = fn(frst, last, conf);
+        std::string why;
+
+        if (faulted(why))
+            result = false;
+
         allPass    &= result;
 
         os << std::left << std::setw(40) << name
-           << (result ? " PASS" : " FAIL") << "\n";
+           << (result ? " PASS" : " FAIL")
+           << (why.empty() ? "" : "  " + why) << "\n";
 
         //  The same verdict, as a record. No rows yet -- those need
         //  per-subexpression columns -- and no scope, which must not be
@@ -1451,10 +1500,11 @@ void    Referee::emitHeader(std::string const& refPath,
     if (!slices.empty())
     {
         os << "/*\n"
-           << " *  Arrays cross the boundary as a descriptor. `count` is the extent --\n"
-           << " *  the capacity -- not the meaningful length, so a caller with a shorter\n"
-           << " *  payload passes its own length as a separate argument and the callee\n"
-           << " *  can check it against `count`.\n"
+           << " *  Arrays cross the boundary as a descriptor. `count` is the number of\n"
+           << " *  elements there are -- the length, not a capacity -- so a callee reads\n"
+           << " *  exactly `count` of them and needs no separate length argument. An\n"
+           << " *  array written with an extent passes that extent; one written `T[]`\n"
+           << " *  passes however many the record held.\n"
            << " */\n";
 
         for (auto const& entry : slices)

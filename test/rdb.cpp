@@ -313,14 +313,61 @@ TEST(Rdb, SingleStateHasThreeRows)
 }
 
 // Phase 9 — Loader throws for dynamic (count=0) array fields.
-TEST(Rdb, LoaderThrowsOnDynamicArray)
+// An array with no written extent loads as `{count, offset}` with the elements
+// placed after the fixed layout. The offset is relative to the descriptor, so
+// it survives the blob being appended into a file and mapped somewhere else.
+//
+// This used to assert that the loader *threw* for such an array. Producing one
+// is the whole of the ragged-array feature, so the test that pinned the
+// refusal becomes the test that pins the result.
+TEST(Rdb, LoaderWritesAnArrayDescriptor)
 {
-    TypeArray dynArr(nullptr, 0);
+    TypeArray   dynArr(Factory<TypeByte>::create(), 0);
 
-    std::vector<std::uint8_t> buf;
+    //  Four columns in the header, two cells that hold elements. `-` marks a
+    //  cell that is not one; so does an empty cell.
+    std::map<std::string, std::string>  cells{
+        {"field[0]", "7"}, {"field[1]", "8"}, {"field[2]", "-"}, {"field[3]", ""}};
+
+    std::vector<std::uint8_t>   buf;
+    Loader::load(buf, "field", &dynArr,
+                 [&](std::string const& col) {
+                     auto it = cells.find(col);
+                     return it == cells.end() ? std::string() : it->second;
+                 },
+                 {{"field", {4}}});
+
+    ASSERT_GE(buf.size(), 18u);
+
+    std::int64_t    count = 0;
+    std::int64_t    delta = 0;
+    std::memcpy(&count, buf.data(),     sizeof(count));
+    std::memcpy(&delta, buf.data() + 8, sizeof(delta));
+
+    EXPECT_EQ(count, 2);                    //  two cells held elements
+    EXPECT_EQ(delta, 16);                   //  which start right after it here
+    EXPECT_EQ(buf[delta + 0], 7);
+    EXPECT_EQ(buf[delta + 1], 8);
+}
+
+// An array has no holes, so a present cell after an absent one is a file that
+// means something the type cannot express. Guessing which end to believe is
+// how a count and its cells come to disagree.
+TEST(Rdb, LoaderRejectsAGapInAnArray)
+{
+    TypeArray   dynArr(Factory<TypeByte>::create(), 0);
+
+    std::map<std::string, std::string>  cells{
+        {"field[0]", "1"}, {"field[1]", "-"}, {"field[2]", "3"}};
+
+    std::vector<std::uint8_t>   buf;
     EXPECT_THROW(
         Loader::load(buf, "field", &dynArr,
-                     [](std::string const&) { return ""; }),
+                     [&](std::string const& col) {
+                         auto it = cells.find(col);
+                         return it == cells.end() ? std::string() : it->second;
+                     },
+                     {{"field", {3}}}),
         std::runtime_error);
 }
 
@@ -920,26 +967,100 @@ TEST(Rdb, LoadSizedArrays)
     std::remove(rdb.c_str());
 }
 
-// Compiling an unsized specification with nothing to take the extent from is
-// an error that says so, rather than a crash or a silent zero.
-TEST(Rdb, UnsizedArrayNeedsATrace)
+// An index outside a *written* extent is known at compile time, so it is a
+// diagnostic rather than a read of whatever sits next to the array.
+TEST(Rdb, ConstantIndexOutsideAWrittenExtent)
 {
-    std::istringstream  src("data v : integer[];\nv.count > 0;\n");
+    std::istringstream  src("data v : integer[3];\nv[7] == 0;\n");
     try
     {
-        Referee::parseSchema(src, "<unsized>");
-        ADD_FAILURE() << "expected an unsized array with no trace to be rejected";
+        Referee::parseSchema(src, "<oob>");
+        ADD_FAILURE() << "expected index 7 into integer[3] to be rejected";
     }
     catch (std::exception const& e)
     {
-        EXPECT_NE(std::string(e.what()).find("could not be taken from the trace"),
-                  std::string::npos) << e.what();
+        EXPECT_NE(std::string(e.what()).find("outside the array"), std::string::npos)
+            << e.what();
     }
 }
 
-// A corpus is compiled once, against the extents of its first trace, so traces
-// that disagree are reported rather than read into the wrong shape.
-TEST(Rdb, CorpusMustAgreeOnExtents)
+// An index outside a length that only the data knows is caught while it runs.
+// The verdict cannot be decided inside the generated code -- a requirement
+// returns one boolean and the host decides what it means, so `false` from
+// inside a negated requirement would read as a pass. The read is answered from
+// a zeroed buffer, the requirement finishes, and the fault becomes the
+// failure, with the index and the count that did not contain it.
+TEST(Rdb, IndexOutsideARuntimeCountFailsAndSaysSo)
+{
+    auto    ref = std::string(REFEREE_TEST_DATA_DIR) + "/bounds.ref";
+    auto    csv = std::string(REFEREE_TEST_DATA_DIR) + "/bounds.csv";
+
+    std::ifstream       in(ref);
+    std::ostringstream  out;
+
+    EXPECT_FALSE(Referee::executeAll(in, ref, {{csv, false}}, "", out)) << out.str();
+    EXPECT_NE(out.str().find("index 1 is outside an array of 1"), std::string::npos)
+        << out.str();
+
+    //  The guarded forms alongside it still pass, so the check is not simply
+    //  refusing everything that mentions an index. Each is a different way of
+    //  saying "only where there is one", and all four are only guards at all
+    //  because the operators short-circuit.
+    for (auto const* name : {"guarded_by_and", "guarded_by_imp",
+                             "guarded_by_ternary", "guarded_by_quantifier"})
+        EXPECT_NE(out.str().find(std::string(name) + std::string(41 - std::strlen(name), ' ') + "PASS"),
+                  std::string::npos) << name << "\n" << out.str();
+}
+
+// `&&`, `||`, `=>` and `? :` evaluate only what they have to. Every
+// requirement in this fixture aborted the process before that was true: a
+// division whose guard did not guard it, and an index past the end of a ragged
+// array whose element is itself an array. The lowering was a `select`, which
+// chooses between two values both of which have already been computed.
+TEST(Rdb, ShortCircuit)
+{
+    auto    ref = std::string(REFEREE_TEST_DATA_DIR) + "/shortcircuit.ref";
+    auto    csv = std::string(REFEREE_TEST_DATA_DIR) + "/shortcircuit.csv";
+
+    std::ifstream       in(ref);
+    std::ostringstream  out;
+    EXPECT_TRUE(Referee::executeAll(in, ref, {{csv, false}}, "", out)) << out.str();
+}
+
+// Arrays whose length arrives with the data. Four records that deliberately
+// disagree about how long everything is -- including one with no elements at
+// all -- across scalars, structs with strings in them, and both dimensions of
+// an array of arrays.
+TEST(Rdb, RaggedArrays)
+{
+    auto    ref = std::string(REFEREE_TEST_DATA_DIR) + "/ragged.ref";
+    auto    csv = std::string(REFEREE_TEST_DATA_DIR) + "/ragged.csv";
+
+    std::ifstream       in(ref);
+    std::ostringstream  out;
+    EXPECT_TRUE(Referee::executeAll(in, ref, {{csv, false}}, "", out)) << out.str();
+}
+
+// `T[]` needs nothing from a trace: it means unbounded, and the length arrives
+// with the data. This used to be an error -- the extent had to be recoverable
+// from somewhere before the specification could be typed at all -- which is
+// the coupling the descriptor removes.
+TEST(Rdb, UnsizedArrayNeedsNoTrace)
+{
+    std::istringstream  src("data v : integer[];\nv.count > 0;\n");
+
+    EXPECT_NO_THROW(Referee::parseSchema(src, "<unsized>"));
+}
+
+// A corpus is compiled once and run against every trace in it, and the traces
+// no longer have to be the same shape. `v` is five elements in one and three
+// in the other, `g` three rows and two; the specification says neither number.
+//
+// This asserted the opposite until arrays carried their own length: the extent
+// was baked into the type at compile time, so a corpus that disagreed had to
+// be rejected rather than read into the wrong shape. The rejection was right
+// for what the compiler then knew. It is the thing the count exists to remove.
+TEST(Rdb, CorpusMayDisagreeOnExtents)
 {
     auto    ref   = std::string(REFEREE_TEST_DATA_DIR) + "/loadsized.ref";
     auto    big   = std::string(REFEREE_TEST_DATA_DIR) + "/loadsized.csv";
@@ -947,9 +1068,8 @@ TEST(Rdb, CorpusMustAgreeOnExtents)
 
     std::ifstream       in(ref);
     std::ostringstream  out;
-    EXPECT_THROW(
-        Referee::executeAll(in, ref, {{big, false}, {small, false}}, "", out),
-        std::exception);
+    EXPECT_TRUE(Referee::executeAll(in, ref, {{big, false}, {small, false}}, "", out))
+        << out.str();
 }
 
 // `xs.count` is the element count, and an array has no other member.

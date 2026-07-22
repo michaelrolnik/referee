@@ -26,6 +26,7 @@
 
 #include "syntax.hpp"
 #include <functional>
+#include <map>
 #include <vector>
 #include <cstdint>
 #include <string>
@@ -34,6 +35,16 @@ class Loader
 {
 public:
     using GetCell = std::function<std::string(std::string const&)>;
+
+    //  How many columns a trace happens to carry for each array path -- the
+    //  widest row in the file, keyed the way `inferSizes` keys it.
+    //
+    //  This is where capacity belongs and the only place it exists. Nothing
+    //  above the loader can observe it: the descriptor carries a count, the
+    //  count is the number of cells that held an element, and how many columns
+    //  the header happened to have is an allocation figure. It is needed here
+    //  only to know where to stop probing.
+    using Caps = std::map<std::string, std::vector<unsigned>>;
 
     // Append the binary representation of 'type' rooted at CSV column 'prefix'
     // into 'buf'.  getCell maps a fully-qualified column name to its cell value.
@@ -44,5 +55,6 @@ public:
     static void load(std::vector<uint8_t>& buf,
                      std::string const&    prefix,
                      Type*                 type,
-                     GetCell const&        getCell);
+                     GetCell const&        getCell,
+                     Caps const&           caps = {});
 };

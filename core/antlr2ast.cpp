@@ -465,17 +465,11 @@ std::any Antlr2AST::visitExprQuant(     referee::refereeParser::ExprQuantContext
     auto    array   = dynamic_cast<TypeArray*>(base->type());
     if(array == nullptr)
         throw Exception(where, "quantifier needs an array to range over");
-    if(array->count == 0)
-    {
-        //  Declaration-only mode (header generation) never evaluates
-        //  expressions, so a quantifier it cannot expand is not an error
-        //  there -- it stands in for a formula nothing will look at. Anywhere
-        //  else an unexpandable quantifier is exactly the error it says.
-        if(m_allowUnsized)
-            return static_cast<Expr*>(build<ExprConstBoolean>(ctx, true));
 
-        throw Exception(where, "quantifier needs an array of known size");
-    }
+    //  Declaration-only mode (header generation) never evaluates expressions,
+    //  so a quantifier stands in for a formula nothing will look at.
+    if(array->count == 0 && m_allowUnsized)
+        return static_cast<Expr*>(build<ExprConstBoolean>(ctx, true));
 
     auto    ids     = ctx->ID();
     auto    elemNm  = ids[0]->getText();
@@ -484,11 +478,78 @@ std::any Antlr2AST::visitExprQuant(     referee::refereeParser::ExprQuantContext
     if(!indxNm.empty() && indxNm == elemNm)
         throw Exception(where, "quantifier binds '" + elemNm + "' twice");
 
+    //  An array that carries its own length has nothing to expand over: the
+    //  count arrives with the data. So the body is built once, with a binder
+    //  standing in for the index, and it lowers to a loop -- see `ExprCount`.
+    //
+    //  Every form is a comparison on how many elements satisfied the body,
+    //  which is what the counting forms already reduced to when they expanded
+    //  to a sum of indicators. `all` is "as many as there are", so it needs
+    //  the length as an expression, which is `.count` -- a load rather than a
+    //  constant, exactly as it is everywhere else on this path.
+    auto*   quantCtx = ctx->quant();
+
+    if(array->count == 0)
+    {
+        auto*   binder  = build<ExprBinder>(ctx, m_binderId++,
+                                            indxNm.empty() ? elemNm : indxNm);
+        auto    elem    = static_cast<Expr*>(build<ExprIndx>(ctx, domain, binder));
+
+        if(elemNm != "_")
+            m_bindings.push_back({elemNm, elem});
+        if(!indxNm.empty() && indxNm != "_")
+            m_bindings.push_back({indxNm, static_cast<Expr*>(binder)});
+
+        auto    body    = std::any_cast<Expr*>(ctx->expression(1)->accept(this));
+
+        if(!indxNm.empty() && indxNm != "_")
+            m_bindings.pop_back();
+        if(elemNm != "_")
+            m_bindings.pop_back();
+
+        //  A temporal operator in the body reads *other states*, and the
+        //  buffers that make that linear are built once per node before any
+        //  state loop runs -- before this binder has a value. Expansion gave
+        //  each element its own node and so its own buffer; one shared body
+        //  cannot. Rejected rather than quietly given the wrong buffer.
+        if(body->is_temporal())
+            throw Exception(where,
+                "a temporal operator inside a quantifier needs an array of known size");
+
+        auto*   count   = static_cast<Expr*>(build<ExprCount>(ctx, domain, binder, body));
+        auto    konst   = [&](std::int64_t k) {
+            return static_cast<Expr*>(build<ExprConstInteger>(ctx, k)); };
+
+        if(dynamic_cast<referee::refereeParser::QuantAllContext*>(quantCtx))
+            return static_cast<Expr*>(build<ExprEq>(ctx, count,
+                        static_cast<Expr*>(build<ExprMmbr>(ctx, domain, "count"))));
+
+        if(dynamic_cast<referee::refereeParser::QuantSomeContext*>(quantCtx))
+            return static_cast<Expr*>(build<ExprGe>(ctx, count, konst(1)));
+
+        if(dynamic_cast<referee::refereeParser::QuantNoneContext*>(quantCtx))
+            return static_cast<Expr*>(build<ExprEq>(ctx, count, konst(0)));
+
+        if(dynamic_cast<referee::refereeParser::QuantOneContext*>(quantCtx))
+            return static_cast<Expr*>(build<ExprEq>(ctx, count, konst(1)));
+
+        if(auto* least = dynamic_cast<referee::refereeParser::QuantAtLeastContext*>(quantCtx))
+            return static_cast<Expr*>(build<ExprGe>(ctx, count,
+                        konst(parse_decint(least->integer()->INTEGER()->getText()))));
+
+        if(auto* most = dynamic_cast<referee::refereeParser::QuantAtMostContext*>(quantCtx))
+            return static_cast<Expr*>(build<ExprLe>(ctx, count,
+                        konst(parse_decint(most->integer()->INTEGER()->getText()))));
+
+//  LCOV_EXCL_START
+        throw Exception(where, "unsupported quantifier");
+//  LCOV_EXCL_STOP
+    }
+
     //  `all` is vacuously true outside the slice, so its terms are guarded by
     //  implication. Every other form asks whether elements *exist* or counts
     //  them, so theirs are guarded by conjunction and an element outside the
     //  slice simply does not count.
-    auto*   quantCtx = ctx->quant();
     auto    isAll    = dynamic_cast<referee::refereeParser::QuantAllContext*>(quantCtx) != nullptr;
 
     //  One term per element, each built with the binders in scope.
@@ -498,10 +559,25 @@ std::any Antlr2AST::visitExprQuant(     referee::refereeParser::ExprQuantContext
         auto    indx    = static_cast<Expr*>(build<ExprConstInteger>(ctx, k));
         auto    elem    = static_cast<Expr*>(build<ExprIndx>(ctx, base, indx));
 
+        //  The index is the element's position *in the domain*, so slicing
+        //  shifts it. Expansion walks the underlying array, so `k` is an index
+        //  into that -- which is what the binder used to be given, and it made
+        //  `v` and `i` describe different arrays:
+        //
+        //      all v, i in pkt[1:4]: v == pkt[1:4][i]      #  was false
+        //
+        //  `v` was the slice's element and `i` the underlying array's index,
+        //  so the one expression that ought to hold under any reading of `i`
+        //  was the one that did not. Subtracting `lo` costs a constant fold
+        //  and makes `v == domain[i]` a tautology again.
+        auto    bind    = slice != nullptr
+                        ? static_cast<Expr*>(build<ExprSub>(ctx, indx, slice->lo))
+                        : indx;
+
         if(elemNm != "_")
             m_bindings.push_back({elemNm, elem});
         if(!indxNm.empty() && indxNm != "_")
-            m_bindings.push_back({indxNm, indx});
+            m_bindings.push_back({indxNm, bind});
 
         auto    body    = std::any_cast<Expr*>(ctx->expression(1)->accept(this));
 
@@ -1188,7 +1264,7 @@ std::any Antlr2AST::visitTypeArray(     referee::refereeParser::TypeArrayContext
         {
             //  A signature's extent is carried by the descriptor at run time,
             //  and header generation never needs one at all.
-            if(m_inFuncSig || m_allowUnsized)
+            //  EXPERIMENT: `T[]` means unbounded, always.
             {
                 type = Factory<TypeArray>::create(type, 0u);
                 continue;

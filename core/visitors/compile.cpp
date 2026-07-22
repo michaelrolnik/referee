@@ -35,6 +35,18 @@
 #include <set>
 
 namespace {
+//  An unbounded accumulator folds the same way the until/release family does,
+//  so it belongs on the same linear path. A *windowed* one does not -- the
+//  window is anchored at the evaluation point, so neighbouring states sum
+//  different ranges -- but it is already O(N x window), which is linear in the
+//  trace. Only the unbounded form walked to the end from every state.
+bool isLoopAccumulator(Expr* expr)
+{
+    auto*   sum = dynamic_cast<ExprSum*>(expr);
+
+    return  sum != nullptr && sum->time == nullptr;
+}
+
 bool isLoopTemporal(Expr* expr)
 {
     if (!expr) return false;
@@ -183,7 +195,7 @@ void collectTemporals(Expr* expr, std::vector<Expr*>& temporals)
         collectTemporals(unary->arg, temporals);
     }
 
-    if (isLoopTemporal(expr))
+    if (isLoopTemporal(expr) || isLoopAccumulator(expr))
     {
         if (std::find(temporals.begin(), temporals.end(), expr) == temporals.end())
             temporals.push_back(expr);
@@ -270,6 +282,8 @@ struct CompileExprImpl
              , ExprXor
              , ExprCall
              , ExprSlice
+             , ExprCount
+             , ExprBinder
              , ExprBand
              , ExprBor
              , ExprShl
@@ -336,6 +350,8 @@ struct CompileExprImpl
     void    visit(ExprXor*          expr) override;
     void    visit(ExprCall*         expr) override;
     void    visit(ExprSlice*        expr) override;
+    void    visit(ExprCount*        expr) override;
+    void    visit(ExprBinder*       expr) override;
     void    visit(ExprBand*      expr) override;
     void    visit(ExprBor*       expr) override;
     void    visit(ExprShl*       expr) override;
@@ -400,6 +416,18 @@ struct CompileExprImpl
                                                llvm::Value* lhsV,
                                                llvm::Value* endV,
                                                bool         isUR);
+    llvm::Value*    sliceCount(ExprSlice* expr);
+    llvm::Value*    shortCircuit(Expr* lhs, Expr* rhs, bool isAnd);
+    llvm::Value*    compileAccumulatorLoop(ExprSum* expr, llvm::Type* type);
+    llvm::Value*    guardIndex(llvm::Value* ptr,  llvm::Value* indx,
+                               llvm::Value* count, llvm::Type* elemType, Expr* expr);
+
+    //  The value each live quantifier binder currently stands for, by id.
+    //  Innermost quantifiers simply add another entry; the ids are distinct,
+    //  so nesting needs no stack discipline beyond removing the entry when the
+    //  loop that owns it is done.
+    std::map<unsigned, llvm::Value*>    m_binders;
+    llvm::Value*    sliceExtent(Expr* expr);
     llvm::Value*    timeAtIndex(llvm::Value* idx);
     void            emitDecisivePass(Temporal<ExprBinary>* expr,
                                      llvm::Value* rhsV,
@@ -418,7 +446,7 @@ struct CompileExprImpl
     //  Buffers are only valid in blocks dominated by the one they were built
     //  in.  Callers that emit several independent loop nests into the same
     //  function (see __prepare__) must drop them between nests.
-    void            resetTemporalBuffers()  {m_temporalBuffers.clear();}
+    void            resetTemporalBuffers()  {m_temporalBuffers.clear(); m_accumBuffers.clear();}
 
     std::vector<llvm::Value*>   m_frst;
     std::vector<llvm::Value*>   m_last;
@@ -453,6 +481,11 @@ private:
     llvm::Type*         m_boolType;
     std::map<Expr*, llvm::Value*>
                         m_temporalBuffers;
+
+    //  Accumulator buffers carry a value rather than a bit, so the element
+    //  type travels with the pointer.
+    std::map<Expr*, std::pair<llvm::Value*, llvm::Type*>>
+                        m_accumBuffers;
 };
 
 
@@ -485,6 +518,36 @@ void    CompileTypeImpl::visit(TypeByte*             type)
     m_type  = m_builder->getInt8Ty();
 }
 
+//  An array with no written extent is `{size_t count; T const* data;}` --
+//  the shape the generated C header declares, the shape an external function
+//  is handed, and the shape a slice evaluates to. One definition, because
+//  three spellings of it is how the count came to be two bytes in one place
+//  and eight in the others.
+static llvm::StructType*    descriptorType(llvm::LLVMContext*  context,
+                                           llvm::IRBuilder<>&  builder)
+{
+    return  llvm::StructType::get(*context, {builder.getInt64Ty(), builder.getPtrTy()});
+}
+
+//  An array with no written extent carries its length with it: its value is a
+//  `{count, pointer}` descriptor rather than the address of some storage.
+//
+//  This asks about the *type*, and the earlier version of every site below
+//  asked whether the expression was syntactically an `ExprSlice`. Those are
+//  not the same question, and a computed signal is where they part company:
+//
+//      data s = pkt[0:2];      #  s is a descriptor, but `s` is an ExprData
+//
+//  `s.count` answered 0 -- the declared extent of an unsized array -- and
+//  said so without complaint, which is worse than the crash that indexing
+//  `s` produced. A descriptor is a descriptor wherever it came from.
+static bool     isDescriptor(Type* type)
+{
+    auto*   array = dynamic_cast<TypeArray*>(type);
+
+    return  array != nullptr && array->count == 0;
+}
+
 void    CompileTypeImpl::visit(TypeBoolean*          type)
 {
     m_type  = m_builder->getInt1Ty();
@@ -508,17 +571,17 @@ void    CompileTypeImpl::visit(TypeEnum*             type)
 
 void    CompileTypeImpl::visit(TypeArray*            type)
 {
-    std::vector<llvm::Type*>    elements;
-
-    elements.push_back(m_builder->getInt16Ty());
     auto    base    = Compile::make(m_context, m_module, type->type, m_name + "[]");
     auto    size    = type->count;
 
     if(size == 0)
     {
-        elements.push_back(llvm::PointerType::get(*m_context, 0));
-
-        m_type  = llvm::StructType::create(*m_context, elements, m_name);
+        //  `{size_t count; T const* data;}` -- the same shape the generated
+        //  header declares and the same one every descriptor-building site
+        //  emits. This was `{i16, ptr}`, which agrees with an i64 count on a
+        //  little-endian host for every length below 65536 and silently
+        //  disagrees above it. Nothing reached it yet; the loader is about to.
+        m_type  = descriptorType(m_context, *m_builder);
     }
     else
     {
@@ -577,11 +640,58 @@ void    CompileExprImpl::visit(ExprAdd*          expr)
         [this](llvm::Value* lhs, llvm::Value* rhs) {return m_builder->CreateFAdd(lhs, rhs);});
 }
 
+//  Short-circuiting `&&` and `||`.
+//
+//  These were `select`, which is a value and not a branch: both operands were
+//  materialised into the same block and the operator merely chose between
+//  them. That is the better lowering while every expression is total -- a load
+//  at a fixed offset, arithmetic, a comparison -- and REF's were, so nothing
+//  was wrong with it.
+//
+//  An array that carries its own length ended that. `rows.count > 1 &&
+//  rows[1][0] == 5` has a right-hand side that dereferences a descriptor which
+//  was never written wherever the guard is false, and the load sat above the
+//  `select` and ran anyway. The guard read like a guard and was not one.
+//
+//  So the right-hand side goes in a block reached only when the left decides
+//  nothing. That is what a guard means, and it is what everyone reading one
+//  already assumes.
+llvm::Value*    CompileExprImpl::shortCircuit(Expr* lhs, Expr* rhs, bool isAnd)
+{
+    auto    func    = m_builder->GetInsertBlock()->getParent();
+    auto    name    = std::string(isAnd ? "and" : "or");
+
+    auto    lhsVal  = make(lhs);
+    auto    bbLhs   = m_builder->GetInsertBlock();
+    auto    bbRhs   = llvm::BasicBlock::Create(*m_context, name + ".rhs",  func);
+    auto    bbDone  = llvm::BasicBlock::Create(*m_context, name + ".done", func);
+
+    //  `&&` needs the right-hand side only when the left held; `||` only when
+    //  it did not.
+    if(isAnd)   m_builder->CreateCondBr(lhsVal, bbRhs, bbDone);
+    else        m_builder->CreateCondBr(lhsVal, bbDone, bbRhs);
+
+    m_builder->SetInsertPoint(bbRhs);
+    auto    rhsVal  = make(rhs);
+
+    //  The right-hand side may have built blocks of its own -- a nested
+    //  short circuit, or a quantifier -- so the edge into the join leaves
+    //  from wherever it ended.
+    auto    bbTail  = m_builder->GetInsertBlock();
+    m_builder->CreateBr(bbDone);
+
+    m_builder->SetInsertPoint(bbDone);
+    auto    phi     = m_builder->CreatePHI(m_builder->getInt1Ty(), 2, name);
+
+    phi->addIncoming(m_builder->getInt1(!isAnd), bbLhs);    //  the decided case
+    phi->addIncoming(rhsVal, bbTail);
+
+    return  phi;
+}
+
 void    CompileExprImpl::visit(ExprAnd*          expr)
 {
-    auto    lhs = make(expr->lhs);
-    auto    rhs = make(expr->rhs);
-    m_value = m_builder->CreateLogicalAnd(lhs, rhs);
+    m_value = shortCircuit(expr->lhs, expr->rhs, true);
 }
 
 void    CompileExprImpl::visit(ExprAt*           expr)
@@ -591,25 +701,56 @@ void    CompileExprImpl::visit(ExprAt*           expr)
     m_name2value.pop_back();
 }
 
+//  `c ? a : b`, with only the chosen arm evaluated. It was a `select` too, and
+//  it is the other expression someone reaches for when they want a guard -- so
+//  leaving it evaluating both arms would have moved the trap rather than
+//  removed it.
 void    CompileExprImpl::visit(ExprChoice*       expr)
 {
-    auto    lhs = make(expr->lhs);
-    auto    mhs = make(expr->mhs);
-    auto    rhs = make(expr->rhs);
-    auto    mhsT= mhs->getType();
-    auto    rhsT= rhs->getType();
+    auto    func    = m_builder->GetInsertBlock()->getParent();
+    auto    cond    = make(expr->lhs);
+    auto    bbThen  = llvm::BasicBlock::Create(*m_context, "sel.then", func);
+    auto    bbElse  = llvm::BasicBlock::Create(*m_context, "sel.else", func);
+    auto    bbDone  = llvm::BasicBlock::Create(*m_context, "sel.done", func);
 
-    if(mhsT == rhsT)
+    m_builder->CreateCondBr(cond, bbThen, bbElse);
+
+    m_builder->SetInsertPoint(bbThen);
+    auto    mhs     = make(expr->mhs);
+    auto    bbMhs   = m_builder->GetInsertBlock();
+    m_builder->CreateBr(bbDone);
+
+    m_builder->SetInsertPoint(bbElse);
+    auto    rhs     = make(expr->rhs);
+    auto    bbRhs   = m_builder->GetInsertBlock();
+    m_builder->CreateBr(bbDone);
+
+    //  One arm integer and the other a number: both widen to double. The
+    //  conversion belongs in the arm that needs it, not at the join, so it is
+    //  inserted before that arm's branch rather than after both.
+    if(mhs->getType() != rhs->getType())
     {
-        m_value = m_builder->CreateSelect(lhs, mhs, rhs);
+        auto    widen = [&](llvm::Value* v, llvm::BasicBlock* bb)
+        {
+            if(v->getType()->isDoubleTy())
+                return v;
+
+            m_builder->SetInsertPoint(bb->getTerminator());
+            return static_cast<llvm::Value*>(
+                        m_builder->CreateSIToFP(v, m_builder->getDoubleTy()));
+        };
+
+        mhs = widen(mhs, bbMhs);
+        rhs = widen(rhs, bbRhs);
     }
-    else
-    {
-        m_value = m_builder->CreateSelect(
-            lhs,
-            m_builder->CreateSIToFP(mhs, m_builder->getDoubleTy()),
-            m_builder->CreateSIToFP(rhs, m_builder->getDoubleTy()));
-    }
+
+    m_builder->SetInsertPoint(bbDone);
+    auto    phi     = m_builder->CreatePHI(mhs->getType(), 2, "sel");
+
+    phi->addIncoming(mhs, bbMhs);
+    phi->addIncoming(rhs, bbRhs);
+
+    m_value = phi;
 }
 
 void    CompileExprImpl::visit(ExprConstBoolean* expr)
@@ -703,11 +844,23 @@ void    CompileExprImpl::visit(ExprData*         expr)
 
         m_value = m_builder->CreateLoad(propPtrType, propPtrPtr, false, "ptr_" + expr->name);
 
+        //  A signal's value is the address of its storage, except where the
+        //  storage holds something small enough to be the value itself. A
+        //  primitive is loaded; so is a descriptor, whose sixteen bytes *are*
+        //  the array -- a count and a pointer to elements living elsewhere.
+        //  Handing back the address of a descriptor instead would make `s`
+        //  and `pkt[0:2]` different kinds of thing, which is precisely the
+        //  split this change exists to remove.
         if(dynamic_cast<TypePrimitive*>(expr->type()))
         {
             auto    propFieldType   = Compile::make(m_context, m_module, expr->type(), expr->name);
             m_value = widenByte(m_builder->CreateLoad(propFieldType, m_value, false, "val_" + expr->name),
                                 m_refmod->getProp(expr->name));
+        }
+        else if(isDescriptor(expr->type()))
+        {
+            m_value = m_builder->CreateLoad(descriptorType(m_context, *m_builder),
+                                            m_value, false, "desc_" + expr->name);
         }
     }
 }
@@ -851,21 +1004,123 @@ void    CompileExprImpl::visit(ExprGt*           expr)
     compare(llvm::CmpInst::Predicate::ICMP_SGT, llvm::CmpInst::Predicate::FCMP_OGT, expr);
 }
 
+//  Where an out-of-range read is recorded. Four globals rather than a call,
+//  because the check is on the hot path and a fault is not: the in-range case
+//  costs two compares and a branch that is never taken.
+//
+//  The reported verdict cannot be invented here. A requirement returns one
+//  boolean and the host decides what it means -- returning `false` from inside
+//  a negated requirement would read as a pass. So the fault is raised, the
+//  read is answered from a zeroed buffer so evaluation stays total, and the
+//  host turns the flag into a failure once the requirement has finished.
+//
+//  Deliberately no source position. `expr->where()` is the *interned* node's,
+//  and two textually identical index expressions in different requirements are
+//  one node -- so it named an arbitrary one of them, off by seven lines in the
+//  first fixture that had two. The requirement is reported instead, which is
+//  always right.
+static llvm::GlobalVariable*    faultSlot(llvm::Module* module, llvm::LLVMContext* context,
+                                          char const* name, llvm::Type* type)
+{
+    if(auto* found = module->getGlobalVariable(name))
+        return found;
+
+    return new llvm::GlobalVariable(*module, type, false,
+                llvm::GlobalValue::ExternalLinkage,
+                llvm::Constant::getNullValue(type), name);
+}
+
+llvm::Value*    CompileExprImpl::guardIndex(llvm::Value* ptr,   llvm::Value* indx,
+                                            llvm::Value* count, llvm::Type* elemType,
+                                            Expr*        expr)
+{
+    auto    i64Ty   = m_builder->getInt64Ty();
+    auto    zero    = llvm::ConstantInt::get(i64Ty, 0);
+    auto    inRange = m_builder->CreateAnd(
+                        m_builder->CreateICmpSGE(indx, zero,  "indx >= 0"),
+                        m_builder->CreateICmpSLT(indx, count, "indx < count"),
+                        "inRange");
+
+    auto    func    = m_builder->GetInsertBlock()->getParent();
+    auto    bbFrom  = m_builder->GetInsertBlock();
+    auto    bbOob   = llvm::BasicBlock::Create(*m_context, "oob",      func);
+    auto    bbCont  = llvm::BasicBlock::Create(*m_context, "oob.cont", func);
+
+    m_builder->CreateCondBr(inRange, bbCont, bbOob);
+
+    //  A zeroed buffer of the element's own shape, so the read that follows is
+    //  answered rather than skipped -- the caller does not have to know it was
+    //  guarded, and a struct element still yields a pointer to something whose
+    //  members are readable.
+    auto    zeroName = "__oob_zero_" + std::to_string(
+                        m_module->getDataLayout().getTypeAllocSize(elemType).getFixedValue());
+    auto    zeroBuf  = faultSlot(m_module, m_context, zeroName.c_str(), elemType);
+
+    m_builder->SetInsertPoint(bbOob);
+    m_builder->CreateStore(m_builder->getInt8(1),
+                           faultSlot(m_module, m_context, "__oob_flag__", m_builder->getInt8Ty()));
+    m_builder->CreateStore(indx,
+                           faultSlot(m_module, m_context, "__oob_indx__", i64Ty));
+    m_builder->CreateStore(count,
+                           faultSlot(m_module, m_context, "__oob_cnt__",  i64Ty));
+    m_builder->CreateBr(bbCont);
+
+    m_builder->SetInsertPoint(bbCont);
+    auto    phi = m_builder->CreatePHI(m_builder->getPtrTy(), 2, "elem");
+
+    phi->addIncoming(ptr,     bbFrom);
+    phi->addIncoming(zeroBuf, bbOob);
+
+    return  phi;
+}
+
 void    CompileExprImpl::visit(ExprIndx*         expr)
 {
     auto    exprType    = expr->type();
-    auto    basePtr     = make(expr->lhs);
+    auto*   arrayType   = dynamic_cast<TypeArray*>(expr->lhs->type());
+    auto    elemType    = Compile::make(m_context, m_module, arrayType->type, "[]");
     auto    indx        = make(expr->rhs);
-    auto    baseLLVMType= Compile::make(m_context, m_module, expr->lhs->type(), "[]");
-    auto    baseType    = cast<llvm::ArrayType>(baseLLVMType);
-    auto    elemType    = baseType->getElementType();
 
-    m_value = m_builder->CreateGEP(baseType, basePtr, {m_0, indx}, "ptr_[]");
+    //  Indexing an array is a subscript into its storage. Indexing a
+    //  *descriptor* starts from the pointer it carries, which already
+    //  addresses the first element -- so the index is an offset from there,
+    //  not from whatever the descriptor was taken from. Casting a
+    //  `{count, ptr}` to an array type is what used to happen, and it aborted
+    //  in LLVM rather than producing a wrong answer, which was the lucky
+    //  version.
+    llvm::Value*    count = nullptr;
+
+    if(isDescriptor(expr->lhs->type()))
+    {
+        auto    desc = make(expr->lhs);
+        auto    data = m_builder->CreateExtractValue(desc, {1}, "slice.data");
+
+        count   = m_builder->CreateExtractValue(desc, {0}, "slice.count");
+        m_value = m_builder->CreateGEP(elemType, data, indx, "ptr_[]");
+    }
+    else
+    {
+        auto    basePtr     = make(expr->lhs);
+        auto    baseLLVMType= Compile::make(m_context, m_module, expr->lhs->type(), "[]");
+
+        count   = llvm::ConstantInt::get(m_builder->getInt64Ty(), arrayType->count);
+        m_value = m_builder->CreateGEP(cast<llvm::ArrayType>(baseLLVMType),
+                                       basePtr, {m_0, indx}, "ptr_[]");
+    }
+
+    m_value = guardIndex(m_value, indx, count, elemType, expr);
 
     if(dynamic_cast<TypePrimitive*>(exprType))
     {
         m_value = widenByte(m_builder->CreateLoad(elemType, m_value, false, "val_[]"),
-                            dynamic_cast<TypeArray*>(expr->lhs->type())->type);
+                            arrayType->type);
+    }
+    else if(isDescriptor(exprType))
+    {
+        //  An array of arrays: the element is itself a descriptor, so it is
+        //  loaded rather than pointed at.
+        m_value = m_builder->CreateLoad(descriptorType(m_context, *m_builder),
+                                        m_value, false, "desc_[]");
     }
 }
 
@@ -948,6 +1203,17 @@ llvm::Value*    CompileExprImpl::sub(llvm::Value* lhs, llvm::Value* rhs, std::st
 //  a second reason to stop.
 void    CompileExprImpl::visit(ExprSum*          expr)
 {
+    //  Fast path: the O(N) fold, built once before the state loop.
+    if (auto it = m_accumBuffers.find(expr); it != m_accumBuffers.end())
+    {
+        auto [buffer, type] = it->second;
+        auto idx = m_builder->CreatePtrDiff(m_propType, m_curr.back(), m_frst.back(), "idx");
+
+        m_value = m_builder->CreateLoad(type,
+                    m_builder->CreateGEP(type, buffer, idx), false, "Sum");
+        return;
+    }
+
     //  Sum(p, v) -- the discrete twin of Itg: walk the states in the window,
     //  skip the ones where `p` does not hold, and total `v` over the rest.
     auto    bbHead  = llvm::BasicBlock::Create(*m_context, "Sum-head", m_function);
@@ -1243,13 +1509,24 @@ void    CompileExprImpl::visit(ExprMmbr*         expr)
 {
     auto    exprType    = expr->type();
 
-    //  `xs.count` -- the element count is fixed when the AST is built, so it
-    //  becomes a literal rather than a load. Answered before make(expr->arg),
+    //  `xs.count`. For a sized array the extent is fixed when the AST is built,
+    //  so it is a literal rather than a load -- answered before make(expr->arg),
     //  which would otherwise emit a pointer to an array nobody reads.
+    //
+    //  A slice has no fixed extent: its type carries count 0 and its length is
+    //  `hi - lo`, known only at run time. This is the first place a `.count`
+    //  is a value rather than a constant, and it is the shape every unbounded
+    //  array will use once they carry their own length.
     if(auto* array = dynamic_cast<TypeArray*>(expr->arg->type()))
     {
         if(expr->mmbr == "count")
         {
+            if(isDescriptor(expr->arg->type()))
+            {
+                m_value = sliceExtent(expr->arg);
+                return;
+            }
+
             m_value = llvm::ConstantInt::getSigned(m_builder->getInt64Ty(),
                                                    array->count);
             return;
@@ -1264,6 +1541,14 @@ void    CompileExprImpl::visit(ExprMmbr*         expr)
         auto    temp        = dynamic_cast<TypeComposite*>(expr->arg->type());
 
         m_value = m_builder->CreateStructGEP(baseType, basePtr, temp->index(expr->mmbr), "ptr_" + expr->mmbr);
+
+        //  A member with no written extent is a descriptor, and a descriptor
+        //  is a value -- the same rule `visit(ExprData*)` follows for a signal
+        //  that holds one. Handing back the address of it would make
+        //  `rec.raw` and `pkt` different kinds of thing again.
+        if(isDescriptor(exprType))
+            m_value = m_builder->CreateLoad(descriptorType(m_context, *m_builder),
+                                            m_value, false, "desc_" + expr->mmbr);
     }
     else if(dynamic_cast<TypePrimitive*>(exprType))
     {
@@ -1343,9 +1628,7 @@ void    CompileExprImpl::visit(ExprNot*          expr)
 
 void    CompileExprImpl::visit(ExprOr*           expr)
 {
-    auto    lhs = make(expr->lhs);
-    auto    rhs = make(expr->rhs);
-    m_value = m_builder->CreateLogicalOr(lhs, rhs);
+    m_value = shortCircuit(expr->lhs, expr->rhs, false);
 }
 
 void    CompileExprImpl::visit(ExprParen*        expr)
@@ -1409,19 +1692,81 @@ void    CompileExprImpl::visit(ExprUw*           expr)
 //  it, exactly as an out-of-range index does today -- the language has no
 //  bounds checking to be consistent with, and adding it for this one construct
 //  would be surprising rather than safe.
+//  How many elements the thing being sliced has. A written extent is a
+//  constant; a descriptor's is the count it carries.
+llvm::Value*    CompileExprImpl::sliceExtent(Expr* expr)
+{
+    if(isDescriptor(expr->type()))
+        return m_builder->CreateExtractValue(make(expr), {0}, "extent");
+
+    auto*   array = dynamic_cast<TypeArray*>(expr->type());
+
+    return  llvm::ConstantInt::get(m_builder->getInt64Ty(),
+                                   array != nullptr ? array->count : 0);
+}
+
+//  A slice's length, clamped to the array it slices.
+//
+//  Two things go wrong without this. An inverted slice -- `pkt[3:1]` -- gives
+//  a negative length, and a slice wider than its array -- `pkt[0:9]` over four
+//  elements -- gives nine. The second is not merely a wrong answer: this count
+//  is what the descriptor carries across the external-function boundary, so a
+//  callee handed nine would read five elements past the end of the row.
+//
+//  So: bounds are clamped to [0, extent] and the length floors at zero. An
+//  empty slice is representable; a negative or over-long one is not, because
+//  neither describes any elements.
+llvm::Value*    CompileExprImpl::sliceCount(ExprSlice* expr)
+{
+    //  What is being sliced bounds the slice. For an array that is its written
+    //  extent; for another slice it is *that* slice's length, which is a value.
+    //  Using the underlying array's extent here would let an outer slice reach
+    //  past the inner one it was taken from.
+    auto    extent  = sliceExtent(expr->arg);
+    auto    zero    = llvm::ConstantInt::get(m_builder->getInt64Ty(), 0);
+    auto    clamp   = [&](llvm::Value* v, char const* name)
+    {
+        v = m_builder->CreateSelect(m_builder->CreateICmpSLT(v, zero), zero, v);
+        return m_builder->CreateSelect(m_builder->CreateICmpSGT(v, extent), extent, v, name);
+    };
+
+    auto    lo      = clamp(make(expr->lo), "slice.lo");
+    auto    hi      = clamp(make(expr->hi), "slice.hi");
+    auto    len     = m_builder->CreateSub(hi, lo, "slice.len");
+
+    return  m_builder->CreateSelect(m_builder->CreateICmpSLT(len, zero), zero, len, "count");
+}
+
 void    CompileExprImpl::visit( ExprSlice*      expr)
 {
-    auto    base    = make(expr->arg);           //  composites are pointers already
     auto    lo      = make(expr->lo);
-    auto    hi      = make(expr->hi);
-
-    auto    arrayTy = Compile::make(m_context, m_module, expr->arg->type(), "slice");
     auto    zero    = llvm::ConstantInt::get(m_builder->getInt64Ty(), 0);
-    auto    data    = m_builder->CreateGEP(arrayTy, base, {zero, lo}, "slice.data");
-    auto    count   = m_builder->CreateSub(hi, lo, "slice.count");
 
-    auto    descTy  = llvm::StructType::get(*m_context,
-                            {m_builder->getInt64Ty(), m_builder->getPtrTy()});
+    //  Where the elements start. Slicing an array indexes into it; slicing a
+    //  descriptor starts from the pointer it carries, which already points at
+    //  its own `lo`, so the offsets compose rather than being applied to the
+    //  array underneath.
+    llvm::Value*    data = nullptr;
+
+    if(isDescriptor(expr->arg->type()))
+    {
+        auto    innerDesc = make(expr->arg);
+        auto    innerPtr  = m_builder->CreateExtractValue(innerDesc, {1}, "inner.data");
+        auto    elemTy    = Compile::make(m_context, m_module,
+                                dynamic_cast<TypeArray*>(expr->arg->type())->type, "elem");
+
+        data = m_builder->CreateGEP(elemTy, innerPtr, lo, "slice.data");
+    }
+    else
+    {
+        auto    base    = make(expr->arg);       //  composites are pointers already
+        auto    arrayTy = Compile::make(m_context, m_module, expr->arg->type(), "slice");
+
+        data = m_builder->CreateGEP(arrayTy, base, {zero, lo}, "slice.data");
+    }
+    auto    count   = sliceCount(expr);          //  clamped, and shared with `.count`
+
+    auto    descTy  = descriptorType(m_context, *m_builder);
 
     m_value = m_builder->CreateInsertValue(
                 m_builder->CreateInsertValue(
@@ -1438,6 +1783,72 @@ void    CompileExprImpl::visit( ExprSlice*      expr)
 //  resolves it against the objects loaded from the -L path. Nothing is checked
 //  here beyond what type calculation already checked: C has no way to confirm
 //  that the linked function matches, which is what the generated header is for.
+void    CompileExprImpl::visit( ExprBinder*     expr)
+{
+    auto    it  = m_binders.find(expr->id);
+
+//  LCOV_EXCL_START
+    if(it == m_binders.end())
+        throw std::runtime_error("binder '" + expr->name + "' used outside its quantifier");
+//  LCOV_EXCL_STOP
+
+    m_value = it->second;
+}
+
+//  A quantifier over an array that carries its own length: count the elements
+//  whose body holds, and let the caller compare that against whatever the
+//  quantifier form wants.
+//
+//  This is the loop expansion was avoiding, and it is only reachable where
+//  expansion cannot go -- a written extent still unrolls, so nothing that
+//  compiled before compiles differently.
+void    CompileExprImpl::visit( ExprCount*      expr)
+{
+    auto    desc    = make(expr->arg);
+    auto    count   = m_builder->CreateExtractValue(desc, {0}, "quant.count");
+    auto    zero    = llvm::ConstantInt::get(m_builder->getInt64Ty(), 0);
+    auto    one     = llvm::ConstantInt::get(m_builder->getInt64Ty(), 1);
+
+    auto    func    = m_builder->GetInsertBlock()->getParent();
+    auto    bbEntry = m_builder->GetInsertBlock();
+    auto    bbHead  = llvm::BasicBlock::Create(*m_context, "quant.head", func);
+    auto    bbBody  = llvm::BasicBlock::Create(*m_context, "quant.body", func);
+    auto    bbDone  = llvm::BasicBlock::Create(*m_context, "quant.done", func);
+
+    m_builder->CreateBr(bbHead);
+
+    m_builder->SetInsertPoint(bbHead);
+    auto    indx    = m_builder->CreatePHI(m_builder->getInt64Ty(), 2, "quant.i");
+    auto    acc     = m_builder->CreatePHI(m_builder->getInt64Ty(), 2, "quant.n");
+
+    indx->addIncoming(zero, bbEntry);
+    acc ->addIncoming(zero, bbEntry);
+
+    m_builder->CreateCondBr(m_builder->CreateICmpSLT(indx, count, "quant.more"),
+                            bbBody, bbDone);
+
+    m_builder->SetInsertPoint(bbBody);
+    m_binders[expr->binder->id] = indx;
+    auto    holds   = make(expr->body);
+    m_binders.erase(expr->binder->id);
+
+    auto    accNext = m_builder->CreateAdd(acc,
+                        m_builder->CreateZExt(holds, m_builder->getInt64Ty()), "quant.n+");
+    auto    indxNext= m_builder->CreateAdd(indx, one, "quant.i+");
+
+    //  The body may have built blocks of its own -- a nested quantifier does
+    //  -- so the edge back to the head leaves from wherever it ended, not from
+    //  the block the body started in.
+    auto    bbTail  = m_builder->GetInsertBlock();
+    m_builder->CreateBr(bbHead);
+
+    indx->addIncoming(indxNext, bbTail);
+    acc ->addIncoming(accNext,  bbTail);
+
+    m_builder->SetInsertPoint(bbDone);
+    m_value = acc;
+}
+
 void    CompileExprImpl::visit( ExprCall*       expr)
 {
     //  A built-in lowers to an intrinsic or to a couple of instructions --
@@ -1576,10 +1987,7 @@ void    CompileExprImpl::visit( ExprCall*       expr)
     //  bare pointer. In memory a REF array is flat and contiguous, so the
     //  descriptor is built at the call from a compile-time count and the
     //  pointer the caller already holds.
-    auto    sliceType = [&]() {
-        return llvm::StructType::get(*m_context,
-                    {m_builder->getInt64Ty(), m_builder->getPtrTy()});
-    };
+    auto    sliceType = [&]() { return descriptorType(m_context, *m_builder); };
 
     std::vector<llvm::Type*>    paramTypes;
     for(auto* type: decl.args)
@@ -1620,9 +2028,9 @@ void    CompileExprImpl::visit( ExprCall*       expr)
                         Compile::make(m_context, m_module, decl.args[i], expr->name),
                         value, false, "enum_arg");
 
-        //  A slice already *is* the descriptor -- it carries a runtime count,
-        //  which is the whole reason to write one.
-        if(dynamic_cast<ExprSlice*>(expr->args[i]) != nullptr)
+        //  An unsized array already *is* the descriptor -- it carries a runtime
+        //  count, which is the whole reason to have one.
+        if(isDescriptor(expr->args[i]->type()))
         {
             args.push_back(value);
             continue;
@@ -2479,7 +2887,18 @@ void CompileExprImpl::compileTemporalLoops(Expr* rootExpr)
     for (auto* expr : temporals)
     {
         if (m_temporalBuffers.count(expr)) continue;
+        if (m_accumBuffers.count(expr)) continue;
         if (hasFreeContext(expr, {})) continue;
+
+        if (auto* sum = dynamic_cast<ExprSum*>(expr); isLoopAccumulator(expr))
+        {
+            auto* type = valueType(sum->rhs) == Factory<TypeInteger>::create()
+                       ? static_cast<llvm::Type*>(m_builder->getInt64Ty())
+                       : static_cast<llvm::Type*>(m_builder->getDoubleTy());
+
+            m_accumBuffers[expr] = {compileAccumulatorLoop(sum, type), type};
+            continue;
+        }
 
         //  A bounded operator slides its window with a monotone pointer, which
         //  needs the bounds to be constants of the trace.  A bound reading a
@@ -2666,6 +3085,87 @@ llvm::Value* CompileExprImpl::compileTemporalLoopInline(Expr*        expr,
         m_builder->SetInsertPoint(bbExit);
     }
 
+    return buffer;
+}
+
+//  Emit the O(N) fold for one unbounded Sum/Cnt into a value[numStates] stack
+//  buffer, and return it.
+//
+//  Same shape as the boolean recurrence above, with an add in place of the
+//  select chain and a carrier wider than a bit:
+//
+//      total[i] = (p[i] ? v[i] : 0) + total[i + 1]
+//
+//  The slow path is a forward walk from every evaluation point, so under `G`
+//  it is N walks of length N. The walk itself was correct and about as tight
+//  as it can be; there was simply one per state. This was never a decision --
+//  the accumulators were added after the linear lowering existed and were not
+//  considered for it.
+llvm::Value* CompileExprImpl::compileAccumulatorLoop(ExprSum* expr, llvm::Type* type)
+{
+    auto frst = m_frst.back();
+    auto last = m_last.back();
+
+    auto diff = m_builder->CreatePtrDiff(m_propType, last, frst, "diff");
+    auto numStates = m_builder->CreateAdd(diff, llvm::ConstantInt::get(m_builder->getInt64Ty(), 1), "numStates");
+    auto buffer = m_builder->CreateAlloca(type, numStates, "accum_buf");
+    auto zero = type->isDoubleTy()
+              ? static_cast<llvm::Value*>(llvm::ConstantFP::get(type, 0.0))
+              : static_cast<llvm::Value*>(llvm::ConstantInt::getSigned(type, 0));
+
+    //  Both sentinels hold the identity: index numStates-1 is the base case,
+    //  and index 0 is never an evaluation point but must still be defined.
+    auto lastIdx = m_builder->CreateSub(numStates, llvm::ConstantInt::get(m_builder->getInt64Ty(), 1));
+    m_builder->CreateStore(zero, m_builder->CreateGEP(type, buffer, lastIdx));
+    m_builder->CreateStore(zero, m_builder->CreateGEP(type, buffer,
+                                    llvm::ConstantInt::get(m_builder->getInt64Ty(), 0)));
+
+    auto bbEntry = m_builder->GetInsertBlock();
+    auto bbWhile = llvm::BasicBlock::Create(*m_context, "while_Sum", m_function);
+    auto bbBody  = llvm::BasicBlock::Create(*m_context, "body_Sum", m_function);
+    auto bbNext  = llvm::BasicBlock::Create(*m_context, "next_Sum", m_function);
+    auto bbExit  = llvm::BasicBlock::Create(*m_context, "exit_Sum", m_function);
+
+    auto curr0 = getPrev(last);
+    m_builder->CreateBr(bbWhile);
+
+    m_builder->SetInsertPoint(bbWhile);
+    auto curr = m_builder->CreatePHI(m_propPtrType, 2, "curr");
+    m_builder->CreateCondBr(m_builder->CreateICmpSGT(curr, frst, "curr > frst"), bbBody, bbExit);
+
+    m_builder->SetInsertPoint(bbBody);
+    m_curr.push_back(curr);
+
+    auto idx = m_builder->CreatePtrDiff(m_propType, curr, frst, "idx");
+    auto idxNext = m_builder->CreateAdd(idx, llvm::ConstantInt::get(m_builder->getInt64Ty(), 1), "idxNext");
+    auto nextVal = m_builder->CreateLoad(type, m_builder->CreateGEP(type, buffer, idxNext), false, "nextVal");
+
+    //  A state where the condition fails contributes nothing and does not stop
+    //  the fold -- the condition selects states, it does not delimit them.
+    auto cond    = make(expr->lhs);
+    auto value   = make(expr->rhs);
+    auto contrib = m_builder->CreateSelect(cond, value, zero, "contrib");
+    auto val     = add(nextVal, contrib, "total");
+
+    m_builder->CreateStore(val, m_builder->CreateGEP(type, buffer, idx));
+
+    m_curr.pop_back();
+
+    //  The operands may have built blocks of their own -- a short circuit, a
+    //  quantifier -- so the back edge leaves from wherever they ended.
+    auto bbBodyEnd = m_builder->GetInsertBlock();
+    m_builder->CreateBr(bbNext);
+
+    m_builder->SetInsertPoint(bbNext);
+    auto currPrev = getPrev(curr);
+    m_builder->CreateBr(bbWhile);
+
+    curr->addIncoming(curr0, bbEntry);
+    curr->addIncoming(currPrev, bbNext);
+
+    m_builder->SetInsertPoint(bbExit);
+
+    (void)bbBodyEnd;
     return buffer;
 }
 

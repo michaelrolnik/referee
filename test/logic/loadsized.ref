@@ -1,14 +1,14 @@
 # Arrays whose extent is not written in the specification.
 #
-# `T[]` says the size comes from the trace. It is fixed for a whole run, so
-# nothing downstream ever sees an unsized type: the LLVM type is a plain array,
-# .rdb rows stay fixed-size, and quantifiers still expand while the AST is
-# built. Only the direction of one data flow reverses -- normally the
-# specification determines the columns, and here the columns determine the
-# extent.
+# `T[]` means unbounded: each record carries its own length, in a
+# `{count, pointer}` descriptor the loader builds from however many cells the
+# row held. Nothing is fixed at compile time, so `.count` is a load and a
+# quantifier is a loop.
 #
-# This file is run against two traces of different sizes, and must hold for
-# both, which is the whole point of leaving the extent out.
+# This file is run against two traces of different sizes *in one corpus*, on
+# one compilation, and must hold for both. That used to be an error -- the
+# extent was baked into the type, so traces that disagreed had to be rejected
+# -- and it is the coupling the count exists to remove.
 
 data    v : integer[];
 data    g : integer[][];

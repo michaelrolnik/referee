@@ -1,0 +1,81 @@
+# Arrays whose length arrives with the data, one row at a time.
+#
+# `T[]` means unbounded: the loader reads however many cells a row held and
+# writes a `{count, pointer}` descriptor. Nothing in this file says how long
+# anything is, and the four records deliberately disagree -- which is the
+# whole difference between this and every other array fixture, where the
+# header fixed one width for the file.
+#
+# A cell that is not an element is marked `-`. An empty cell means the same
+# thing; a present cell after an absent one is rejected, since an array has no
+# holes and guessing which end to believe is how a count and its cells come to
+# disagree.
+
+data pkt  : byte[];
+data msgs : struct { name : string; n : integer; }[];
+data rows : integer[][];
+
+# ── The count is per record ──────────────────────────────────────────────────
+G(__time__ == 0    => pkt.count == 3);
+G(__time__ == 1000 => pkt.count == 2);
+G(__time__ == 2000 => pkt.count == 0);      # a record with no elements at all
+G(__time__ == 3000 => pkt.count == 4);
+
+# ── The elements are the record's own ────────────────────────────────────────
+G(__time__ == 0    => pkt[0] == 0xDE && pkt[1] == 0xAD && pkt[2] == 0xBE);
+G(__time__ == 1000 => pkt[0] == 0x01 && pkt[1] == 0x02);
+G(__time__ == 3000 => pkt[3] == 4);
+
+# Ties the two together: the element at position i is the element at position
+# i, over however many there are. A count that outran its cells, or a pointer
+# left at another record's row, disagrees here rather than merely looking odd.
+G(all v, i in pkt: v == pkt[i]);
+
+# ── Quantifiers over a length nobody wrote down ──────────────────────────────
+G(__time__ == 2000 => (none v in pkt: true));
+G(__time__ == 2000 => (all v in pkt: false));       # vacuous, and that is right
+G(__time__ == 3000 => (all v in pkt: v > 0));
+G(__time__ == 0    => (at least 2 v in pkt: v > 0x80));
+G(__time__ == 1000 => (at most 2 v in pkt: true));
+
+# ── Elements that are not scalars ────────────────────────────────────────────
+# `msgs[0]` is never a column, so presence is decided by a leaf beneath it.
+# Asking for the element's own name said "absent", and every array of anything
+# compound loaded empty.
+G(msgs.count == 2);                                 # two in every record here
+G(__time__ == 0    => msgs[0].n == 1 && msgs[1].n == 2);
+G(__time__ == 1000 => msgs[0].n == 3 && msgs[1].n == 4);
+
+# A string inside a ragged element. Strings are interned into a pool and stored
+# as an offset, so the walk that resolves them has to follow the descriptor out
+# to where the elements were placed and come back.
+G(__time__ == 0    => msgs[0].name == "alpha");
+G(__time__ == 0    => msgs[1].name == "beta");
+G(__time__ == 2000 => msgs[0].name == "epsilon");
+
+# ── Ragged in both dimensions ────────────────────────────────────────────────
+G(rows.count == 2);                                 # two rows in every record
+G(__time__ == 0    => rows[0].count == 3 && rows[1].count == 2);
+G(__time__ == 1000 => rows[0].count == 2 && rows[1].count == 1);
+G(__time__ == 2000 => rows[0].count == 1 && rows[1].count == 3);
+G(__time__ == 3000 => rows[0].count == 2 && rows[1].count == 3);
+G(__time__ == 0    => rows[0][0] == 1 && rows[1][0] == 4);
+G(__time__ == 2000 => rows[1][0] == 2);
+
+# Every element of every row, without either extent written down and without
+# an index that could leave one. This is the assertion that has to hold when
+# both dimensions are ragged at once.
+G(all row, i in rows: all p, j in row: p == row[j]);
+G(all row in rows: all p in row: p > 0);
+
+# Indices stay inside the count on purpose. An index past the end has never
+# been checked -- the language says so -- and on a padded array it read a pad
+# byte, which is a wrong answer. On a ragged array whose elements are
+# themselves arrays it reads a *descriptor* that was never written, and
+# dereferences it. Neither `&&` nor `=>` guards against that, because neither
+# short-circuits: both operands are evaluated. See docs/ragged-arrays.md.
+
+# ── Accumulating over lengths ────────────────────────────────────────────────
+Sum(true, pkt.count) == 9;                  # 3 + 2 + 0 + 4
+Cnt(pkt.count == 0)  == 1;
+Sum(true, rows.count) == 8;

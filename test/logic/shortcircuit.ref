@@ -1,0 +1,56 @@
+# `&&`, `||`, `=>` and `? :` evaluate only what they have to.
+#
+# They used to lower to `select`, which is a value and not a branch: both
+# operands were materialised into the same block and the operator chose
+# between them afterwards. While every expression is total -- a load at a
+# fixed offset, arithmetic, a comparison -- that is not a shortcut but the
+# better lowering, branchless and schedulable. REF's expressions were total,
+# so nothing was wrong with it.
+#
+# Two things had stopped being total. Every requirement below aborted the
+# process before short-circuiting, and none of them is exotic: each is the
+# obvious way to write "check this only where it makes sense".
+
+data x    : integer;
+data y    : integer;
+data rows : integer[][];
+
+# ── Division ─────────────────────────────────────────────────────────────────
+# x is 0 at the second state. The division ran regardless of the guard and
+# raised SIGFPE -- which has been true since long before arrays carried their
+# own length, and has nothing to do with them.
+G(x != 0 => y / x > 1);
+G(x != 0 ? y / x > 1 : true);
+G(x == 0 || y / x > 1);
+
+# ── An index past the end ────────────────────────────────────────────────────
+# rows has two rows at the first state, one at the second, none at the third.
+# `rows[1]` where there is no second row reads a descriptor that was never
+# written, and the next step dereferences it. A padded array made this a wrong
+# byte; a ragged one makes it a wild pointer.
+G(rows.count > 1 => rows[1][0] > 0);
+G(rows.count > 1 ? rows[1][0] > 0 : true);
+G(rows.count == 0 || rows[0][0] > 0);
+
+# ── The order is the specification's, not the compiler's ─────────────────────
+# A guard guards what follows it, and only that. Written the other way round
+#
+#     G((y / x > 1) && x != 0);
+#
+# still aborts, and should: the reading of `&&` that makes everything above
+# work is the same reading that leaves this one the author's mistake. It is not
+# in this file because it would take the process with it.
+#
+# The guard also composes, which is what makes it usable: both the antecedent
+# and the consequent below are reached only where the count allows.
+G(rows.count > 1 && rows[1][0] > 0 => rows[1][0] > 0);
+G(x != 0 && y != 0 => y / x > 1);
+
+# ── Both operands still agree with the answer ────────────────────────────────
+# Short-circuiting must not change a verdict, only what is reached. These are
+# the ordinary cases, where both sides are safe either way.
+G((x > 1 && y > 1) == (y > 1 && x > 1));
+G((x > 1 || y > 1) == (y > 1 || x > 1));
+G((x > 100 && y > 1) == false);
+G((x >= 0 || y > 100) == true);
+G((x > 1 ? y : 0 - y) == (x > 1 ? y : 0 - y));

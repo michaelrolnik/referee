@@ -123,24 +123,12 @@ void    ingest(std::istream&        refIn,   std::string const& refName,
                        std::istreambuf_iterator<char>()};
     auto        doc     = loader::Row::open(dataIn, dataName);
 
-    // 2. Schema: cheap AST-only parse. Parsed once to learn which arrays are
-    //    unsized, then again with the extents read off the column names --
-    //    re-parsing rather than patching types, since a Type is immutable once
-    //    built and shared through the Factory.
-    Referee::Sizes  sizes;
-    {
-        std::istringstream  probe(refSrc);
-        Referee::Schema     first;
-        try
-        {
-            first = Referee::parseSchema(probe, refName, includePaths);
-        }
-        catch (std::exception const&)
-        {
-            //  Unsized arrays make the first parse fail; infer, then retry.
-            sizes = referee::db::inferSizes(*doc);
-        }
-    }
+    // 2. Schema: cheap AST-only parse.
+    //  Column extents, read off the header. These no longer reach the type
+    //  system -- `T[]` means unbounded, and stays that way -- so this is the
+    //  loader's allocation figure and nothing else: how far to probe for
+    //  elements before concluding the row has no more.
+    Referee::Sizes  sizes = referee::db::inferSizes(*doc);
 
     std::istringstream  refForSchema(refSrc);
     auto    schema      = Referee::parseSchema(refForSchema, refName, includePaths, sizes);
@@ -183,7 +171,8 @@ void    ingest(std::istream&        refIn,   std::string const& refName,
             auto*       type    = astModule->getProp(name);
             blobs[si][pi].clear();
             Loader::load(blobs[si][pi], name, type,
-                [&](std::string const& col) { return doc->cell(col, row); });
+                [&](std::string const& col) { return doc->cell(col, row); },
+                sizes);
         }
     }
 
@@ -215,7 +204,8 @@ void    ingest(std::istream&        refIn,   std::string const& refName,
                 auto* ctype = astModule->getConf(cname);
                 alignBuffer(confBlob, ctype->alignment());
                 Loader::load(confBlob, cname, ctype,
-                    [&](std::string const& col) { return confDoc->cell(col, 0); });
+                    [&](std::string const& col) { return confDoc->cell(col, 0); },
+                    referee::db::inferSizes(*confDoc));
             }
         }
         else

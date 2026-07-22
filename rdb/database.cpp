@@ -310,6 +310,11 @@ public:
 protected:
     virtual void    visitString(uint8_t* slot) = 0;
 
+    //  An array with no written extent. `slot` is its `{count, offset}`
+    //  descriptor; the elements have already been walked by the time this is
+    //  called, so a subclass is free to overwrite the offset.
+    virtual void    visitArray(uint8_t* slot, int64_t count, int64_t delta) {}
+
     void    visit(TypeBoolean* t) override { advance(t); }
     void    visit(TypeByte*    t) override { advance(t); }
     void    visit(TypeInteger* t) override { advance(t); }
@@ -335,8 +340,37 @@ protected:
     }
     void    visit(TypeArray*   a) override
     {
+        //  An array that carries its own length is sixteen bytes here -- a
+        //  count and an offset -- with the elements placed after the fixed
+        //  layout. The offset is relative to the descriptor, so it survives
+        //  the blob being appended into the file and then mapped somewhere
+        //  else entirely; it is turned into a pointer on the way in.
         if (a->count == 0)
-            throw std::runtime_error("rdb: dynamic arrays not yet supported");
+        {
+            check(a->size());
+
+            uint8_t*    slot  = m_cur;
+            int64_t     count = 0;
+            int64_t     delta = 0;
+
+            std::memcpy(&count, slot,     sizeof(count));
+            std::memcpy(&delta, slot + 8, sizeof(delta));
+
+            //  Elements live outside the fixed layout, so the walk detours to
+            //  them and comes back. They may hold strings, which is the whole
+            //  reason this walker exists.
+            if (count > 0)
+            {
+                m_cur = slot + delta;
+                for (int64_t i = 0; i < count; i++)
+                    walk(a->type);
+            }
+
+            m_cur = slot + a->size();
+            visitArray(slot, count, delta);
+            return;
+        }
+
         for (uint32_t i = 0; i < a->count; i++)
             walk(a->type);
     }
@@ -416,6 +450,18 @@ public:
         , m_pool(pool)
         , m_poolSize(poolSize)
     {
+    }
+
+protected:
+    //  The offset becomes a host pointer, now that the blob has an address.
+    //  Exactly what happens to a string, one level up: the file stores a
+    //  displacement because it has to, and the running program wants a
+    //  pointer.
+    void    visitArray(uint8_t* slot, int64_t count, int64_t delta) override
+    {
+        void*   host = slot + delta;
+
+        std::memcpy(slot + 8, &host, sizeof(host));
     }
 
 protected:

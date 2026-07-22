@@ -1,6 +1,8 @@
 # Ragged arrays: `{count, T[]}` per row
 
-**Status:** designed, not built. The representation is half-present already.
+**Status:** built, on branch `ragged-arrays`. `T[]` means unbounded: the loader
+reads however many cells a row held and writes a `{count, pointer}` descriptor,
+`.count` is a load, and a quantifier is a loop. One open consequence, below.
 **Shape:** an array of arrays where each inner array carries its own length, rather than every row having the same extent.
 
 ## Why the current arrays cannot do it
@@ -52,10 +54,10 @@ existing one that was never wired up.
 
 | | |
 | --- | --- |
-| **loader** | `LoaderImpl::visit(TypeArray*)` throws for `count == 0`. It would emit a length and a pointer, with the elements somewhere the row can reference — which means the row is no longer self-contained. |
-| **`.rdb`** | rows are fixed-size by design, so variable-length elements need a heap alongside the state table, and the schema encoding needs the dynamic form. |
-| **`.count`** | currently a compile-time constant folded at the member access; it becomes a load of the length field. |
-| **quantifiers** | expansion is compile-time. Over a runtime extent it cannot expand at all — it needs the guarded-expansion treatment slicing already uses, bounded by a declared maximum. |
+| **loader** | **done.** The descriptor is reserved where the array sits and the elements are placed after the fixed layout, so members that follow it do not shift. The pointer is written as an offset *relative to the descriptor*, which is what lets the blob be appended into a file and then mapped at another address entirely. |
+| **`.rdb`** | **done, and it needed no heap.** The elements go in the prop blob after the fixed part, so blobs are variable-length but still self-contained. The offset becomes a host pointer on the way in — exactly what already happened to strings one level down, and the same walk does both. |
+| **`.count`** | **done.** A written extent still folds to a constant; an array without one extracts the count from its descriptor. |
+| **quantifiers** | **done.** Over a runtime extent there is nothing to expand, so the body is built once with a binder standing in for the index and lowers to a loop. Every form -- `all`, `some`, `none`, `one`, `at least`, `at most` -- is a comparison on how many elements satisfied it, which is the reduction the counting forms already used. A written extent still unrolls. A temporal operator in the body is rejected: its linear buffers are built once per node, before the binder has a value, and expansion used to give each element its own node and so its own buffer. |
 | **external functions** | already right. An array crosses as `{count, data}`, so a ragged row *is* the descriptor and needs no marshalling at all. |
 
 ## The shape, decided
@@ -201,3 +203,53 @@ No cap appears anywhere, which was the point.
 
 `docs/quantifiers.md` sketched `T[<= N]` for the single-row case; this is the
 same idea one dimension up, and the two should land together or not at all.
+
+
+## An index past the end was fatal, and `&&` now guards against it
+
+The language has never bounds-checked an index, and said so. On a padded array
+that was survivable: `pkt[7]` on a four-element array read a pad byte, a wrong
+answer in a place a specification should not have looked. On a ragged array
+whose elements are themselves arrays, the same read produces a **descriptor
+that was never written**, and the next step dereferences it.
+
+`&&`, `||`, `=>` and `? :` did not protect it, because they lowered to
+`select` -- a value, not a branch. Both operands were materialised into the
+same block and the operator chose between them afterwards. While every
+expression is total that is not a shortcut but the *better* lowering:
+branchless, schedulable, no join. REF's expressions were total, so nothing was
+wrong with it.
+
+Two things had stopped being total, and only one of them is about arrays.
+Integer division by zero raised SIGFPE the same way, and had done since long
+before any of this -- `G(x != 0 => y / x > 1)` aborted the process on the state
+where `x` was zero.
+
+They branch now, so the right-hand side sits in a block reached only when the
+left decides nothing:
+
+```llvm
+  %1 = icmp sgt i64 %desc_rows.unpack, 1
+  br i1 %1, label %and.rhs, label %and.done
+and.rhs:
+  ...                                       ; the dereference, reached only here
+  br label %and.done
+and.done:
+  %and = phi i1 [ false, %entry ], [ %2, %and.rhs ]
+```
+
+**It costs nothing measurable.** 200 000 states of `G(a && b || !a)`: 2.12 s
+before, 2.09 s after. Where the right-hand side is cheap and safe, LLVM folds
+the branch straight back into the `select` it used to be -- so the lowering now
+says what it means and the optimiser decides how to run it, which is the right
+division of labour and was not available while the front end had already
+committed.
+
+The guard guards what follows it, and only that. `(y / x > 1) && x != 0` still
+aborts, and should: the reading of `&&` that makes the others work is the same
+reading that leaves this one the author's mistake.
+
+Bounds checking itself is still absent by design, so an index past the end of a
+*scalar* array still reads a neighbouring byte rather than being caught. What
+changed is that a specification can now say "only where there is one" and be
+believed.
