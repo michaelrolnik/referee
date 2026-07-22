@@ -1,0 +1,51 @@
+# The standard library: functions referee implements itself.
+#
+# Not shipped as a .so, and this file proves it -- it runs with no -L at all.
+# A user should not need a plugin directory to call `sqrt`, and a
+# specification using only built-ins keeps the property that a .ref plus a
+# trace determines the verdict: nothing external, nothing to version.
+#
+# They lower to LLVM intrinsics or a couple of instructions, so they also work
+# identically under a JIT and an ahead-of-time checker, and need no header.
+
+data i : integer;
+data r : number;
+
+# Integer forms. There is no integer-abs instruction, so these are a compare
+# and a select rather than a call.
+G(std::math::abs(i) >= 0);
+G(std::math::abs(0 - i) == std::math::abs(i));
+G(std::math::min(i, 10) <= 10);
+G(std::math::max(i, 10) >= 10);
+G(std::math::min(i, i) == i);
+G(std::math::max(i, 10) >= std::math::min(i, 10));
+
+# Number forms.
+G(std::math::fabs(r) >= 0.0);
+G(std::math::fmin(r, 2.0) <= 2.0);
+G(std::math::fmax(r, 2.0) >= 2.0);
+G(std::math::sqrt(4.0) == 2.0);
+G(std::math::sqrt(r) * std::math::sqrt(r) > 0.0);
+G(std::math::pow(2.0, 10.0) == 1024.0);
+G(std::math::log2(8.0) == 3.0);
+G(std::math::log10(100.0) == 2.0);
+G(std::math::exp(0.0) == 1.0);
+G(std::math::log(1.0) == 0.0);
+G(std::math::sin(0.0) == 0.0);
+G(std::math::cos(0.0) == 1.0);
+
+# ── Rounding returns an *integer* ────────────────────────────────────────────
+# On purpose. REF has no cast, so number-to-integer conversion was not
+# expressible at all before this, and rounding is where a specification
+# actually wants it -- to compare against an integer signal, or to index.
+G(std::math::floor(2.7) == 2);
+G(std::math::ceil(2.1) == 3);
+G(std::math::round(2.5) == 3);
+G(std::math::trunc(0.0 - 2.7) == -2);
+G(std::math::floor(0.0 - 2.7) == -3);       # floor rounds down, trunc toward zero
+G(std::math::floor(r) <= std::math::ceil(r));
+G(std::math::floor(r) == std::math::ceil(r) - 1 || r == std::math::floor(r));
+
+# The result really is an integer: it compares against one without widening,
+# and integer division would not typecheck on a number.
+G(std::math::floor(r) * 2 >= 2);

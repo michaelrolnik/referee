@@ -1,0 +1,79 @@
+/*
+ *  The standard library: functions referee implements itself.
+ *
+ *  Deliberately *not* shipped as a .so. A user should not need a plugin
+ *  directory to call `sqrt`, and a specification that uses only built-ins
+ *  keeps the property that a .ref plus a trace determines the verdict --
+ *  nothing external, nothing to version, nothing to install. They also need
+ *  no header and no ABI, and work identically under a JIT and an AOT checker.
+ */
+#pragma once
+
+#include "syntax.hpp"
+#include "factory.hpp"
+
+#include <string>
+#include <vector>
+
+struct  Builtin
+{
+    enum class Kind
+    {
+        IAbs, IMin, IMax,           //  emitted as IR: a compare and a select
+        FAbs, FMin, FMax,           //  llvm.fabs / llvm.minnum / llvm.maxnum
+        Sqrt, Exp, Log, Log2, Log10,
+        Sin,  Cos,  Pow,
+        Floor, Ceil, Round, Trunc,  //  number -> *integer*: REF has no cast,
+                                    //  so this is the only way to convert
+    };
+
+    char const*         name;
+    Kind                kind;
+    unsigned            arity;
+    bool                takesNumber;    //  false: integer arguments
+    bool                returnsNumber;  //  false: integer result
+};
+
+//  Looked up by name when a call names no declared `func`. Names are
+//  namespaced, so `std::math::sqrt` cannot collide with anything a
+//  specification declares for itself.
+inline std::vector<Builtin> const&  builtins()
+{
+    static std::vector<Builtin> const   table = {
+        { "std::math::abs",   Builtin::Kind::IAbs,  1, false, false },
+        { "std::math::min",   Builtin::Kind::IMin,  2, false, false },
+        { "std::math::max",   Builtin::Kind::IMax,  2, false, false },
+
+        { "std::math::fabs",  Builtin::Kind::FAbs,  1, true,  true  },
+        { "std::math::fmin",  Builtin::Kind::FMin,  2, true,  true  },
+        { "std::math::fmax",  Builtin::Kind::FMax,  2, true,  true  },
+
+        { "std::math::sqrt",  Builtin::Kind::Sqrt,  1, true,  true  },
+        { "std::math::exp",   Builtin::Kind::Exp,   1, true,  true  },
+        { "std::math::log",   Builtin::Kind::Log,   1, true,  true  },
+        { "std::math::log2",  Builtin::Kind::Log2,  1, true,  true  },
+        { "std::math::log10", Builtin::Kind::Log10, 1, true,  true  },
+        { "std::math::sin",   Builtin::Kind::Sin,   1, true,  true  },
+        { "std::math::cos",   Builtin::Kind::Cos,   1, true,  true  },
+        { "std::math::pow",   Builtin::Kind::Pow,   2, true,  true  },
+
+        //  These return an integer on purpose. REF has no cast, so
+        //  number-to-integer conversion is otherwise not expressible at all,
+        //  and rounding is where a specification actually wants it.
+        { "std::math::floor", Builtin::Kind::Floor, 1, true,  false },
+        { "std::math::ceil",  Builtin::Kind::Ceil,  1, true,  false },
+        { "std::math::round", Builtin::Kind::Round, 1, true,  false },
+        { "std::math::trunc", Builtin::Kind::Trunc, 1, true,  false },
+    };
+
+    return table;
+}
+
+inline Builtin const*   findBuiltin(std::string const& name)
+{
+    for(auto const& b: builtins())
+        if(name == b.name)
+            return &b;
+
+    return nullptr;
+}

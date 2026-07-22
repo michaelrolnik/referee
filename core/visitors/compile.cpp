@@ -27,6 +27,7 @@
 #include "typecalc.hpp"
 #include "strings.hpp"
 #include "../factory.hpp"
+#include "../builtins.hpp"
 
 #include <functional>
 #include <vector>
@@ -1439,6 +1440,71 @@ void    CompileExprImpl::visit( ExprSlice*      expr)
 //  that the linked function matches, which is what the generated header is for.
 void    CompileExprImpl::visit( ExprCall*       expr)
 {
+    //  A built-in lowers to an intrinsic or to a couple of instructions --
+    //  never to an external symbol -- so it needs no .so, no -L and no
+    //  header, and a specification using only built-ins stays self-contained.
+    if(auto const* bi = findBuiltin(expr->name))
+    {
+        std::vector<llvm::Value*>   a;
+        for(auto* arg: expr->args)
+            a.push_back(make(arg));
+
+        auto    intr = [&](llvm::Intrinsic::ID id)
+        {
+            return m_builder->CreateIntrinsic(id, {m_builder->getDoubleTy()}, a);
+        };
+
+        switch(bi->kind)
+        {
+        case Builtin::Kind::IAbs:
+            //  No integer-abs instruction: compare and select.
+            m_value = m_builder->CreateSelect(
+                        m_builder->CreateICmpSLT(a[0],
+                            llvm::ConstantInt::getSigned(m_builder->getInt64Ty(), 0)),
+                        m_builder->CreateNeg(a[0]), a[0], "abs");
+            return;
+
+        case Builtin::Kind::IMin:
+            m_value = m_builder->CreateSelect(
+                        m_builder->CreateICmpSLT(a[0], a[1]), a[0], a[1], "min");
+            return;
+
+        case Builtin::Kind::IMax:
+            m_value = m_builder->CreateSelect(
+                        m_builder->CreateICmpSGT(a[0], a[1]), a[0], a[1], "max");
+            return;
+
+        case Builtin::Kind::FAbs:  m_value = intr(llvm::Intrinsic::fabs);   return;
+        case Builtin::Kind::FMin:  m_value = intr(llvm::Intrinsic::minnum); return;
+        case Builtin::Kind::FMax:  m_value = intr(llvm::Intrinsic::maxnum); return;
+        case Builtin::Kind::Sqrt:  m_value = intr(llvm::Intrinsic::sqrt);   return;
+        case Builtin::Kind::Exp:   m_value = intr(llvm::Intrinsic::exp);    return;
+        case Builtin::Kind::Log:   m_value = intr(llvm::Intrinsic::log);    return;
+        case Builtin::Kind::Log2:  m_value = intr(llvm::Intrinsic::log2);   return;
+        case Builtin::Kind::Log10: m_value = intr(llvm::Intrinsic::log10);  return;
+        case Builtin::Kind::Sin:   m_value = intr(llvm::Intrinsic::sin);    return;
+        case Builtin::Kind::Cos:   m_value = intr(llvm::Intrinsic::cos);    return;
+        case Builtin::Kind::Pow:   m_value = intr(llvm::Intrinsic::pow);    return;
+
+        //  Rounded to a whole number, then narrowed: the result is an integer
+        //  because that is what a specification wants to compare and index
+        //  with, and REF has no cast to get there otherwise.
+        case Builtin::Kind::Floor:
+        case Builtin::Kind::Ceil:
+        case Builtin::Kind::Round:
+        case Builtin::Kind::Trunc:
+        {
+            auto    id = bi->kind == Builtin::Kind::Floor ? llvm::Intrinsic::floor
+                       : bi->kind == Builtin::Kind::Ceil  ? llvm::Intrinsic::ceil
+                       : bi->kind == Builtin::Kind::Round ? llvm::Intrinsic::round
+                                                          : llvm::Intrinsic::trunc;
+
+            m_value = m_builder->CreateFPToSI(intr(id), m_builder->getInt64Ty(), "toint");
+            return;
+        }
+        }
+    }
+
     auto const& decl    = m_refmod->getFunc(expr->name);
     auto        symbol  = m_refmod->symbolFor(expr->name);
 

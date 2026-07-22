@@ -25,6 +25,7 @@
 #include "typecalc.hpp"
 #include "../factory.hpp"
 #include "../module.hpp"
+#include "../builtins.hpp"
 
 #include <exception>
 
@@ -642,6 +643,28 @@ void    TypeCalcImpl::visit(ExprSlice*              expr)
 
 void    TypeCalcImpl::visit(ExprCall*               expr)
 {
+    //  A built-in is not declared anywhere: referee implements it, so there is
+    //  nothing to import and no .so to find.
+    if(auto const* bi = findBuiltin(expr->name))
+    {
+        if(expr->args.size() != bi->arity)
+            throw Exception(expr->where(),
+                "'" + expr->name + "' takes " + std::to_string(bi->arity)
+                + " argument(s), " + std::to_string(expr->args.size()) + " given");
+
+        auto    want = bi->takesNumber ? typeNumber : typeInteger;
+
+        for(std::size_t i = 0; i < expr->args.size(); i++)
+            if(widen(make(expr->args[i])) != want)
+                throw Exception(expr->args[i]->where(),
+                    std::string("bad type: argument ") + std::to_string(i + 1)
+                    + " of '" + expr->name + "' must be "
+                    + (bi->takesNumber ? "a number" : "an integer"));
+
+        m_type = bi->returnsNumber ? typeNumber : typeInteger;
+        return;
+    }
+
     if(!m_module->hasFunc(expr->name))
     {
         throw Exception(expr->where(), "no such function: '" + expr->name + "'");

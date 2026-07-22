@@ -334,6 +334,28 @@ TEST(Diagnostics, WriterRejectsMisuse)
 // Both are behavioural changes rather than test fixes, so they are left for a
 // separate pass.
 
+// Built-ins are checked like any other call, and their names are namespaced
+// so they cannot collide with anything a specification declares.
+TEST(Diagnostics, RejectsBadBuiltinCalls)
+{
+    char const* cases[] = {
+        //  arity
+        "data bi : integer;\nG(std::math::abs() == 0);\n",
+        "data bj : integer;\nG(std::math::abs(bj, bj) == 0);\n",
+        "data bk : integer;\nG(std::math::min(bk) == 0);\n",
+        //  integer forms take integers, number forms take numbers
+        "data bm : number;\nG(std::math::abs(bm) == 0);\n",
+        "data bn : string;\nG(std::math::sqrt(bn) == 0.0);\n",
+        //  no such built-in
+        "data bo : integer;\nG(std::math::nosuch(bo) == 0);\n",
+        "data bp : integer;\nG(std::nosuch::abs(bp) == 0);\n",
+    };
+
+    int     n = 0;
+    for (auto const* src : cases)
+        EXPECT_THROW(parseSnippet(src, "bi" + std::to_string(n++)), std::exception) << src;
+}
+
 // Slicing: what may be sliced, and by what.
 TEST(Diagnostics, RejectsBadSlices)
 {

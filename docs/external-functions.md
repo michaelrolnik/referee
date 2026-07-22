@@ -336,32 +336,41 @@ sum x in xs: x.len
 It cannot be a `func`, because it needs the quantifier's compile-time expansion over an extent — the same machinery `all` and `one` already use. It is the single most-missed thing in all three MCTP examples: it is why `message_body_is_bounded` is written out one term per packet slot, and why "bytes from SOM to EOM" needs either a time window or a quadratic freeze. This is the highest-value item in this document and it does not depend on external functions at all.
 
 **Tier 2 — built-in pure functions**, namespaced under `std::`, implemented
-inside referee rather than shipped as a `.so`. This is the important choice:
-a user should not need a plugin directory to call `sqrt`. Built in, they need
+inside referee rather than shipped as a `.so`. **Built** for `std::math`.
+
+A user should not need a plugin directory to call `sqrt`. Built in, they need
 no `-L`, no install, no ABI and no header, and they keep the property that a
-`.ref` plus a trace determines the verdict.
+`.ref` plus a trace determines the verdict. They lower to LLVM intrinsics, or
+to a couple of instructions where no intrinsic exists, so they behave
+identically under a JIT and an ahead-of-time checker.
 
 ```text
-std::math::abs     std::math::min      std::math::max
-std::math::sqrt    std::math::pow      std::math::hypot
-std::math::exp     std::math::log      std::math::log2
-std::math::sin     std::math::cos      std::math::atan2
-std::math::floor   std::math::ceil     std::math::round    std::math::trunc
-
-std::string::len       std::string::at        std::string::compare
-std::string::starts    std::string::ends      std::string::contains
-std::string::find
+std::math::abs     std::math::min      std::math::max        (integer)
+std::math::fabs    std::math::fmin     std::math::fmax       (number)
+std::math::sqrt    std::math::pow      std::math::exp
+std::math::log     std::math::log2     std::math::log10
+std::math::sin     std::math::cos
+std::math::floor   std::math::ceil     std::math::round      std::math::trunc
 ```
 
-Two notes on the selection. `floor` / `ceil` / `round` / `trunc` should return
-**integer**, not number: REF has no cast, so number-to-integer conversion is
-currently not expressible at all, and this is the natural place to close that.
+`floor` / `ceil` / `round` / `trunc` return **integer**, not number. That is
+the point of including them: REF has no cast, so number-to-integer conversion
+was not expressible at all, and rounding is where a specification actually
+wants it -- to compare against an integer signal, or to index with.
 
-And the string set stops where it does for a reason: with no allocator and no
-ownership model, a string function can return a number or a boolean but not a
-*new string*. So there is no `substr`, no `concat`, no `to_upper`. Adding them
-means deciding who owns the result, which is a bigger question than the
-functions are worth.
+Separate integer and number spellings (`abs` / `fabs`) are C's workaround for
+having no overloading, and should not survive: structural-hash symbols already
+make overloading possible, since two signatures hash differently. What is left
+is to let `Module::addFunc` hold more than one signature per name and to
+resolve a call against them. Then `abs` serves both and `fabs` retires.
+
+**Not built:** `std::string`. It needs host functions registered with the JIT
+rather than intrinsics -- the mechanism already exists, since `debug` is
+registered exactly that way. The set stops where it does for a reason: with no
+allocator and no ownership model, a string function can return a number or a
+boolean but not a *new string*. So `len`, `at`, `starts`, `ends`, `contains`,
+`find`, `compare` -- and no `substr`, `concat` or `to_upper`, which would mean
+deciding who owns the result.
 
 `crc8` / `crc16` / `crc32` with named polynomials belong here too, and would
 remove the motivating case for external functions entirely.

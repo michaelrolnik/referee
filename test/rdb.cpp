@@ -658,6 +658,19 @@ TEST(Rdb, AccumulateOverRecords)
     EXPECT_TRUE(Referee::executeAll(in, ref, {{csv, false}}, "", out)) << out.str();
 }
 
+// The standard library. Note the absence of a library path: built-ins are
+// implemented by referee, not shipped as a .so, so a specification using only
+// them stays self-contained.
+TEST(Rdb, StandardLibrary)
+{
+    auto    ref = std::string(REFEREE_TEST_DATA_DIR) + "/stdlib.ref";
+    auto    csv = std::string(REFEREE_TEST_DATA_DIR) + "/stdlib.csv";
+
+    std::ifstream       in(ref);
+    std::ostringstream  out;
+    EXPECT_TRUE(Referee::executeAll(in, ref, {{csv, false}}, "", out)) << out.str();
+}
+
 // External functions: a `func` declaration binds to a `referee_`-prefixed
 // symbol in a .so found on the -L search path. Everything resolves before the
 // first trace row is read.
