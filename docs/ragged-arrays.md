@@ -58,66 +58,84 @@ existing one that was never wired up.
 | **quantifiers** | expansion is compile-time. Over a runtime extent it cannot expand at all — it needs the guarded-expansion treatment slicing already uses, bounded by a declared maximum. |
 | **external functions** | already right. An array crosses as `{count, data}`, so a ragged row *is* the descriptor and needs no marshalling at all. |
 
-## The shape, settled
+## The shape, decided
 
-Every array is `{count, T*}`. `count` is the length and nothing else — there is
-no capacity in the type, because the elements do not live in the row.
+1. **`T[]` means unbounded** — each record carries its own length. The natural
+   reading wins.
+2. **Elements live in a pool**; the row holds `{count, pointer}`. Rows stay
+   fixed-stride whatever the lengths.
+3. **Quantifiers lower to a runtime loop**, not to unrolled conjuncts. No cap
+   is needed anywhere, and `T[<= N]` is not introduced.
 
-That last point is what makes it work, and there is precedent for it here
-already: a string is stored as an 8-byte pointer into an interned pool, with
-the characters outside the row. Arrays would do the same. Rows stay fixed-size
-whatever the lengths, `.rdb` keeps its fixed-stride state table, and a ragged
-row is simply a descriptor whose neighbour has a different length.
+Coherent, and the cleanest of the options — no bookkeeping cap in the
+specification, no second array kind for consumers to branch on, and `.count`
+always meaning length.
 
-Index access is checked against `count`, always, because `count` is always
-there.
+There is precedent for the storage: a string is already an 8-byte pointer into
+an interned pool with the characters outside the row, so out-of-row data with
+a fixed-size handle is not new here.
 
-### A declared size is for quantifiers, and only for quantifiers
+### This is a breaking change, and the migration is not cosmetic
 
-`all x in xs: P` expands at compile time — one conjunct per element — so a
-length known only at run time gives it no number to expand to. That is the
-single genuine constraint, and it is not about storage.
+Every existing `T[]` changes meaning. `examples/mctp` declares `pkt : byte[]`
+and `payload : byte[]`; `loadsized.ref`, `nested_extents.ref` and
+`arrays_pinned.ref` all rely on `T[]` being one fixed extent for the run.
 
-So a declaration may carry a maximum, and it means exactly one thing: *this may
-be quantified over*.
+They do not merely need re-checking — several are *about* the old meaning.
+`loadsized.ref` exists to assert that one specification holds against traces of
+different sizes because the extent is fixed per run. Under the new meaning that
+is no longer the property being tested.
 
-```text
-data payload : byte[];          #  index it, pass it, ask its .count
-data frame   : byte[<= 64];     #  all of the above, and quantify over it
-```
+### The obstacle: CSV cannot express a per-record length
 
-`all v in frame: P` expands over 64 and guards each conjunct on `frame.count`,
-which is what slicing already does for `pkt[0:len]`. Without the maximum the
-array is still perfectly usable — indexed, passed to a `func`, measured with
-`.count` — it simply cannot be the domain of a quantifier, and the diagnostic
-says so.
+A CSV has fixed columns. `pkt[0] … pkt[3]` is four columns in every row, so a
+record cannot carry three elements and its neighbour five. The extent is a
+property of the *header*, which is exactly why `inferSizes` reads it from
+column names today.
 
-That separation is worth having on its own: the cap is an affordance, not a
-property of the data, and a specification only pays for it where it uses it.
+So `T[]` in a CSV trace has no honest per-record meaning, and something has to
+give:
 
-### What it costs
+* **CSV keeps the old semantics** — `T[]` from a CSV is fixed-extent, from a
+  `.yml` or `.rdb` it is per-record. One spelling, two meanings depending on
+  the trace format, which is the kind of thing that produces a silent wrong
+  answer rather than an error.
+* **CSV grows a length column convention** — `pkt.count` beside `pkt[0..N]`,
+  with the columns as capacity. Honest, and it puts the padding back in the
+  trace instead of the specification, which is arguably where it belonged.
+* **CSV stops supporting unbounded arrays** — declaring `T[]` and loading a CSV
+  is an error naming the formats that can carry it. Simplest and most honest;
+  costs every CSV fixture that uses `T[]` today.
 
-**An indirection per element access.** Strings already pay it. Measurable
-inside a hot temporal loop, invisible elsewhere.
+This was raised earlier in the project's life — *"csv is too stupid/simple for
+this, we should use yml for other formats"* — and it is the same wall. It
+should be settled before any code is written, because it decides whether the
+loader has one path or two.
 
-**Sixteen bytes of descriptor per array.** For `byte[4]` that is four times the
-payload. Which argues for keeping the inline form where the extent *is* a
-compile-time constant and using the descriptor only where it is not — two
-representations, and therefore a real trade rather than a free win. Worth
-measuring before deciding, on a trace with many small fixed arrays.
+### Quantifiers as runtime loops
 
-**Nothing at the external-function boundary.** An array already crosses as
-`{count, data}`, so a ragged row is the descriptor and passes through
-unmarshalled.
+Removing the cap removes the guarded-expansion trick, and with it the constant
+folding that makes expansion cheap. Two things to think about:
+
+* A quantifier **inside a temporal operator** becomes a loop inside a loop.
+  `G(all v in pkt: v > 0)` is O(N × len) rather than O(N × constant), which is
+  the same shape as the accumulator cost measured in
+  [`accumulator-cost.md`](accumulator-cost.md) and worth measuring rather than
+  assuming.
+* The counting forms — `one`, `at least`, `at most` — currently expand to a sum
+  of indicators. As a loop they need an accumulator, which is the same
+  machinery `Sum` uses and which does not yet have a linear lowering.
 
 ## Suggested spelling
 
 ```text
-data payload : byte[<= 64][];     #  rows of at most 64 octets, each its own length
-G(all v in payload[0]: v != 0);   #  expands over 64, guarded by row 0's count
+data payload : byte[][];          #  rows, each its own length
+G(all v in payload[0]: v != 0);   #  a runtime loop over row 0's count
 G(payload[0].count <= 64);        #  a load, not a constant
-G(payload.count == 3);            #  and the outer array has one too
+G(payload.count == 3);            #  the outer array has a count too
 ```
+
+No cap appears anywhere, which was the point.
 
 `docs/quantifiers.md` sketched `T[<= N]` for the single-row case; this is the
 same idea one dimension up, and the two should land together or not at all.
