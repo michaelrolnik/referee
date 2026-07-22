@@ -303,7 +303,8 @@ Two rules make the scan safe rather than merely convenient:
 
 All of it resolves at JIT-setup time, before the first row is loaded:
 
-- a `func` with no matching symbol — names the function, the expected prototype, and the directories searched;
+- a `func` implemented against an **older layout** — names both symbols and says a type its signature depends on has changed. A plugin built by `--stub` carries a `referee_manifest`, a table of the `{name, symbol}` pairs it exports, which referee reads back on a lookup failure. That distinguishes *stale* from *never implemented* — opposite problems with opposite fixes, which otherwise both surface as "not found". `dlsym` can only answer whether an exact name exists, so the obvious implementation was to parse the ELF dynamic symbol table; looking up one agreed symbol and walking a table needs no per-format variants, and makes a plugin inspectable as a side effect. It is optional — a hand-written implementation without a manifest still works and gets the vaguer message;
+- a `func` with no matching symbol at all — names the function, the expected prototype, and the directories searched;
 - a duplicate symbol — names both objects;
 - a layout-version mismatch — names the object and both versions.
 
