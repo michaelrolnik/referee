@@ -658,6 +658,58 @@ TEST(Rdb, AccumulateOverRecords)
     EXPECT_TRUE(Referee::executeAll(in, ref, {{csv, false}}, "", out)) << out.str();
 }
 
+// The two duration patterns, which had no fixture at all before this. Their
+// absence was not harmless: a trace whose __time__ was in the wrong unit made
+// every minimum-duration requirement fail and every maximum-duration one pass,
+// which reads exactly like a broken pattern. Nothing contradicted that reading,
+// so the patterns were reported as broken when they were not.
+//
+// Both halves are checked here. The bounds that should hold are in
+// durations.ref; the ones that should *not* are below, because a fixture that
+// only ever passes cannot tell a working pattern from a vacuous one -- which
+// is the whole reason this file exists.
+TEST(Rdb, DurationPatterns)
+{
+    auto    ref = std::string(REFEREE_TEST_DATA_DIR) + "/durations.ref";
+    auto    csv = std::string(REFEREE_TEST_DATA_DIR) + "/durations.csv";
+
+    std::ifstream       in(ref);
+    std::ostringstream  out;
+    EXPECT_TRUE(Referee::executeAll(in, ref, {{csv, false}}, "", out)) << out.str();
+}
+
+TEST(Rdb, DurationPatternsRespondToTheirBound)
+{
+    auto    csv = std::string(REFEREE_TEST_DATA_DIR) + "/durations.csv";
+
+    //  lock.ON holds for ten seconds. __time__ is in nanoseconds.
+    struct  Case { char const* rule; bool holds; };
+
+    Case    cases[] = {
+        //  minimum: satisfied below the hold, refused above it
+        {"globally, once lock.ON becomes satisfied it remains so for at least 9 seconds;",   true },
+        {"globally, once lock.ON becomes satisfied it remains so for at least 20 seconds;",  false},
+        //  maximum: satisfied above the hold, refused below it
+        {"globally, once lock.ON becomes satisfied it remains so for less than 20 seconds;", true },
+        {"globally, once lock.ON becomes satisfied it remains so for less than 5 seconds;",  false},
+        //  and the unit actually multiplies -- 20000 ms is 20 s
+        {"globally, once lock.ON becomes satisfied it remains so for less than 20000 milliseconds;", true },
+        {"globally, once lock.ON becomes satisfied it remains so for less than 5000 milliseconds;",  false},
+    };
+
+    for (auto const& c : cases)
+    {
+        std::string         src = "type State : enum { ON, OFF };\n"
+                                  "data lock  : State;\n"
+                                  "data alarm : State;\n" + std::string(c.rule) + "\n";
+        std::istringstream  in(src);
+        std::ostringstream  out;
+
+        EXPECT_EQ(Referee::executeAll(in, "<dur>", {{csv, false}}, "", out), c.holds)
+            << c.rule << "\n" << out.str();
+    }
+}
+
 // The standard library. Note the absence of a library path: built-ins are
 // implemented by referee, not shipped as a .so, so a specification using only
 // them stays self-contained.

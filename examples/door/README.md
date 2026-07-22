@@ -22,19 +22,28 @@ under the alarm threshold.
 
 ## What the run says
 
-Seven of eight pass. The remaining failure is not diagnosed, and is marked as
-such rather than tuned away.
+All eight pass.
 
-| requirement | |
-| --- | --- |
-| `power_up_locked` | PASS |
-| `alarm_only_when_open` | PASS |
-| `alarm_after_thirty_seconds` | PASS |
-| `button_unlocks` | PASS |
-| `unlocked_at_least_two_seconds` | **FAIL — undiagnosed** |
-| `unlocked_less_than_two_one` | PASS |
-| `no_opening_without_unlocking` | PASS |
-| `no_unlocking_without_button` | PASS |
+```text
+power_up_locked                          PASS
+alarm_only_when_open                     PASS
+alarm_after_thirty_seconds               PASS
+button_unlocks                           PASS
+unlocked_at_least_1900ms                 PASS
+unlocked_less_than_2100ms                PASS
+no_opening_without_unlocking             PASS
+no_unlocking_without_button              PASS
+```
+
+## `__time__` is in nanoseconds
+
+Worth stating early, because getting it wrong here cost real time and produced
+a confident, wrong bug report. A bound written `1 milliseconds` is 1 000 000
+time units. A trace stepping by 1000 spans *microseconds*, so every
+minimum-duration requirement fails and every maximum-duration one passes —
+which reads exactly like a broken pattern rather than a mis-scaled trace.
+
+`nominal.csv` steps in milliseconds and multiplies by 1 000 000.
 
 ## Three that were wrong, and how
 
@@ -62,19 +71,6 @@ repaired.
 All three are the mirror of vacuity: a requirement too strong fails on correct
 behaviour, where one too weak passes on incorrect behaviour. The second is more
 dangerous, but the first still costs a day spent suspecting the system.
-
-## The one failure is a bug in referee
-
-`unlocked_at_least_1900ms` fails, and not because of the trace. On a trace
-where the lock is ON for ten seconds, *"remains so for at least 1 millisecond"*
-also fails — and *"remains so for less than 1 millisecond"* **passes**.
-
-Neither duration pattern responds to its bound. See
-[`../../docs/duration-patterns-broken.md`](../../docs/duration-patterns-broken.md).
-
-The requirement here is left as written rather than replaced with something
-that passes: it says what the system should do, and the failure is the tool's.
-Once the pattern works, this is the test for it.
 
 ## Not done
 

@@ -1,0 +1,41 @@
+# The two duration patterns, which had no fixture at all until this one.
+#
+# `__time__` is in **nanoseconds**, and that is the whole reason this file
+# exists. A bound of `1 milliseconds` is 1 000 000 time units; a trace stepping
+# by 1000 spans microseconds, so every minimum-duration requirement fails and
+# every maximum-duration one passes -- which reads exactly like a broken
+# pattern, and was mistaken for one. Nothing in the test suite used either
+# pattern, so nothing contradicted the mistake.
+#
+# Trace: lock is ON from 1 s to 10 s inclusive, so it holds for 10 s and is
+# OFF at 11 s. Every bound below is chosen to sit clearly on one side of that.
+
+type State : enum { ON, OFF };
+
+data lock  : State;
+data alarm : State;
+
+# ── Minimum duration: satisfied by a bound the hold clears ───────────────────
+@min_one_second
+globally, once lock.ON becomes satisfied it remains so for at least 1 seconds;
+
+@min_nine_seconds
+globally, once lock.ON becomes satisfied it remains so for at least 9 seconds;
+
+@min_in_milliseconds
+globally, once lock.ON becomes satisfied it remains so for at least 500 milliseconds;
+
+# ── Maximum duration: satisfied by a bound the hold stays under ──────────────
+@max_twenty_seconds
+globally, once lock.ON becomes satisfied it remains so for less than 20 seconds;
+
+@max_in_milliseconds
+globally, once lock.ON becomes satisfied it remains so for less than 60000 milliseconds;
+
+# ── A second signal, so the patterns are not only exercised on one ───────────
+# alarm is ON from 4 s to 10 s: seven seconds.
+@alarm_min
+globally, once alarm.ON becomes satisfied it remains so for at least 2 seconds;
+
+@alarm_max
+globally, once alarm.ON becomes satisfied it remains so for less than 30 seconds;
