@@ -29,6 +29,9 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <fstream>
+#include <vector>
+#include <unistd.h>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -97,6 +100,71 @@ TEST(Cli, NoArgumentsIsAnError)
     auto    r = run(quote(REFEREE_BIN));
     EXPECT_NE(r.status, 0);
     EXPECT_NE(r.output.find("subcommand is required"), std::string::npos) << r.output;
+}
+
+namespace {
+
+std::string     tmpPath(std::string const& tag, std::string const& ext)
+{
+    std::string         pat = "/tmp/referee-cli-" + tag + "-XXXXXX";
+    std::vector<char>   buf(pat.begin(), pat.end());
+    buf.push_back('\0');
+    int     fd = ::mkstemp(buf.data());
+    EXPECT_GE(fd, 0);
+    if (fd >= 0) ::close(fd);
+    std::string         out(buf.data());
+    std::remove(out.c_str());
+    return out + ext;
+}
+
+} // namespace
+
+// The generated header is the only mechanism that makes an implementation and
+// a specification agree -- C cannot diagnose a signature mismatch. So the test
+// is not that the header looks right, but that a C compiler accepts it and
+// that the layout it describes is the one referee computes.
+TEST(Cli, HeaderCompilesAndMatchesTheLayout)
+{
+    auto    ref = tmpPath("hdr", ".ref");
+    {
+        std::ofstream   f(ref);
+        f << "type Dir   : enum { M2S, S2M };\n"
+             "type Pkt   : struct { flags : byte; len : byte; raw : byte[8]; kind : Dir; };\n"
+             "type Point : struct { x : number; y : number; };\n"
+             "func classify : (byte) -> Dir;\n"
+             "data d : Dir;\n";
+    }
+
+    auto    hdr = tmpPath("hdr", ".h");
+    auto    r   = run(quote(REFEREE_BIN) + " header " + quote(ref) + " -o " + quote(hdr));
+    EXPECT_EQ(r.status, 0) << r.output;
+
+    //  Enums are one byte and 1-based, with 0 reserved for "matched nothing".
+    //  A C enum written the obvious way would start at 0, putting every member
+    //  off by one and colliding the first with the sentinel.
+    auto    src = tmpPath("hdr", ".c");
+    {
+        std::ofstream   f(src);
+        f << "#include \"" << hdr << "\"\n"
+             "_Static_assert(sizeof(referee_Dir) == 1, \"one byte\");\n"
+             "_Static_assert(referee_Dir_unknown == 0, \"0 is the sentinel\");\n"
+             "_Static_assert(referee_Dir_M2S == 1, \"1-based\");\n"
+             "_Static_assert(referee_Dir_S2M == 2, \"1-based\");\n"
+             //  all members align 1: 1 + 1 + 8 + 1, no padding anywhere
+             "_Static_assert(sizeof(referee_Pkt) == 11, \"packed by alignment\");\n"
+             "_Static_assert(offsetof(referee_Pkt, raw) == 2, \"array offset\");\n"
+             "_Static_assert(offsetof(referee_Pkt, kind) == 10, \"enum offset\");\n"
+             "_Static_assert(sizeof(referee_Point) == 16, \"two doubles\");\n"
+             //  the prototype must be satisfiable exactly as generated
+             "referee_Dir referee_classify(uint8_t b) { return b ? referee_Dir_M2S : referee_Dir_S2M; }\n";
+    }
+
+    auto    obj = tmpPath("hdr", ".o");
+    auto    c   = run("cc -c -std=c11 -Wall -Wextra -Werror " + quote(src) + " -o " + quote(obj) + " 2>&1");
+    EXPECT_EQ(c.status, 0) << c.output;
+
+    std::remove(ref.c_str()); std::remove(hdr.c_str());
+    std::remove(src.c_str()); std::remove(obj.c_str());
 }
 
 TEST(Cli, HelpListsSubcommands)

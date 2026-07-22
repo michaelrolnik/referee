@@ -129,6 +129,16 @@ public:
                                 std::vector<std::string> const& includePaths = {},
                                 Sizes const& sizes = {});
 
+    /// Emit a C header declaring the specification's named types and the
+    /// prototypes of its `func` declarations, so an implementation compiles
+    /// against the same layout referee uses rather than a transcription of it.
+    /// `sizes` resolves `T[]` extents, which is why the caller may need a
+    /// trace: a struct holding an unsized array has a trace-dependent C type.
+    static void     emitHeader(std::string const& refPath,
+                               std::ostream& os,
+                               std::vector<std::string> const& includePaths = {},
+                               std::string const& tracePath = {});
+
     /// One trace to check, and whether it is expected to violate the
     /// specification. A corpus of traces that *must* be rejected is how a
     /// specification is kept from going vacuous: a requirement mistyped into

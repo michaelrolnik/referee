@@ -71,6 +71,21 @@ int main(int argc, char * argv[])
         ->check(CLI::ExistingFile);
     addIncludeOption(compile);
 
+    // header subcommand: emits a C header for the specification's named types
+    // and its `func` prototypes. Takes an optional trace, because a struct
+    // holding an unsized array has a trace-dependent C type.
+    std::string headerRef, headerLike, headerOut;
+    auto        header = app.add_subcommand(
+        "header", "Emit a C header for the specification's types and functions");
+    header->add_option("reffile", headerRef, "REF specification file")
+        ->required()
+        ->check(CLI::ExistingFile);
+    header->add_option("--like", headerLike,
+        "Trace whose array extents the header should be generated against")
+        ->check(CLI::ExistingFile);
+    header->add_option("-o,--output", headerOut, "Write here instead of stdout");
+    addIncludeOption(header);
+
     // execute subcommand
     std::string runRef;
     std::vector<std::string> runData;
@@ -127,6 +142,19 @@ int main(int argc, char * argv[])
         {
             std::ifstream   is(compileRef, std::ios_base::in);
             if (!Referee::printIR(is, compileRef, std::cout, includePaths)) return 1;
+        }
+        else if(app.got_subcommand("header"))
+        {
+            if (headerOut.empty())
+            {
+                Referee::emitHeader(headerRef, std::cout, includePaths, headerLike);
+            }
+            else
+            {
+                std::ofstream   os(headerOut, std::ios_base::out | std::ios_base::trunc);
+                if (!os) { std::cerr << "cannot write " << headerOut << "\n"; return 1; }
+                Referee::emitHeader(headerRef, os, includePaths, headerLike);
+            }
         }
         else if(app.got_subcommand("execute"))
         {
