@@ -78,22 +78,64 @@ witness is a pass over it in C++:
 None of it needs code generation. Deriving it from columns the producer
 already has removes the messiest part of the job entirely.
 
-### The costs, stated plainly
+### Bottom-up, one pass per node
 
-**Quadratic.** One function per node, called N times, and a bounded temporal
-node is itself O(N) per call — so O(N²) per row. Affordable for explain mode
-on one trace, given the measured split of ~700 ms fixed compilation against
-~0.12 ms per row, and the reason normal runs must not pay it.
+Calling a per-node function once per state is O(N) calls, and a temporal node
+re-walks the trace on each call, so it is O(N²) per row. That is affordable
+for one trace and still wasteful, and it throws away the insight the ordinary
+lowering already has.
 
-**Bound names cannot be compiled standalone.** A subexpression under a freeze
-variable or a quantifier binder refers to names that exist only in the
-enclosing context: `t@(...)` and `all x in xs:` cannot be lifted out. Those
-nodes are either skipped, or the producer supplies the binding and emits one
-row per binding.
+The unbounded operators compile to an O(N) recurrence precisely because a
+temporal value at state *s* is a fold of the child's value at *s* and the
+parent's value at *s+1*:
 
-A first version should skip them **and say so in the output**. A missing row
-is precisely the wrong thing to be quiet about in a picture whose purpose is
-showing what was never evaluated.
+```text
+Us(p, q)[s]  =  q[s] || (p[s] && Us(p, q)[s+1])
+```
+
+That is a statement about **columns**, not about states. So evaluate the tree
+bottom-up, a whole column at a time:
+
+* leaves — signals and computed props — are already materialised by
+  `__prepare__` before anything runs;
+* state formulas are element-wise over their children's columns;
+* temporal operators are a single backward pass, exactly the recurrence above;
+* accumulators are a windowed pass.
+
+One pass per node, so O(N × nodes) for the whole requirement rather than O(N²)
+per row. Every column is written as it is produced, and the topmost one is the
+requirement's own verdict.
+
+### What that costs, and the check that pays for it
+
+This is a **second evaluation path**, which is what the previous section said
+to avoid. The concern was real: a picture that contradicts the verdict is
+worse than no picture.
+
+What makes it safe is that the disagreement is now *detectable*. The verdict
+still comes from the compiled requirement, as it always did. The topmost
+column is computed independently — so the two must agree, and referee should
+assert it on every explain run:
+
+> if the topmost column disagrees with the compiled verdict, that is a bug in
+> referee, and it should be reported as one rather than drawn as a picture.
+
+That turns "these might drift" into "drift is caught the first time it
+happens, by the run that would have been misled by it". A single
+implementation cannot self-check; two can. It is the same reasoning that makes
+the MCTP examples inject defects rather than trusting a green result.
+
+### Where it stays expensive
+
+Freeze does not fold. `t@(...)` binds a state, so the inner expression has a
+different column for every choice of `t` — N columns of N values, and O(N²)
+again for that subtree. Quantifier binders are cheaper only because their
+domain is fixed at compile time.
+
+So the linear treatment covers the ordinary case and freeze remains the
+expensive one, which is the same shape the requirement lowering already has:
+`hasFreeContext` exists precisely because a temporal loop under `@` cannot be
+evaluated linearly.
 
 ## A subtlety the visualiser must not hide
 
