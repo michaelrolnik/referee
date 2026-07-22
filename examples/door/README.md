@@ -54,9 +54,21 @@ times across 48 states, so `alarm` is a single entry and `door` is two. That is
 the encoding heuristic doing what it is for, and it is visible in the file
 rather than only in a benchmark.
 
-The eight requirements show verdicts and no rows: referee emits per-requirement
-columns only once the subexpression evaluator exists. The signals are the
-picture for now.
+Each requirement draws a **verdict band** — a value over the whole trace, which
+is what a verdict is — and nothing more yet. Two things are still missing, both
+on referee's side rather than the viewers':
+
+**Scope ranges.** `scope.active` would shade where each requirement's scope was
+open, which is the interval you actually want beside a verdict. Referee does
+not emit it, deliberately: an empty `active` means *never opened*, which is the
+vacuity signal, so writing one speculatively would mark everything vacuous.
+Emitting it truthfully needs the pattern's scope kind carried from the AST
+through to where verdicts are computed, which is plumbing rather than
+guesswork.
+
+**Per-subexpression rows.** Those wait on the column evaluator. Until then the
+signals section is the picture, and the verdict band says which requirement
+decided what.
 
 ## `__time__` is in nanoseconds
 

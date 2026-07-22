@@ -156,7 +156,11 @@ def render(lines, out):
             p.append('<div class=why>scope never opened &mdash; nothing was checked</div>')
 
         if not rows:
-            p.append('<div class=sigs>verdict only — no rows produced yet</div>')
+            rows = [{"id": f"v{ri}", "label": f"verdict ({r['verdict']})",
+                     "kind": "state", "type": "boolean",
+                     "values": [r["verdict"] == "pass"] * n}]
+            p.append('<div class=sigs>verdict only — per-subexpression rows '
+                     'arrive with the column evaluator</div>')
 
         for row in rows:
             src  = signals.get(row["ref"]) if "ref" in row else row

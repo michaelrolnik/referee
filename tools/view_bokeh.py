@@ -124,7 +124,12 @@ def render(lines, path):
                    for row in rows]
         wits    = [row.get("witnesses") for row in rows]
         if not labels:
-            continue        #  verdict only: the title carries it
+            #  Verdict only. It is still a value over the whole trace, so it
+            #  draws as a band -- skipping the panel outright hid the
+            #  requirement from the selector as well as from the page.
+            labels = [f"verdict ({r['verdict']})"]
+            cols   = [[r["verdict"] == "pass"] * n]
+            wits   = [None]
 
         panels.append(strip(title, labels, cols, times, wits))
 
