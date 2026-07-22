@@ -371,11 +371,21 @@ static void     bindExternalFunctions(llvm::orc::LLJIT&               jit,
     //  Deterministic order. readdir order is not stable across filesystems,
     //  and a verdict must not depend on it.
     std::vector<std::string>    objects;
-    for (auto const& dir : libraryPaths)
+    for (auto const& entry : libraryPaths)
     {
+        std::error_code ec;
+
+        //  A file names one object; a directory contributes every .so in it.
+        //  Naming the file is what a build that produces a single object
+        //  wants, and saves inventing a directory to hold it.
+        if (std::filesystem::is_regular_file(entry, ec))
+        {
+            objects.push_back(entry);
+            continue;
+        }
+
         std::vector<std::string>    here;
-        std::error_code             ec;
-        for (auto const& e : std::filesystem::directory_iterator(dir, ec))
+        for (auto const& e : std::filesystem::directory_iterator(entry, ec))
             if (e.path().extension() == ".so")
                 here.push_back(e.path().string());
         std::sort(here.begin(), here.end());
@@ -385,7 +395,7 @@ static void     bindExternalFunctions(llvm::orc::LLJIT&               jit,
     if (objects.empty())
         throw std::runtime_error(fmt::format(
             "specification declares {} external function(s) but no .so was found"
-            " -- pass -L with a directory containing them",
+            " -- pass -L with the object, or a directory containing it",
             funcNames.size()));
 
     std::vector<void*>  handles;
@@ -1155,7 +1165,12 @@ void    Referee::emitHeader(std::string const& refPath,
         for (std::size_t i = 0; i < decl.args.size(); i++)
         {
             if (i) os << ",\n" << std::string(head.size(), ' ');
-            os << cTypeName(decl.args[i], mod) << " arg" << i;
+
+            //  Structs cross by const pointer; everything else by value.
+            if (dynamic_cast<TypeStruct*>(decl.args[i]))
+                os << "const " << cTypeName(decl.args[i], mod) << " *arg" << i;
+            else
+                os << cTypeName(decl.args[i], mod) << " arg" << i;
         }
         os << ");\n\n";
     }

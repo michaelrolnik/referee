@@ -141,9 +141,9 @@ int main(int argc, char * argv[])
     std::vector<std::string>    libraryPaths;
     auto    addIncludeOption = [&](CLI::App* sub) {
         sub->add_option("-L,--library", libraryPaths,
-            "Directory to search for .so objects implementing `func` declarations (repeatable)")
+            "A .so implementing `func` declarations, or a directory of them (repeatable)")
             ->allow_extra_args(false)
-            ->check(CLI::ExistingDirectory);
+            ->check(CLI::ExistingPath);
         sub->add_option("-I,--include", includePaths,
             "Directory to search for imported .ref files (repeatable)")
             // One directory per occurrence, as a compiler's -I does. Left

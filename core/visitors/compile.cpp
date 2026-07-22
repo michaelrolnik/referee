@@ -1426,6 +1426,13 @@ void    CompileExprImpl::visit( ExprCall*       expr)
     {
         if(dynamic_cast<TypeArray*>(type))
             paramTypes.push_back(sliceType());
+        else if(dynamic_cast<TypeStruct*>(type))
+            //  A struct crosses by `const` pointer. Its size and field types
+            //  are arbitrary, so by-value passing would need the platform's
+            //  aggregate classification reproduced here; by pointer needs
+            //  none of it, and the pointer already exists -- a struct-valued
+            //  expression is never loaded.
+            paramTypes.push_back(m_builder->getPtrTy());
         else
             paramTypes.push_back(Compile::make(m_context, m_module, type, expr->name));
     }
@@ -1444,6 +1451,14 @@ void    CompileExprImpl::visit( ExprCall*       expr)
 
         if(decl.args[i] == Factory<TypeByte>::create())
             value = m_builder->CreateTrunc(value, m_builder->getInt8Ty(), "byte_arg");
+
+        //  An enum is a composite, so the expression yields a pointer to its
+        //  one-byte storage rather than the value. It crosses by value, so
+        //  load it -- the same fix equality needed.
+        if(dynamic_cast<TypeEnum*>(decl.args[i]))
+            value = m_builder->CreateLoad(
+                        Compile::make(m_context, m_module, decl.args[i], expr->name),
+                        value, false, "enum_arg");
 
         if(dynamic_cast<TypeArray*>(decl.args[i]))
         {

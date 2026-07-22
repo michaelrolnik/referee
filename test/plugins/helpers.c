@@ -57,6 +57,16 @@ uint8_t referee_crc8(referee_slice_byte s, int64_t n)
 int64_t referee_capacity(referee_slice_byte s)  { return (int64_t)s.count; }
 int64_t referee_first(referee_slice_byte s)     { return s.count ? s.data[0] : -1; }
 
+/*  A struct crosses by const pointer, an enum by value as its one-byte
+ *  storage. Both were silently wrong before: a struct-valued expression is
+ *  never loaded, so referee passed the *pointer* to a function declared
+ *  taking the struct by value, and an enum argument passed a pointer where a
+ *  byte was expected.  */
+typedef struct referee_Point { int64_t x; int64_t y; } referee_Point;
+
+int64_t referee_sum2(const referee_Point *p)    { return p->x + p->y; }
+bool    referee_is_first(uint8_t e)             { return e == 1; }
+
 int64_t referee_triple(int64_t x)               { return x * 3; }
 double  referee_half(double x)                  { return x / 2.0; }
 bool    referee_is_even(int64_t x)              { return (x % 2) == 0; }

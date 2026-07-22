@@ -19,11 +19,19 @@ func crc8      : (byte[], integer) -> byte;
 func capacity  : (byte[]) -> integer;
 func first     : (byte[]) -> integer;
 
+# A struct crosses by const pointer; an enum by value, as its one-byte storage.
+type Point : struct { x : integer; y : integer; };
+type Kind  : enum { FIRST, SECOND };
+func sum2     : (Point) -> integer;
+func is_first : (Kind) -> boolean;
+
 data i : integer;
 data r : number;
 data b   : byte;
 data len : byte;
 data pkt : byte[];
+data pt  : Point;
+data k   : Kind;
 
 # One per primitive result type.
 G(triple(i)  == i * 3);
@@ -73,3 +81,12 @@ G(__time__ == 1000 => crc8(pkt, 4) == 0xE3);    # 01 02 03 04
 # The PEC idiom: a computed signal, evaluated once per state.
 data pec = crc8(pkt, len);
 G(pec >= 0 && pec <= 255);
+
+# ── Composites as arguments ──────────────────────────────────────────────────
+# Both of these compiled before they worked. A struct-valued expression is
+# never loaded, so referee passed the pointer to a function declared taking the
+# struct by value; an enum argument passed a pointer where a byte was wanted.
+# Neither was an error -- the callee read whatever the pointer happened to
+# alias, so the answer was wrong rather than refused.
+G(sum2(pt) == pt.x + pt.y);
+G(is_first(k) <=> k.FIRST);
