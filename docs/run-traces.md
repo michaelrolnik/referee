@@ -1,0 +1,70 @@
+# Design: run traces, and why they are mostly not about failures
+
+**Status:** proposed, not built.
+**Scope:** `referee execute --explain run.json`, producing a per-requirement record of what was evaluated where, for a visualiser (Bokeh) to draw.
+
+## The obvious motivation, and the better one
+
+The obvious one: when a requirement fails, the report says *which* requirement and nothing else. For anything with a scope or a nested temporal operator, that leaves the real question — *why* — to be answered by squinting at the trace.
+
+The better one is **vacuity**, and it is worth leading with because it is the failure mode this project keeps rediscovering. A requirement that only ever passes is indistinguishable from one that is meaningless. In the course of writing the MCTP examples alone:
+
+* two of three specification files had a version that passed against every broken trace, because a bare requirement is evaluated only at the first state;
+* `Cnt(Us(mid, eom))` looked like it counted a message's packets and counted the whole trace's;
+* a `while` scope that never opened would have passed silently.
+
+Each was caught by deliberately breaking a trace and checking the requirement noticed. That works, but it is manual, and it only catches what someone thought to break.
+
+A run trace makes vacuity **visible rather than inferred**. If the visualiser draws, per requirement, the states where its scope was active and the states where its antecedent held, then a requirement whose scope never opened is a blank row. Nobody has to think of the right trace to break; the picture is empty.
+
+That reframes the feature: it is not primarily a debugger, it is *coverage for requirements*.
+
+## What a run trace has to contain
+
+Per requirement, over the states of one trace:
+
+| | why |
+| --- | --- |
+| the requirement's own value per state | the baseline row |
+| the **scope's** active interval | `while p`, `between p and q`, `after p until q` — a blank interval is the vacuity signal |
+| each **subexpression's** value per state | where a compound requirement actually went wrong |
+| the **antecedent** of an implication | an implication whose left side is never true is vacuously true forever |
+| the **witness** for a failure | for `G`, the first state that failed; for `F`, that no state ever satisfied it |
+
+Source positions already exist and are already used as requirement labels (`[file:]row:col .. row:col`), so subexpressions can be keyed the same way with no new identity scheme.
+
+## The part that needs care: fast path and explain path must not disagree
+
+Requirements compile to one boolean function per state, and the lowering deliberately does not materialise intermediate values — the O(N) recurrences for unbounded operators and the decisive-index walk for bounded ones exist precisely to avoid computing per-state tables.
+
+So an explain mode has to *add* instrumentation to that lowering, never reimplement it. A separately written "interpreter for explanations" would drift, and the failure mode is the worst kind: a picture that confidently contradicts the verdict.
+
+The shape that avoids it:
+
+* compile the fast version as today, and run it;
+* for requirements the user asks about — or just the failing ones — re-run **the same lowering** with stores of intermediate values enabled.
+
+That is affordable because of the measured cost split: compilation is ~700 ms fixed against ~0.12 ms per row. Re-running one instrumented requirement over one trace is noise. It also means normal runs pay nothing at all, which matters for the corpus use case where a run covers many traces.
+
+## A subtlety the visualiser must not hide
+
+"The value of a subexpression at state *s*" is well defined for a state formula, and *also* well defined for a temporal one — but they mean different things. `Us(p, q)` being false at state 5 is not a fact about state 5; it is a judgement about the whole suffix from 5 onward.
+
+Drawn as an undifferentiated row of green and red cells, those two read identically and one of them is misleading. Temporal subexpressions should be drawn so it is obvious their value is a claim about the future (or past), not about the instant — a different mark, or an explicit span from the state to the witness that settled it.
+
+The same applies to accumulators: `Sum`/`Cnt`/`Itg` at a state summarise a window, and the window is the interesting thing to draw, not the scalar.
+
+## Format
+
+JSON, newline-delimited per requirement, for a first version. It reads into pandas in one line, which is what makes Bokeh cheap to point at it, and the volume is bounded by (requirements × states), not by anything quadratic.
+
+If that turns out too large for long traces, the columnar answer is Parquet or Arrow — but that is a change of encoding, not of design, and it should not be made before there is a trace big enough to justify it.
+
+The file should record which trace and which specification it came from, and — once external functions are in play — the objects that were loaded, for the same reason the report should: a verdict that depended on a binary is not reproducible without knowing which one.
+
+## Open questions
+
+1. **Which requirements get instrumented by default?** Failing ones is the obvious answer, but it is the wrong one for the vacuity use case: a vacuous requirement *passes*. Perhaps all of them on request, failing ones automatically.
+2. **How much of the subexpression tree?** Every node is a lot of rows and most are uninteresting. Leaves and the operands of the outermost operator may be enough; the rest on demand.
+3. **Does this subsume `--verbose`?** The per-requirement table that `-v 2` prints is a coarse projection of the same data. It may be worth generating both from one source rather than maintaining two.
+4. **Should vacuity be a verdict rather than a picture?** If the data is there, referee could report "this requirement's scope never opened" without a visualiser at all — which would catch it in CI, where a picture cannot. That may be the more valuable half of this feature, and it does not need Bokeh.
