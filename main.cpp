@@ -187,6 +187,7 @@ int main(int argc, char * argv[])
     std::string runRef;
     std::vector<std::string> runData;
     std::string runConf;
+    std::string runExplain;
     auto        execute = app.add_subcommand(
         "execute",
         "Execute compiled REF specs against a CSV / YAML / RDB trace");
@@ -219,6 +220,9 @@ int main(int argc, char * argv[])
         ->add_option("--suite", runSuite,
             "Manifest of traces and what each is expected to do")
         ->check(CLI::ExistingFile);
+    execute
+        ->add_option("--explain", runExplain,
+            "Write a run trace here: what was evaluated where, for a viewer (see tools/)");
     execute
         ->add_option("-v,--verbose", runVerbose,
             "0 = closing summary only, 1 = a line per trace, 2 = requirements too")
@@ -286,7 +290,7 @@ int main(int argc, char * argv[])
             std::ifstream   refStream(runRef, std::ios_base::in);
             bool            allPass = Referee::executeAll(
                                 refStream, runRef, traces, runConf,
-                                std::cout, detail, includePaths, libraryPaths);
+                                std::cout, detail, includePaths, libraryPaths, runExplain);
             if (!allPass) return 1;
         }
     }

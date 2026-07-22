@@ -210,7 +210,8 @@ public:
                                std::ostream& os     = std::cout,
                                Detail        detail = Detail::Requirements,
                                std::vector<std::string> const& includePaths = {},
-                               std::vector<std::string> const& libraryPaths = {});
+                               std::vector<std::string> const& libraryPaths = {},
+                               std::string const& explainPath = {});
 
     /// Compile REF source, JIT it, and evaluate every requirement against
     /// a packed `.rdb` trace whose state buffer is *already* the layout the

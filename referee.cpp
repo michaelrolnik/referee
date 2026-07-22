@@ -24,6 +24,7 @@
 
 #include "referee.hpp"
 #include "core/factory.hpp"
+#include "core/json.hpp"
 
 #include <fmt/format.h>
 
@@ -771,9 +772,80 @@ Referee::Sizes  sizesFromSchema(std::vector<referee::db::PropDecl> const& props)
 // cost (~700ms for a 233-requirement spec, against ~0.12ms per trace row), so
 // looping here rather than re-entering buildJitFromRef is the whole point of
 // accepting more than one trace per invocation.
+//  ── run traces ───────────────────────────────────────────────────────────
+//
+//  The header and signal lines of docs/run-trace-format.md. Both recorded and
+//  computed signals are already materialised by the time this runs --
+//  __prepare__ fills the computed ones before any requirement is evaluated --
+//  so this costs one pass and needs no instrumentation. That is why it is the
+//  first part of the feature to exist.
+//
+//  Requirement lines are not emitted yet; those need per-subexpression
+//  columns, which is the larger half.
+namespace {
+
+char const*     jsonTypeName(Type* type)
+{
+    if (type == Factory<TypeBoolean>::create())     return "boolean";
+    if (type == Factory<TypeByte>::create())        return "byte";
+    if (type == Factory<TypeInteger>::create())     return "integer";
+    if (type == Factory<TypeNumber>::create())      return "number";
+    if (type == Factory<TypeString>::create())      return "string";
+    if (dynamic_cast<TypeEnum*>(type) != nullptr)   return "enum";
+
+    return "integer";
+}
+
+//  One value out of a prop blob. Mirrors DataYamlPrinter in rdb/database.cpp,
+//  which walks the same layout to a different output.
+void    writeValue(json::Writer& w, Type* type, std::uint8_t const* data)
+{
+    if (data == nullptr)                        { w.null();                                             return; }
+    if (type == Factory<TypeBoolean>::create()) { w.value(*reinterpret_cast<bool const*>(data));        return; }
+    if (type == Factory<TypeByte>::create())    { w.value(std::int64_t(*data));                         return; }
+    if (type == Factory<TypeInteger>::create()) { w.value(*reinterpret_cast<std::int64_t const*>(data));return; }
+    if (type == Factory<TypeNumber>::create())  { w.value(*reinterpret_cast<double const*>(data));      return; }
+
+    if (type == Factory<TypeString>::create())
+    {
+        auto*   str = *reinterpret_cast<char const* const*>(data);
+        if (str != nullptr) w.value(str); else w.null();
+        return;
+    }
+
+    if (auto* e = dynamic_cast<TypeEnum*>(type))
+    {
+        //  Stored 1-based, 0 meaning no member matched -- so a malformed cell
+        //  stays distinguishable here rather than becoming the first member.
+        auto    idx = std::size_t(*data);
+        if (idx == 0 || idx > e->items.size())  w.null();
+        else                                    w.value(e->items[idx - 1]);
+        return;
+    }
+
+    w.null();       //  a composite is not one row; it would need one per leaf
+}
+
+//  Sparse when it pays. A flag constant across a long capture is one entry
+//  against one per state; an octet changing every state is cheaper dense,
+//  since sparse carries an index alongside every value. Measured, not
+//  configured -- and the comparison is over the stored bytes, so it agrees
+//  with what gets written by construction.
+bool    changedAt(Type* type, std::uint8_t const* a, std::uint8_t const* b)
+{
+    if (a == nullptr || b == nullptr)   return a != b;
+
+    return std::memcmp(a, b, type->size()) != 0;
+}
+
+} // namespace
+
 bool    runOneTrace(JitWithSpecs&            js,
                     referee::db::Reader&     rdb,
-                    std::ostream&            os)
+                    std::ostream&            os,
+                    std::ostream*            explain    = nullptr,
+                    std::string const&       refName    = {},
+                    std::string const&       tracePath  = {})
 {
     auto*   astModule   = js.astModule;
 
@@ -866,6 +938,114 @@ bool    runOneTrace(JitWithSpecs&            js,
     using PrepFn = void(*)(void*, void*, void*);
     auto prepFn = (*prepSymOrErr).toPtr<PrepFn>();
     prepFn(runStates.data(), runStates.data() + (numStates - 1) * stateStride, rdb.confPtr());
+
+    //  Every signal is materialised now, recorded and computed alike.
+    if (explain != nullptr)
+    {
+        json::Writer    w(*explain);
+
+        //  Sentinels bracket the real states -- ingest adds one at each end so
+        //  a temporal walk always has somewhere to stop. They carry no
+        //  recorded data and no timestamp anyone chose, so a run trace is over
+        //  the states between them. Emitting them would put two states in
+        //  every picture that were never in the capture.
+        auto const      frst = std::size_t(1);
+        auto const      lastX = numStates > 1 ? numStates - 1 : std::size_t(1);
+        auto const      count = lastX > frst ? lastX - frst : std::size_t(0);
+
+        auto            propAt = [&](std::size_t si, std::size_t pi) -> std::uint8_t const*
+        {
+            return reinterpret_cast<std::uint8_t const*>(
+                       *reinterpret_cast<void* const*>(
+                            runStates.data() + si * stateStride
+                            + sizeof(std::int64_t) + pi * sizeof(void*)));
+        };
+
+        {
+            auto    doc = w.object();
+            w.key("kind").value("header");
+            w.key("version").value(1);
+            w.key("specification"); { auto o = w.object(); w.key("path").value(refName); }
+            w.key("trace");
+            {
+                auto    o = w.object();
+                w.key("path").value(tracePath);
+                w.key("states").value(std::int64_t(count));
+            }
+            w.key("states");
+            {
+                auto    o = w.object();
+                w.key("time");
+                {
+                    auto    arr = w.array();
+                    for (std::size_t si = frst; si < lastX; si++)
+                        w.value(std::int64_t(rdb.time(si)));
+                }
+            }
+        }
+        w.line();
+
+        auto const& names = astModule->getPropNames();
+
+        for (std::size_t pi = 0; pi < names.size(); pi++)
+        {
+            auto const& name = names[pi];
+            auto*       type = astModule->getProp(name);
+
+            //  Composites would need one row per leaf, which the format
+            //  supports and this does not do yet. Skipping is better than
+            //  emitting a row of nulls that looks like missing data.
+            if (dynamic_cast<TypePrimitive*>(type) == nullptr
+             && dynamic_cast<TypeEnum*>(type) == nullptr)
+                continue;
+
+            //  Where the value changes, decided over the stored bytes so the
+            //  encoding choice and the output agree by construction.
+            std::vector<std::size_t>    changes;
+            for (std::size_t si = frst; si < lastX; si++)
+                if (si == frst || changedAt(type, propAt(si, pi), propAt(si - 1, pi)))
+                    changes.push_back(si - frst);
+
+            auto    sparse = count > 8 && changes.size() * 3 < count;
+
+            {
+            auto    doc = w.object();
+            w.key("kind").value("signal");
+            w.key("id").value("p" + std::to_string(pi));
+            w.key("name").value(name);
+            w.key("type").value(jsonTypeName(type));
+            if (astModule->isExprData(name))
+                w.key("computed").value(true);
+            w.key("encoding").value(sparse ? "sparse" : "dense");
+
+            if (sparse)
+            {
+                w.key("at");
+                {
+                    auto    arr = w.array();
+                    for (auto si : changes)
+                        w.value(std::int64_t(si));
+                }
+            }
+
+            w.key("values");
+            {
+                auto    arr = w.array();
+                if (sparse)
+                    for (auto si : changes)
+                        writeValue(w, type, propAt(si + frst, pi));
+                else
+                    for (std::size_t si = frst; si < lastX; si++)
+                        writeValue(w, type, propAt(si, pi));
+            }
+
+            }
+
+            //  One record per line: what makes the file streamable, and
+            //  readable a line at a time.
+            w.line();
+        }
+    }
 
     return runAllSpecs(*js.jit, js.funcNames,
                        runStates.data(), runStates.data() + (numStates - 1) * stateStride, rdb.confPtr(),
@@ -1446,8 +1626,19 @@ bool    Referee::executeAll(std::istream& refStream, std::string refName,
                             std::ostream& os,
                             Detail        detail,
                             std::vector<std::string> const& includePaths,
-                            std::vector<std::string> const& libraryPaths)
+                            std::vector<std::string> const& libraryPaths,
+                            std::string const&              explainPath)
 {
+    //  One file per run. With several traces the last one wins, which is the
+    //  honest simple behaviour -- a corpus wants a file each, and naming them
+    //  is a decision for whoever asks for it.
+    std::ofstream                   explainFile;
+    if (!explainPath.empty())
+    {
+        explainFile.open(explainPath, std::ios_base::out | std::ios_base::trunc);
+        if (!explainFile)
+            throw std::runtime_error("cannot write " + explainPath);
+    }
     if (traces.empty())
         throw std::runtime_error("no traces given");
 
@@ -1504,7 +1695,9 @@ bool    Referee::executeAll(std::istream& refStream, std::string refName,
         auto&   rdb   = ti == 0 ? *first : *owned;
 
         std::ostringstream  perTrace;
-        bool                allPass = runOneTrace(js, rdb, perTrace);
+        bool                allPass = runOneTrace(js, rdb, perTrace,
+                                                  explainFile.is_open() ? &explainFile : nullptr,
+                                                  refName, trace.path);
         auto                report  = perTrace.str();
 
         //  When the trace names the requirements it is meant to violate, each

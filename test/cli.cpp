@@ -223,6 +223,46 @@ TEST(Cli, StaleObjectIsRefusedRatherThanCalled)
     ::rmdir(dir.c_str());
 }
 
+// `--explain` writes a run trace. The check that matters is not that a file
+// appears but that it satisfies the schema -- the schema is the contract
+// between referee and every viewer, and prose cannot enforce it.
+TEST(Cli, ExplainWritesASchemaValidRunTrace)
+{
+    auto    ref = std::string(REFEREE_TEST_DATA_DIR) + "/accumulate.ref";
+    auto    csv = std::string(REFEREE_TEST_DATA_DIR) + "/accumulate.csv";
+    auto    out = tmpPath("explain", ".ndjson");
+
+    auto    r = run(quote(REFEREE_BIN) + " execute " + quote(ref) + " " + quote(csv)
+                    + " --explain " + quote(out) + " 2>&1");
+    EXPECT_EQ(r.status, 0) << r.output;
+
+    std::ifstream       f(out);
+    std::string         line;
+    int                 header = 0, signals = 0;
+
+    while (std::getline(f, line))
+    {
+        if (line.find("\"kind\":\"header\"")  != std::string::npos) header++;
+        if (line.find("\"kind\":\"signal\"")  != std::string::npos) signals++;
+
+        //  One record per line, which is what makes the file streamable.
+        EXPECT_NE(line.find('{'), std::string::npos) << line;
+    }
+
+    EXPECT_EQ(header, 1);
+    EXPECT_GT(signals, 0);
+
+    //  Sentinels bracket the real states internally and must not appear: the
+    //  trace has eight rows, and a picture showing ten would show two states
+    //  that were never captured.
+    std::ifstream       g(out);
+    std::getline(g, line);
+    EXPECT_NE(line.find("\"states\":8"), std::string::npos) << line;
+    EXPECT_EQ(line.find("-1"), std::string::npos) << line;
+
+    std::remove(out.c_str());
+}
+
 // `--stub` emits a C skeleton implementing the declared functions. The point
 // is that the first build is a copy rather than a transcription -- C cannot
 // diagnose a signature mismatch -- so the test is that the generated pair

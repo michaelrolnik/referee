@@ -1,6 +1,6 @@
 # Design: run traces, and why they are mostly not about failures
 
-**Status:** proposed, not built.
+**Status:** partly built. `--explain` writes the header and signal lines; requirement lines are not emitted yet.
 **Scope:** `referee execute --explain run.json`, producing a per-requirement record of what was evaluated where, for a visualiser (Bokeh) to draw.
 
 ## The obvious motivation, and the better one
@@ -144,6 +144,31 @@ evaluated linearly.
 Drawn as an undifferentiated row of green and red cells, those two read identically and one of them is misleading. Temporal subexpressions should be drawn so it is obvious their value is a claim about the future (or past), not about the instant — a different mark, or an explicit span from the state to the witness that settled it.
 
 The same applies to accumulators: `Sum`/`Cnt`/`Itg` at a state summarise a window, and the window is the interesting thing to draw, not the scalar.
+
+## What exists
+
+```bash
+referee execute spec.ref trace.csv --explain run.ndjson
+python3 tools/view.py run.ndjson -o run.html          # or view_bokeh.py
+```
+
+Header and signal lines, both encodings, recorded and computed signals alike.
+No instrumentation was needed for any of it: `__prepare__` materialises the
+computed signals before any requirement runs, so by the time this writes,
+every signal is a pointer away.
+
+Sentinels are excluded. Ingest brackets the real states with one at each end so
+a temporal walk always has somewhere to stop; they carry no recorded data and
+no timestamp anyone chose, so emitting them would put two states in every
+picture that were never in the capture.
+
+The encoding is chosen per signal by counting changes over the stored bytes —
+so the decision and the output agree by construction rather than by care. A
+flag with two distinct values across ten states goes sparse with two entries;
+a counter changing at every state stays dense.
+
+**Not built:** requirement lines. Those need per-subexpression columns, which
+is the larger half and is designed below.
 
 ## Format
 
