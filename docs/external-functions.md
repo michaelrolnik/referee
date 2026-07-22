@@ -133,7 +133,9 @@ data pec_ok = crc8(pkt, len - 1) == pkt[len - 1];
 globally, it is always the case that pec_ok holds;
 ```
 
-Note where the call went: into a **computed signal**, not into the requirement. That should be the documented idiom. A computed signal is evaluated once per state by `__prepare__`; the same call written inside a temporal formula is evaluated once per state *per enclosing loop iteration*, which for a bounded operator is quadratic. Nothing prevents the direct form, and the cost is not obvious from reading it, so the documentation has to say so.
+A call is an expression like any other, and may appear **anywhere an expression may** — in a requirement, inside a temporal operator, inside a quantifier body, inside a pattern body, as an argument to another call. There is no restriction, and it should not acquire one: a call is not temporal, so none of the reasons that bar `G`/`F`/`Sum` from a pattern body apply to it.
+
+Note nonetheless where the call went above: into a **computed signal**. That is an idiom worth documenting, not a rule. A computed signal is evaluated once per state by `__prepare__`; the same call written inside a temporal formula is evaluated once per state *per enclosing loop iteration*, which for a bounded operator is quadratic. The cost is invisible in the source — the two spellings look equally cheap — so the documentation has to say so even though the compiler permits both.
 
 Calls are pure expressions as far as the compiler is concerned, so they participate in the existing loop-invariance analysis and can be hoisted when their arguments do not depend on the loop variable.
 
@@ -142,8 +144,16 @@ Calls are pure expressions as far as the compiler is concerned, so they particip
 The second half of the request: pass a const pointer to the entire state, including time, and let the function read whatever it needs.
 
 ```text
-func packet_ok : (state) -> boolean;
+func packet_ok : (__state__) -> boolean;
 ```
+
+`__state__`, not `state` and not `__all__`.
+
+`state` is a usable signal name today — `data state : boolean;` parses, and in this domain a signal called `state` is not hypothetical. Reserving it would take it away, which is the same reason requirement names are spelled `@name` rather than with an `id` keyword.
+
+`__all__` says "everything", but what is passed is specifically the state *at the point the expression is being evaluated*, which in a temporal formula moves. `__state__` says that, and pairs with the `__time__` that already exists — they are the same kind of thing, and in fact `__state__.__time__` and `__time__` are the same value. `__all__` also collides with a well-known meaning in Python, where it is a module's export list.
+
+One caveat: `__time__` is not a reserved word. It is a plain identifier resolved specially, and `data __state__ : boolean;` parses today. So `__state__` is either reserved — cheap, and almost certainly breaks nobody — or made meaningful only inside a `func` parameter list. Reserving is simpler and gives a better error.
 
 ```c
 bool packet_ok(const ref_state_t *s);
@@ -249,7 +259,7 @@ The tiers should be built in that order, because each one removes reasons to nee
 
 ## Open questions
 
-1. **Should a `func` be callable from a pattern body?** Accumulators and looping temporals are barred there ("cannot be temporal"). A call is not temporal, so it would be allowed by default — but a call inside a scoped pattern is evaluated per scope instance, and the cost is invisible. Probably allow, and document.
+1. ~~Should a `func` be callable from a pattern body?~~ **Settled: yes, and from any expression.** A call is not temporal, so the rule that bars looping operators from pattern bodies does not reach it. The cost of a call in a hot position is a documentation problem, not a grammar one.
 2. **Failure signalling.** What does a `func` do when its input is malformed — return a sentinel, or is there an error channel? A sentinel that collides with a valid value is a silent wrong verdict. The simplest answer is that `func` results are total: the specification guards the call, not the callee.
 3. **Should `--library` be recorded in the `.rdb`?** Traces are meant to outlive the specification. If a verdict depended on a binary, the trace arguably should say which — but a trace is a recording and a library is not part of it.
 4. **Multi-dimensional arrays.** A descriptor of descriptors does not exist in memory — storage is flat, so `byte[][]` would need an array of inner descriptors materialised per call, which is O(rows) work for something rare in this domain. The alternatives are a strided descriptor (`{count, stride, data}`) or leaving 2-D out of v1. Leaving it out is probably right until something needs it.
