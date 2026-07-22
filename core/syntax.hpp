@@ -246,6 +246,13 @@ class Expr
     : public Visitable<Base, Expr>
 {
 public:
+    //  Opts every expression node into per-compilation interning. A node
+    //  carries mutable state -- the type stamped on it below -- so sharing one
+    //  between two specifications lets the first decide the second's types.
+    //  Types deliberately do not opt in: they are values, and interning them
+    //  globally is what makes them comparable by pointer.
+    using factory_scoped = void;
+
     virtual bool is_temporal() {return false;}
 
     Type*   type()              {return m_type;}

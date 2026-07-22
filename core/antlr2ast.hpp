@@ -30,6 +30,7 @@
 #include "refereeBaseVisitor.h"
 #include "position.hpp"
 #include "module.hpp"
+#include "factory.hpp"
 
 #include <map>
 #include <memory>
@@ -233,7 +234,17 @@ private:
     //  Module, as though they had been written at the point of the import.
     void        importFile(std::string const& path, Position const& where);
 
+public:
+    //  Owns every expression node this compilation builds. It lives here
+    //  because this object already has exactly the right lifetime: Schema and
+    //  JitWithSpecs hold it, and the AST is valid for precisely as long as
+    //  they are. `Arena::Scope` chooses which arena is current during a
+    //  compilation; this decides how long its nodes live.
+    Arena   arena;
+
     Module* module  = nullptr;
+
+private:
 
     //  Names bound by a quantifier to a concrete expression, innermost last.
     //  Distinct from Module's context stack, which records that a name exists

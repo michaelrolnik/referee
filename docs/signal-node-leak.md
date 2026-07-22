@@ -1,7 +1,7 @@
 # Bug: AST signal nodes leak between specifications
 
-**Status:** open. Reproduces deterministically; the fix is scoped below but not built.
-**Severity:** silent wrong answers. This is the only known open defect that produces an incorrect result rather than a missing feature.
+**Status:** FIXED. Kept as the record of what the bug was, why it survived, and how it was resolved.
+**Severity:** was silent wrong answers -- the only defect in this codebase that produced an incorrect result rather than a missing feature.
 
 ## Reproduction
 
@@ -52,7 +52,33 @@ Note it does **not** reproduce through `Referee::parseSchema` alone — an
 earlier attempt at a minimal repro failed for that reason. It needs the full
 compile path, where `Rewrite` rebuilds nodes through the factory.
 
-## Proposed fix
+## What was built
+
+The arena design below, as described. `Arena` lives in `core/factory.hpp`;
+each compilation's arena is a member of `Antlr2AST`, which already has exactly
+the right lifetime -- `Schema` and `JitWithSpecs` hold it, and the AST is valid
+for precisely as long as they are. `Arena::Scope`, taken in `Referee::compile`
+and `parseSchema`, chooses which arena is current; it deliberately does *not*
+free on exit, which was the trap noted below.
+
+Two details worth keeping:
+
+  * the arena is part of the map **key**, not a separate store, so lookup
+    stays one probe and no type erasure is needed;
+  * each `Factory<T>::get` instantiation registers a sweeper the first time it
+    runs, so an arena can empty every map holding its nodes without knowing
+    what those maps are. The lambda is captureless -- `storage` is a
+    function-local *static*, so it is referred to rather than captured -- which
+    is what lets it become a plain function pointer.
+
+Opting in is `using factory_scoped = void;` on `Expr`, inherited by every node.
+`Type` does not opt in, so types stay interned globally.
+
+`test/logic/nested_extents.ref` now declares `g` again, colliding with
+`quantifiers.ref` on purpose. Before the fix that pair failed; it passes now,
+as does the suite under `--gtest_shuffle --gtest_repeat=3`.
+
+## The design, as reasoned through
 
 Two candidates were considered. The second is better and is what should be
 built; the first is recorded because it is smaller, and is a reasonable

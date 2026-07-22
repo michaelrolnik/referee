@@ -264,6 +264,11 @@ Referee::Compiled   Referee::compile(std::istream& is, std::string name,
     auto    uniqName    = name + "#compile:" + std::to_string(s_uniq.fetch_add(1));
 
     out.astOwner    = std::make_unique<Antlr2AST>(uniqName, name, includePaths, sizes);
+
+    //  Every node built from here on belongs to this compilation's arena, so
+    //  two specifications compiled in one process cannot share one -- and the
+    //  nodes are freed when the Antlr2AST is, rather than living forever.
+    Arena::Scope    arenaScope(out.astOwner->arena);
     auto*   tree    = parser.program();
     if (errors.any())
         throw std::runtime_error(errors.summary(name));
@@ -313,6 +318,11 @@ Referee::Schema     Referee::parseSchema(std::istream& is, std::string name,
     auto    uniqName    = name + "#schema:" + std::to_string(s_uniq.fetch_add(1));
 
     out.astOwner    = std::make_unique<Antlr2AST>(uniqName, name, includePaths, sizes, allowUnsized);
+
+    //  Every node built from here on belongs to this compilation's arena, so
+    //  two specifications compiled in one process cannot share one -- and the
+    //  nodes are freed when the Antlr2AST is, rather than living forever.
+    Arena::Scope    arenaScope(out.astOwner->arena);
     auto*   tree    = parser.program();
     if (errors.any())
         throw std::runtime_error(errors.summary(name));
