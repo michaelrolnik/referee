@@ -153,3 +153,28 @@ so a reset destroys every interned type and node; it must run only after every
 `Schema` and `JitWithSpecs` has been destroyed. A `TearDown` firing while a
 fixture still holds a JIT is a use-after-free, not a failed assertion.
 
+
+## Test to add with the fix
+
+Both affected fixtures currently carry a rename purely to keep the suite
+green. Revert them and let the collision happen naturally:
+
+```bash
+# test/logic/nested_extents.ref + .csv: gg -> g, colliding with quantifiers.ref
+sed -i 's/\bgg\b/g/g' test/logic/nested_extents.ref test/logic/nested_extents.csv
+```
+
+and give `Diagnostics.RejectsBadCalls` back its natural names -- `f`, `i`
+rather than `cb_f`, `cb`. Both pass today *only* because of the rename.
+
+With the fix, both should pass without it, and the suite should be green in
+any order. Worth asserting the order-independence explicitly, since that is
+the property being restored:
+
+```bash
+./build/tests --gtest_filter='Rdb.Quantifiers:Rdb.NestedArrayExtents'
+./build/tests --gtest_shuffle --gtest_repeat=5
+```
+
+The second is the better regression guard: shuffling is what would have caught
+this originally.
