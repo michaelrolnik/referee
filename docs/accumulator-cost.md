@@ -82,6 +82,25 @@ O(N). The machinery exists; it has not been applied here.
 
 `Itg` is the same shape again, weighted by each step's duration.
 
+## Before rewriting: the boundaries are pinned
+
+A recurrence is got wrong at its *ends*, not in its middle. `test/logic/accumulate.ref`
+now asserts those ends against the current forward walk, so a rewrite has
+something to preserve rather than something to hope for:
+
+* the **last state**, where the suffix is the state itself — the seed;
+* the **first state**, where the fold must have run the whole trace;
+* **one state in**, asserting the recurrence directly: the fold at *s* equals
+  the fold at *s+1* plus this state's contribution;
+* a condition **false everywhere**, which must fold to the identity and not to
+  a stale carrier;
+* a window **one unit wide**, which must contain exactly the current state,
+  and a window of **zero width**, which must contain nothing.
+
+All of them hold today. If the linear version breaks one, it is wrong at an
+end, which is where it would otherwise be wrong silently — the fixtures with
+mid-trace values would not notice.
+
 ## Why it matters beyond speed
 
 A quadratic checker discourages exactly the requirements worth writing. Faced

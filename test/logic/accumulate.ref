@@ -47,3 +47,44 @@ G(Cnt[0:3000](k.MID) == Sum[0:3000](k.MID, 1));
 # more; the condition selects states, it does not delimit them.
 G(k.SOM => Cnt[0:5000](k.MID) <= 8);        # at most 8 packets per message
 G(k.SOM => Sum[0:5000](true, len) <= 4096); # and at most 4096 bytes
+
+# ── Boundary cases, for the linear rewrite ───────────────────────────────────
+# `Sum`/`Cnt`/`Itg` walk forward from each state, so under a temporal operator
+# they are O(N²) -- see docs/accumulator-cost.md. The fix is the backward
+# recurrence the until/release family already uses:
+#
+#     Sum(c, v)[s]  =  (c[s] ? v[s] : 0) + Sum(c, v)[s+1]
+#
+# A recurrence is got wrong at its *ends*, not in the middle, and the cases
+# below are the ends. They hold for the current forward walk, so they pin the
+# behaviour a rewrite has to preserve rather than describing a hoped-for one.
+
+# The last state: the suffix is just itself, so the seed of the recurrence.
+G(k.EOM && __time__ == 7000 => Cnt(true) == 1);
+G(__time__ == 7000 => Sum(true, len) == 1);
+G(__time__ == 7000 => Cnt(false) == 0);
+
+# The first state: the whole trace, so the fold must have run to completion.
+G(__time__ == 0 => Cnt(true) == 8);
+G(__time__ == 0 => Sum(true, len) == 121);
+
+# One state in: the fold at s must equal the fold at s+1 plus this state's own
+# contribution. This is the recurrence itself, asserted directly.
+G(__time__ == 6000 => Cnt(true) == 2);
+G(__time__ == 6000 => Sum(true, len) == 9);      # 8 + 1
+
+# A condition false everywhere folds to the identity, not to a stale value.
+G(Cnt(false) == 0);
+G(Sum(false, len) == 0);
+
+# A condition true everywhere counts every remaining state, including this one.
+G(__time__ == 5000 => Cnt(true) == 3);
+
+# A window that closes before the next state: the accumulation is this state
+# alone, which is where an off-by-one in the bound shows up.
+G(__time__ == 0 => Cnt[0:1](true) == 1);
+G(__time__ == 0 => Sum[0:1](true, len) == 10);
+
+# A window of zero width accumulates nothing at all.
+G(Cnt[0:0](true) == 0);
+G(Sum[0:0](true, len) == 0);
