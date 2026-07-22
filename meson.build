@@ -457,6 +457,7 @@ tests_exe           = executable(
     'test/visitors.cpp',
     'test/cli.cpp',
     'test/diagnostics.cpp',
+    'test/json.cpp',
     cpp_args     : [
         '-DREFEREE_TEST_DATA_DIR="' + test_data_dir + '"',
         # The CLI tests drive the real binaries as subprocesses, which is the
