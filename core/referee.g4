@@ -59,7 +59,15 @@ declImport  : 'import' string
 declFunc    : 'func' funcID ':' '(' funcArgs ')' '->' type
             ;
 
-funcArgs    : (type (',' type)*)?
+//  Either an ordinary argument list, or the whole state.
+//
+//  `__state__` is a parameter list, not a type: it cannot be mixed with
+//  others, cannot appear as a return type, and cannot be written anywhere an
+//  expression or a declaration expects a type. That is deliberate -- what
+//  crosses is a handle the callee reads through generated accessors, not a
+//  value the language has.
+funcArgs    : '__state__'                           # FuncArgsState
+            | (type (',' type)*)?                   # FuncArgsTypes
             ;
 
 quant       : all                                   # QuantAll

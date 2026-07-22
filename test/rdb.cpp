@@ -967,6 +967,35 @@ TEST(Rdb, LoadSizedArrays)
     std::remove(rdb.c_str());
 }
 
+// A whole-state accessor and a function alias share one C namespace, and a
+// specification can put them in the same place: signal `len` generates
+// `referee_state_len`, and `func state_len` aliases to the same spelling. The
+// alias is a macro, so it would quietly replace the accessor. No prefix avoids
+// this -- whatever it is, a function can be named to produce it -- so it is
+// detected.
+TEST(Rdb, StateAccessorAndFunctionAliasCannotCollide)
+{
+    auto    path = tmpFile("collide") + ".ref";
+    {
+        std::ofstream   out(path);
+        out << "data len : integer;\n"
+            << "func state_len : (__state__) -> integer;\n"
+            << "G(state_len() == len);\n";
+    }
+
+    std::ostringstream  hdr;
+    try
+    {
+        Referee::emitHeader(path, hdr);
+        ADD_FAILURE() << "expected the collision to be reported";
+    }
+    catch (std::exception const& e)
+    {
+        EXPECT_NE(std::string(e.what()).find("referee_state_len"), std::string::npos) << e.what();
+    }
+    std::remove(path.c_str());
+}
+
 // An index outside a *written* extent is known at compile time, so it is a
 // diagnostic rather than a read of whatever sits next to the array.
 TEST(Rdb, ConstantIndexOutsideAWrittenExtent)

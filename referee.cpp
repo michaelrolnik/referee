@@ -473,6 +473,45 @@ static void     bindExternalFunctions(llvm::orc::LLJIT&               jit,
         handles.push_back(h);
     }
 
+    //  A whole-state function reads the row through accessors generated into
+    //  its header, so the offsets are compiled into the object. Those offsets
+    //  are only right for the signals this specification declares, in this
+    //  order, with these types -- and the row layout is an implementation
+    //  choice that has already changed once. An object that defines the symbol
+    //  states which layout it was built for; a mismatch is caught here rather
+    //  than by reading the right offsets of the wrong row.
+    {
+        auto    wantsState = false;
+        for (auto const& name : funcNames)
+            for (auto const& decl : astModule.funcsNamed(name))
+                wantsState = wantsState || decl.state;
+
+        if (wantsState)
+        {
+            auto    want = astModule.stateLayoutVersion();
+
+            for (std::size_t h = 0; h < handles.size(); h++)
+            {
+                dlerror();
+                auto*   have = reinterpret_cast<std::uint64_t const*>(
+                                    dlsym(handles[h], "referee_state_layout"));
+
+                if (have == nullptr || dlerror() != nullptr)
+                    continue;           //  does not use the state: nothing to check
+
+                if (*have != want)
+                    throw std::runtime_error(fmt::format(
+                        "'{}' was built against a different set of signals\n"
+                        "  expected  {}\n"
+                        "  found     {}\n"
+                        "  the accessors in its header read fixed offsets into a state row,"
+                        " and a signal added, removed, reordered or retyped moves them."
+                        " Regenerate the header and rebuild.",
+                        objects[h], want, *have));
+            }
+        }
+    }
+
     llvm::orc::MangleAndInterner    Mangle(jit.getExecutionSession(), jit.getDataLayout());
     llvm::orc::SymbolMap            symMap;
 
@@ -1483,6 +1522,11 @@ void    Referee::emitHeader(std::string const& refPath,
     //  mentions. `count` is the array's extent -- its capacity, not the
     //  meaningful length -- so a caller with a shorter payload passes its own
     //  length alongside, and the callee can bounds-check against `count`.
+    auto    usesState = false;
+    for (auto const& funcName : mod.getFuncNames())
+        for (auto const& decl : mod.funcsNamed(funcName))
+            usesState = usesState || decl.state;
+
     std::set<std::string>   slices;
     auto                    noteSlice = [&](Type* t)
     {
@@ -1496,6 +1540,13 @@ void    Referee::emitHeader(std::string const& refPath,
         for (auto* a : decl.args) noteSlice(a);
         noteSlice(decl.ret);
     }
+
+    //  A whole-state accessor returns a signal's own type, so every array
+    //  signal needs its descriptor typedef too -- not only the ones a
+    //  signature happens to mention.
+    if (usesState)
+        for (auto const& name : mod.getPropNames())
+            noteSlice(mod.getProp(name));
 
     if (!slices.empty())
     {
@@ -1520,6 +1571,106 @@ void    Referee::emitHeader(std::string const& refPath,
                << "    " << "size_t" << std::string(width - 6, ' ') << "count;\n"
                << "    " << ptr << std::string(width - ptr.size(), ' ') << "data;\n"
                << "} " << name << ";\n\n";
+        }
+    }
+
+    //  `(__state__)`: the state crosses as an opaque handle read through the
+    //  accessors below, never as a struct the callee lays out for itself.
+    //
+    //  A row is `{ int64_t time; void *prop[N]; }` today. That is an
+    //  implementation choice and it has already changed once -- arrays that
+    //  carry their own length rewrote what a prop points at -- so a header
+    //  that published it would have shipped a contract the loader was free to
+    //  break. Accessors move that risk to a place the compiler can see: the
+    //  offsets live here, are regenerated with the header, and are checked
+    //  against the loader by a layout version at JIT setup.
+    if (usesState)
+    {
+        auto const& propNames = mod.getPropNames();
+
+        os << "/*\n"
+           << " *  The state at the point of evaluation -- which moves: inside a\n"
+           << " *  temporal operator it is the state the walk has reached, not the one\n"
+           << " *  the requirement was evaluated at.\n"
+           << " *\n"
+           << " *  Opaque on purpose. Read it with the accessors below; do not cast it,\n"
+           << " *  index past it, or hold it after the call returns. Neighbouring states\n"
+           << " *  are adjacent in memory and nothing stops a walk off the end of this\n"
+           << " *  one, which is the reason to prefer a value signature where one will\n"
+           << " *  do.\n"
+           << " */\n"
+           << "typedef struct referee_state referee_state_t;\n\n"
+           << "/*  Verified at JIT setup: an object built against a different set of\n"
+           << " *  signals, or a different row layout, fails to load rather than\n"
+           << " *  reading the wrong offsets.  */\n"
+           << "extern const uint64_t referee_state_layout;\n"
+           << "#define REFEREE_STATE_LAYOUT " << mod.stateLayoutVersion() << "ull\n\n"
+           << "static inline int64_t referee_state___time__(const referee_state_t *s)\n"
+           << "{\n"
+           << "    return *(const int64_t *)s;\n"
+           << "}\n\n";
+
+        for (std::size_t pi = 0; pi < propNames.size(); pi++)
+        {
+            auto const& name = propNames[pi];
+            auto*       type = mod.getProp(name);
+            auto        cName = name;
+            for (auto& ch : cName) if (ch == ':' || ch == '.') ch = '_';
+
+            //  Every prop is one pointer in the row; what it points at is the
+            //  prop's own storage. A primitive is loaded, a descriptor is
+            //  loaded, and anything compound stays a pointer -- the same three
+            //  cases the code generator makes.
+            auto        slot = "((void *const *)((const char *)s + sizeof(int64_t)))["
+                             + std::to_string(pi) + "]";
+
+            if (dynamic_cast<TypeArray*>(type) != nullptr
+             || dynamic_cast<TypeStruct*>(type) != nullptr)
+            {
+                auto    ret = cTypeName(type, mod);
+                os << "static inline " << ret << " referee_state_" << cName
+                   << "(const referee_state_t *s)\n{\n"
+                   << "    return *(const " << ret << " *)" << slot << ";\n}\n\n";
+                continue;
+            }
+
+            auto    ret = cTypeName(type, mod);
+            os << "static inline " << ret << " referee_state_" << cName
+               << "(const referee_state_t *s)\n{\n"
+               << "    return *(const " << ret << " *)" << slot << ";\n}\n\n";
+        }
+    }
+
+    //  An accessor and a function alias live in one C namespace, and a
+    //  specification can put them in the same place: signal `len` generates
+    //  `referee_state_len`, and `func state_len` aliases to the same spelling.
+    //  The alias is a macro, so it would quietly replace the accessor.
+    //
+    //  No prefix avoids this -- whatever it is, a function can be named to
+    //  produce it -- so it is detected rather than designed around, which is
+    //  the same answer two overloads with identical argument types get.
+    if (usesState)
+    {
+        std::set<std::string>   accessors{"referee_state___time__", "referee_state_layout"};
+
+        for (auto const& name : mod.getPropNames())
+        {
+            auto    cName = name;
+            for (auto& ch : cName) if (ch == ':' || ch == '.') ch = '_';
+            accessors.insert("referee_state_" + cName);
+        }
+
+        for (auto const& funcName : mod.getFuncNames())
+        {
+            auto    plain = "referee_" + funcName;
+            for (auto at = plain.find("::"); at != std::string::npos; at = plain.find("::", at))
+                plain.replace(at, 2, "__");
+
+            if (accessors.count(plain))
+                throw std::runtime_error(
+                    "'" + funcName + "' generates the C name '" + plain + "', which is already"
+                    " the whole-state accessor for a signal of that name. One of the two has to"
+                    " be renamed: the alias is a macro and would replace the accessor.");
         }
     }
 
@@ -1584,6 +1735,12 @@ void    Referee::emitHeader(std::string const& refPath,
         auto        head = cTypeName(decl.ret, mod) + " " + mod.symbolFor(funcName, decl) + "(";
 
         os << head;
+
+        if (decl.state)
+        {
+            os << "const referee_state_t *state);\n\n";
+            continue;
+        }
 
         if (decl.args.empty())
         {

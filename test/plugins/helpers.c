@@ -75,3 +75,25 @@ bool    referee_is_even(int64_t x)              { return (x % 2) == 0; }
 /*  A byte parameter is one octet: referee narrows to i8 at the call and
  *  widens the result back, so the C side sees plain uint8_t.  */
 uint8_t referee_crc8_step(uint8_t crc, uint8_t byte) { return crc8_one(crc, byte); }
+
+/*  The whole state. `referee_state_layout` is what referee checks before it
+ *  binds anything: these accessors compile fixed offsets into this object, and
+ *  a signal added, removed, reordered or retyped moves them. Defining it is
+ *  how the object says which specification it was built against.  */
+const uint64_t referee_state_layout = REFEREE_STATE_LAYOUT;
+
+int64_t referee_now_at(const referee_state_t *s)
+{
+    return referee_state___time__(s);
+}
+
+int64_t referee_cur_len(const referee_state_t *s)
+{
+    return referee_state_len(s);
+}
+
+int64_t referee_cur_first(const referee_state_t *s)
+{
+    referee_slice_byte pkt = referee_state_pkt(s);
+    return pkt.count ? pkt.data[0] : -1;
+}

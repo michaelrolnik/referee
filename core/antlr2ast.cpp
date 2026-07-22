@@ -339,15 +339,21 @@ std::any Antlr2AST::visitDeclFunc(     referee::refereeParser::DeclFuncContext* 
     //  Everywhere else an unsized array must take an extent from the trace.
     m_inFuncSig     = true;
 
+    //  `(__state__)` is a parameter list rather than an argument: the call
+    //  takes none, and the state at the point of evaluation is passed for it.
+    auto*   whole   = dynamic_cast<referee::refereeParser::FuncArgsStateContext*>(ctx->funcArgs());
+    auto*   listed  = dynamic_cast<referee::refereeParser::FuncArgsTypesContext*>(ctx->funcArgs());
+
     std::vector<Type*>  args;
-    for(auto* arg: ctx->funcArgs()->type())
-        args.push_back(std::any_cast<Type*>(arg->accept(this)));
+    if(listed != nullptr)
+        for(auto* arg: listed->type())
+            args.push_back(std::any_cast<Type*>(arg->accept(this)));
 
     auto    ret     = std::any_cast<Type*>(ctx->type()->accept(this));
 
     m_inFuncSig     = false;
 
-    module->addFunc(name, std::move(args), ret);
+    module->addFunc(name, std::move(args), ret, whole != nullptr);
 
     return nullptr;
 }

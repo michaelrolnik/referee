@@ -29,6 +29,14 @@ func bits::parity : (integer) -> boolean;
 type Point : struct { x : integer; y : integer; };
 type Kind  : enum { FIRST, SECOND };
 func sum2     : (Point) -> integer;
+
+#  The whole state, rather than values pulled out of it. The callee reads it
+#  through the accessors the generated header defines -- never by laying the
+#  row out itself, which is an implementation choice that has already changed
+#  once. A layout digest in the object is checked before anything runs.
+func now_at      : (__state__) -> integer;
+func cur_len     : (__state__) -> integer;
+func cur_first   : (__state__) -> integer;
 func is_first : (Kind) -> boolean;
 
 data i : integer;
@@ -140,3 +148,28 @@ G(is_first(k) <=> k.FIRST);
 
 # A namespaced name, called and mangled.
 G(bits::parity(i) <=> i % 2 == 1);
+
+
+# ── The whole-state convention ───────────────────────────────────────────────
+# Which state is passed *moves*: inside a temporal operator it is the state the
+# walk has reached, not the one the requirement was evaluated at. That is the
+# only part of this a value signature cannot express, so it is the part worth
+# pinning.
+@state_is_the_evaluation_point
+G(now_at() == __time__);
+
+@state_moves_with_the_walk
+G(__time__ == 0 => Xs(now_at() == 1000));
+@state_moves_when_nested
+G(__time__ == 0 => Xs(Xs(now_at() == 2000)));
+
+# An accumulator walks it too, so this is the sum of every timestamp rather
+# than three copies of the first.
+Sum(true, now_at()) == 3000;
+
+# Signals read through the accessors agree with the same signals read directly,
+# at every state -- including the array, whose descriptor the accessor returns
+# whole.
+@state_reads_agree_with_direct_reads
+G(cur_len() == len);
+G(cur_first() == pkt[0]);

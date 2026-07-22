@@ -47,14 +47,28 @@ public:
     {
         std::vector<Type*>  args;
         Type*               ret;
+
+        //  `(__state__)`: the call takes no arguments and is handed the state
+        //  at the point of evaluation instead. Part of the signature, so it
+        //  is part of the symbol -- a function that changes its mind about
+        //  this must not link against the old declaration.
+        bool                state = false;
     };
 
     //  A name may carry several signatures. Resolution is by the call's
     //  shape, matched exactly -- no widening to reach an overload, since that
     //  would silently pick the wrong one precisely when both exist.
-    void                        addFunc(std::string const& name, std::vector<Type*> args, Type* ret);
+    void                        addFunc(std::string const& name, std::vector<Type*> args, Type* ret,
+                                        bool state = false);
     std::vector<Func> const&    funcsNamed(std::string const& name);
     Func const*                 resolveFunc(std::string const& name, std::vector<Type*> const& args);
+
+    //  A digest of the row layout the accessors in a generated header are
+    //  written against: the signals, in order, with their types. An object
+    //  built against a different set of signals -- or against a type whose
+    //  shape changed -- computes a different number and fails to load, rather
+    //  than reading the right offsets of the wrong row.
+    std::uint64_t               stateLayoutVersion();
 
     //  The C symbol a `func` binds to: `referee_`, the name with `::`
     //  replaced by `__`, then a structural hash of the signature.

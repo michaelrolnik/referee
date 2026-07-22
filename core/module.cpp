@@ -91,21 +91,29 @@ void    Module::addConf(std::string const& name, Type* data)
     m_confNames.push_back(name);
 }
 
-void    Module::addFunc(std::string const& name, std::vector<Type*> args, Type* ret)
+void    Module::addFunc(std::string const& name, std::vector<Type*> args, Type* ret, bool state)
 {
     auto&   overloads = m_name2func[name];
 
     //  Two declarations of one name are fine; two with the same argument
-    //  types are not, since no call could tell them apart.
+    //  types are not, since no call could tell them apart. `(__state__)` and
+    //  `()` are both empty argument lists at the call, so they collide too.
     for(auto const& have: overloads)
-        if(have.args == args)
+        if(have.args == args && have.state == state)
             throw std::runtime_error(
                 "function '" + name + "' is declared more than once with the same argument types");
+
+    if(args.empty())
+        for(auto const& have: overloads)
+            if(have.args.empty())
+                throw std::runtime_error(
+                    "function '" + name + "' is declared both with '(__state__)' and without it"
+                    " -- a call gives no arguments either way, so nothing could tell them apart");
 
     if(overloads.empty())
         m_funcNames.push_back(name);
 
-    overloads.push_back(Func{std::move(args), ret});
+    overloads.push_back(Func{std::move(args), ret, state});
 }
 
 std::vector<Module::Func> const&    Module::funcsNamed(std::string const& name)
@@ -338,6 +346,22 @@ std::string     digest(std::string const& text)
 
 } // namespace
 
+std::uint64_t   Module::stateLayoutVersion()
+{
+    std::string shape = "state(";
+
+    for(auto const& name: m_propNames)
+    {
+        shape += name;
+        shape += ":";
+        describe(getProp(name), shape);
+        shape += ";";
+    }
+    shape += ")";
+
+    return std::stoull(digest(shape), nullptr, 16);
+}
+
 std::string     Module::symbolFor(std::string const& name, Func const& decl)
 {
     std::string mangled = name;
@@ -345,6 +369,8 @@ std::string     Module::symbolFor(std::string const& name, Func const& decl)
         mangled.replace(at, 2, "__");
 
     std::string shape = name + "(";
+    if(decl.state)
+        shape += "__state__";
     for(auto* arg: decl.args)
         describe(arg, shape);
     shape += ")->";

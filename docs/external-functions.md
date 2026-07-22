@@ -251,7 +251,50 @@ One caveat: `__time__` is not a reserved word. It is a plain identifier resolved
 bool referee_packet_ok(const referee_state_t *s);
 ```
 
-This is genuinely convenient — one signature regardless of how many signals a function reads, and adding a signal does not change it. **I would not ship it first, and I would not ship it in the same shape as the value form.** Three reasons:
+**Built, in the shape the rest of this section argues for.** The call takes no
+arguments; `__state__` is a parameter list, not a type, so it cannot be mixed
+with others, cannot be a return type, and cannot appear where a type is
+expected. What crosses is an opaque handle:
+
+```c
+typedef struct referee_state referee_state_t;
+static inline int64_t  referee_state___time__(const referee_state_t *s);
+static inline uint8_t  referee_state_len(const referee_state_t *s);
+static inline referee_slice_byte referee_state_pkt(const referee_state_t *s);
+
+extern const uint64_t referee_state_layout;
+#define REFEREE_STATE_LAYOUT 2571361068ull
+```
+
+Which state is passed **moves**: inside a temporal operator it is the state the
+walk has reached, not the one the requirement was evaluated at. That is the
+only part of this a value signature cannot express, so it is the part the
+fixture pins -- including through nested `Xs` and through an accumulator's
+walk.
+
+Two things the section below asked for and got:
+
+**The layout is not published.** A row is `{ int64_t time; void *prop[N]; }`
+today, and that has already changed once -- arrays that carry their own length
+rewrote what a prop points at. So the offsets live in generated accessors
+rather than in a struct anyone can lay out, and the object states which layout
+it was built against. Referee checks it before binding anything: a signal
+added, removed, reordered or retyped fails to load rather than reading the
+right offsets of the wrong row.
+
+**One thing neither of us predicted.** An accessor and a function alias share
+one C namespace, and a specification can put them in the same place -- signal
+`len` generates `referee_state_len`, and `func state_len` aliases to exactly
+that. The alias is a macro, so it would have replaced the accessor silently.
+No prefix avoids this, since a function can always be named to produce it, so
+it is detected at header generation and reported.
+
+What stands from the original argument is the second reason below: this is a
+broad contract where the value form is a narrow one, and nothing in C stops a
+callee walking off the end of the state it was handed. Prefer a value
+signature where one will do.
+
+Three reasons the value form came first:
 
 **It exposes an internal layout.** A state row today is `{ int64_t time; void *prop[N]; }` — a time followed by one pointer per property, with the property's data living elsewhere. That is an implementation choice, not a contract, and it will change: per-record extents (`T[<= N]`) will change it, and any move to a columnar layout would change it completely. The value form has no such coupling — `(const uint8_t*, int64_t)` stays true whatever the trace layout becomes.
 

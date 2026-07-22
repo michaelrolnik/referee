@@ -1990,6 +1990,14 @@ void    CompileExprImpl::visit( ExprCall*       expr)
     auto    sliceType = [&]() { return descriptorType(m_context, *m_builder); };
 
     std::vector<llvm::Type*>    paramTypes;
+
+    //  `(__state__)`: a handle to the state at the point of evaluation. The
+    //  callee reads it through the accessors the header generates, never by
+    //  reaching into it -- which is the whole reason it is a handle and not a
+    //  struct anyone can lay out for themselves.
+    if(decl.state)
+        paramTypes.push_back(m_builder->getPtrTy());
+
     for(auto* type: decl.args)
     {
         if(dynamic_cast<TypeArray*>(type))
@@ -2013,6 +2021,13 @@ void    CompileExprImpl::visit( ExprCall*       expr)
     //  the boundary. A `byte` result is widened back, the same way a byte read
     //  out of a trace is.
     std::vector<llvm::Value*>   args;
+
+    //  Which state that is moves: inside a temporal operator it is the one the
+    //  walk has reached, not the one the requirement was evaluated at. That is
+    //  exactly `m_curr`, which every signal read already uses.
+    if(decl.state)
+        args.push_back(m_curr.back());
+
     for(std::size_t i = 0; i < expr->args.size(); i++)
     {
         auto    value = make(expr->args[i]);
