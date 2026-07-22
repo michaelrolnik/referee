@@ -1,0 +1,66 @@
+# Array behaviour as it stands, pinned before a second array kind is added.
+#
+# The plan is bounded and unbounded arrays side by side -- the existing inline
+# form for a compile-time extent, and a `{count, pointer}` descriptor where the
+# length is only known at run time. That is additive, and the whole reason to
+# write this file is to keep it additive: every assertion below holds today,
+# so anything that stops holding is the new kind reaching somewhere it should
+# not have.
+#
+# It is the same net that sits under the accumulators in accumulate.ref. A
+# rewrite wants something to preserve, not something to hope for.
+
+data fixed : integer[3];                                    # extent written here
+data grid  : integer[3][2];                                 # multi-dimensional
+data rec   : struct { len : byte; raw : byte[]; };          # nested, from the trace
+data pkt   : byte[];                                        # top level, from the trace
+
+# ── .count is a compile-time constant today ──────────────────────────────────
+G(fixed.count == 3);
+G(grid.count == 3);
+G(grid[0].count == 2);
+G(rec.raw.count == 4);
+G(pkt.count == 4);
+
+# Constant enough to fold: an unreachable index in the false arm of a ternary
+# still has to typecheck, which only works while the extent is static.
+G(fixed.count * 2 == 6);
+G(grid.count * grid[0].count == 6);
+
+# ── Indexing, at both ends ───────────────────────────────────────────────────
+G(fixed[0] >= 10);
+G(fixed[2] >= 30);
+G(grid[0][0] == 1);
+G(grid[2][1] == 6);
+G(rec.raw[0] >= 1);
+G(pkt[0] >= 1);
+
+# Dimensions read in C order: grid[3][2] is three of two, first subscript outer.
+G(grid[2][1] == 6 && grid[1][0] == 3);
+
+# ── Quantifiers expand over the extent ───────────────────────────────────────
+all v in fixed: v >= 10;
+all v, i in fixed: i < 3;
+all row in grid: all c in row: c > 0;
+all v, i in pkt: i >= rec.len => true;
+
+# A quantifier over a nested array, and over an array of arrays.
+all v in rec.raw: v >= 0;
+all row, i in grid: row[0] == i * 2 + 1;
+
+# ── Slices carry a runtime length over a static extent ───────────────────────
+# This is the closest thing to the new kind that exists today, and it is the
+# shape the descriptor should agree with.
+G(all v in pkt[0:rec.len]: v > 0);
+G(some v, i in pkt[0:rec.len]: i == 0);
+G(none v, i in pkt[0:rec.len]: i >= rec.len);
+
+#  An array crossing to an external function is pinned in extfunc.ref instead,
+#  which owns the generated header that names those symbols. It already travels
+#  as {count, data}, so the descriptor form should need no marshalling at all.
+
+# ── Padding beyond the meaningful length is still addressable ────────────────
+# The bookkeeping the descriptor form is meant to remove. It must keep working
+# while both kinds coexist.
+G(all v, i in pkt: i >= rec.len => v == 0);
+G(all v, i in rec.raw: i >= rec.len => v == 0);

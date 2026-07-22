@@ -783,6 +783,27 @@ TEST(Rdb, ExternalFunctionNeedsALibraryPath)
                  std::exception);
 }
 
+// Array behaviour as it stands, pinned before a second array kind is added.
+//
+// The plan is bounded and unbounded arrays side by side: the existing inline
+// form where the extent is a compile-time constant, and a {count, pointer}
+// descriptor where the length is only known at run time. That is an addition,
+// and this fixture exists to keep it one -- every assertion in it holds today,
+// so anything that stops holding is the new kind reaching somewhere it should
+// not have.
+//
+// Same net as the boundary cases under the accumulators: a rewrite wants
+// something to preserve, not something to hope for.
+TEST(Rdb, ArrayBehaviourPinned)
+{
+    auto    ref = std::string(REFEREE_TEST_DATA_DIR) + "/arrays_pinned.ref";
+    auto    csv = std::string(REFEREE_TEST_DATA_DIR) + "/arrays_pinned.csv";
+
+    std::ifstream       in(ref);
+    std::ostringstream  out;
+    EXPECT_TRUE(Referee::executeAll(in, ref, {{csv, false}}, "", out)) << out.str();
+}
+
 // `T[]` for arrays that are not at the top level. The extent table was keyed
 // by declaration name with dimensions positioned along the top-level array
 // spine, so a nested array had nowhere to record its extent and two arrays in
