@@ -122,7 +122,7 @@ Type*   Module::getType(std::string const& name)
     {
 //  LCOV_EXCL_START 
 //  GCOV_EXCL_START 
-        throw std::runtime_error(__PRETTY_FUNCTION__);
+        throw std::runtime_error("no such type: '" + name + "'");
 //  GCOV_EXCL_STOP
 //  LCOV_EXCL_STOP
     }
@@ -135,7 +135,7 @@ Type*   Module::getProp(std::string const& name)
     {
 //  LCOV_EXCL_START 
 //  GCOV_EXCL_START 
-        throw std::runtime_error(__PRETTY_FUNCTION__);
+        throw std::runtime_error("no such signal: '" + name + "'");
 //  GCOV_EXCL_STOP
 //  LCOV_EXCL_STOP
     }
@@ -148,7 +148,7 @@ Type*   Module::getConf(std::string const& name)
     {
 //  LCOV_EXCL_START 
 //  GCOV_EXCL_START 
-        throw std::runtime_error(__PRETTY_FUNCTION__);
+        throw std::runtime_error("no such conf value: '" + name + "'");
 //  GCOV_EXCL_STOP
 //  LCOV_EXCL_STOP
     }

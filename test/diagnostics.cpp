@@ -334,6 +334,51 @@ TEST(Diagnostics, WriterRejectsMisuse)
 // Both are behavioural changes rather than test fixes, so they are left for a
 // separate pass.
 
+// A diagnostic must describe what is wrong with the specification, not name
+// the C++ function that noticed. Twenty-nine sites threw bare
+// __PRETTY_FUNCTION__, which surfaced to users as, for example,
+// "virtual void TypeCalcImpl::visit(ExprXw*)".
+//
+// The check is deliberately on the shape of the message rather than its exact
+// wording, so it keeps working as the wording improves.
+TEST(Diagnostics, MessagesAreNotCppSignatures)
+{
+    char const* cases[] = {
+        //  a name that resolves to nothing
+        "data i : integer;\nG(nosuchsignal > 0);\n",
+        //  next/yesterday: the formula must be boolean, the repeat count integral
+        "data i : integer;\nG(Xw(i));\n",
+        "data i : integer;\nG(Xs(i));\n",
+        "data b : boolean;\nG(Ys(b, b));\n",
+        "data b : boolean;\nG(Yw(b, b));\n",
+        //  a time bound is a number of time units
+        "data b : boolean;\nG[b:2](b);\n",
+        //  a member that the type does not have
+        "type P : struct { x : integer; };\ndata p : P;\nG(p.nosuch == 1);\n",
+        //  negation of something with no sign
+        "data s : string;\nG(-s == 0);\n",
+    };
+
+    int     n = 0;
+    for (auto const* src : cases)
+    {
+        try
+        {
+            parseSnippet(src, "sig" + std::to_string(n++));
+            ADD_FAILURE() << "expected a rejection for: " << src;
+        }
+        catch (std::exception const& e)
+        {
+            std::string     what = e.what();
+
+            EXPECT_EQ(what.find("::visit("), std::string::npos)  << what;
+            EXPECT_EQ(what.find("Impl::"), std::string::npos)    << what;
+            EXPECT_EQ(what.find("virtual "), std::string::npos)  << what;
+            EXPECT_FALSE(what.empty())                           << src;
+        }
+    }
+}
+
 // Enums are nominal, so equality is only defined between two values of the
 // same enum type, and ordering is not defined at all -- `<` would compare
 // declaration positions, which is not a meaning the language gives them.

@@ -654,7 +654,7 @@ void    CompileExprImpl::visit(ExprContext*      expr)
 
 //  LCOV_EXCL_START 
 //  GCOV_EXCL_START 
-        throw std::runtime_error(__PRETTY_FUNCTION__);
+        throw Exception(expr->where(), "internal: unresolved context '" + expr->name + "'");
 //  GCOV_EXCL_STOP
 //  LCOV_EXCL_STOP
     }
@@ -820,7 +820,7 @@ void    CompileExprImpl::arithmetic(
     {
 //  LCOV_EXCL_START 
 //  GCOV_EXCL_START 
-        throw std::runtime_error(__PRETTY_FUNCTION__);
+        throw Exception(expr->where(), "bad type: these operands cannot be used in arithmetic");
 //  GCOV_EXCL_STOP
 //  LCOV_EXCL_STOP
     }
@@ -1284,7 +1284,7 @@ void    CompileExprImpl::visit(ExprMmbr*         expr)
     {
 //  LCOV_EXCL_START 
 //  GCOV_EXCL_START 
-        throw std::runtime_error(__PRETTY_FUNCTION__);
+        throw Exception(expr->where(), "internal: cannot read member '" + expr->mmbr + "' of this type");
 //  GCOV_EXCL_STOP
 //  LCOV_EXCL_STOP
     }
@@ -1326,7 +1326,7 @@ void    CompileExprImpl::visit(ExprNeg*          expr)
     {
 //  LCOV_EXCL_START 
 //  GCOV_EXCL_START 
-        throw std::runtime_error(__PRETTY_FUNCTION__);
+        throw Exception(expr->where(), "bad type: negation needs a number");
 //  GCOV_EXCL_STOP
 //  LCOV_EXCL_STOP
     }

@@ -749,7 +749,7 @@ void    TypeCalcImpl::visit(Time*                   time)
     {
 //  LCOV_EXCL_START 
 //  GCOV_EXCL_START 
-        throw std::runtime_error(__PRETTY_FUNCTION__);
+        throw Exception(time->lo->where(), "bad type: a time bound must be an integer");
 //  GCOV_EXCL_STOP
 //  LCOV_EXCL_STOP
     }
@@ -758,7 +758,7 @@ void    TypeCalcImpl::visit(Time*                   time)
     {
 //  LCOV_EXCL_START 
 //  GCOV_EXCL_START 
-        throw std::runtime_error(__PRETTY_FUNCTION__);
+        throw Exception(time->hi->where(), "bad type: a time bound must be an integer");
 //  GCOV_EXCL_STOP
 //  LCOV_EXCL_STOP
     }
@@ -775,7 +775,7 @@ void    TypeCalcImpl::visit(ExprXs*               expr)
     {
 //  LCOV_EXCL_START 
 //  GCOV_EXCL_START 
-        throw std::runtime_error(__PRETTY_FUNCTION__);
+        throw Exception(expr->lhs->where(), "bad type: the repeat count of Xs must be an integer");
 //  GCOV_EXCL_STOP
 //  LCOV_EXCL_STOP
     }
@@ -784,7 +784,7 @@ void    TypeCalcImpl::visit(ExprXs*               expr)
     {
 //  LCOV_EXCL_START 
 //  GCOV_EXCL_START 
-        throw std::runtime_error(__PRETTY_FUNCTION__);
+        throw Exception(expr->rhs->where(), "bad type: Xs expects a boolean");
 //  GCOV_EXCL_STOP
 //  LCOV_EXCL_STOP
     }
@@ -801,7 +801,7 @@ void    TypeCalcImpl::visit(ExprXw*               expr)
     {
 //  LCOV_EXCL_START 
 //  GCOV_EXCL_START 
-        throw std::runtime_error(__PRETTY_FUNCTION__);
+        throw Exception(expr->lhs->where(), "bad type: the repeat count of Xw must be an integer");
 //  GCOV_EXCL_STOP
 //  LCOV_EXCL_STOP
     }
@@ -810,7 +810,7 @@ void    TypeCalcImpl::visit(ExprXw*               expr)
     {
 //  LCOV_EXCL_START 
 //  GCOV_EXCL_START 
-        throw std::runtime_error(__PRETTY_FUNCTION__);
+        throw Exception(expr->rhs->where(), "bad type: Xw expects a boolean");
 //  GCOV_EXCL_STOP
 //  LCOV_EXCL_STOP
     }
@@ -827,7 +827,7 @@ void    TypeCalcImpl::visit(ExprYs*               expr)
     {
 //  LCOV_EXCL_START 
 //  GCOV_EXCL_START 
-        throw std::runtime_error(__PRETTY_FUNCTION__);
+        throw Exception(expr->lhs->where(), "bad type: the repeat count of Ys must be an integer");
 //  GCOV_EXCL_STOP
 //  LCOV_EXCL_STOP
     }
@@ -836,7 +836,7 @@ void    TypeCalcImpl::visit(ExprYs*               expr)
     {
 //  LCOV_EXCL_START 
 //  GCOV_EXCL_START 
-        throw std::runtime_error(__PRETTY_FUNCTION__);
+        throw Exception(expr->rhs->where(), "bad type: Ys expects a boolean");
 //  GCOV_EXCL_STOP
 //  LCOV_EXCL_STOP
     }
@@ -853,7 +853,7 @@ void    TypeCalcImpl::visit(ExprYw*               expr)
     {
 //  LCOV_EXCL_START 
 //  GCOV_EXCL_START 
-        throw std::runtime_error(__PRETTY_FUNCTION__);
+        throw Exception(expr->lhs->where(), "bad type: the repeat count of Yw must be an integer");
 //  GCOV_EXCL_STOP
 //  LCOV_EXCL_STOP
     }
@@ -862,7 +862,7 @@ void    TypeCalcImpl::visit(ExprYw*               expr)
     {
 //  LCOV_EXCL_START 
 //  GCOV_EXCL_START 
-        throw std::runtime_error(__PRETTY_FUNCTION__);
+        throw Exception(expr->rhs->where(), "bad type: Yw expects a boolean");
 //  GCOV_EXCL_STOP
 //  LCOV_EXCL_STOP
     }

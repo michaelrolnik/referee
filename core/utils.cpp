@@ -43,7 +43,7 @@ int64_t     parse_integer(  std::string const& text, unsigned base)
     {
 //  LCOV_EXCL_START 
 //  GCOV_EXCL_START 
-        throw std::runtime_error(__PRETTY_FUNCTION__);
+        throw std::runtime_error("not an integer, or out of range: '" + text + "'");
 //  GCOV_EXCL_STOP
 //  LCOV_EXCL_STOP
     }
@@ -68,7 +68,7 @@ double      parse_number(   std::string const& text)
     {
 //  LCOV_EXCL_START 
 //  GCOV_EXCL_START 
-        throw std::runtime_error(__PRETTY_FUNCTION__);
+        throw std::runtime_error("not a number, or out of range: '" + text + "'");
 //  GCOV_EXCL_STOP
 //  LCOV_EXCL_STOP
     }
@@ -91,7 +91,7 @@ bool        parse_boolean(  std::string const& text)
 
 //  LCOV_EXCL_START 
 //  GCOV_EXCL_START 
-    throw std::runtime_error(__PRETTY_FUNCTION__);
+    throw std::runtime_error("not a boolean, expected true or false: '" + text + "'");
 //  GCOV_EXCL_STOP
 //  LCOV_EXCL_STOP
 }

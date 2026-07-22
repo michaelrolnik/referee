@@ -536,7 +536,7 @@ std::any Antlr2AST::visitExprQuant(     referee::refereeParser::ExprQuantContext
 
 //  LCOV_EXCL_START
 //  GCOV_EXCL_START
-    throw std::runtime_error(__PRETTY_FUNCTION__);
+    throw Exception(position(ctx), "unsupported quantifier");
 //  GCOV_EXCL_STOP
 //  LCOV_EXCL_STOP
 }
@@ -586,7 +586,7 @@ std::any Antlr2AST::visitExprConst(     referee::refereeParser::ExprConstContext
 
 //  LCOV_EXCL_START 
 //  GCOV_EXCL_START 
-    throw std::runtime_error(__PRETTY_FUNCTION__);
+    throw Exception(position(ctx), "unsupported literal");
 //  GCOV_EXCL_STOP
 //  LCOV_EXCL_STOP
 
@@ -640,7 +640,7 @@ std::any Antlr2AST::visitExprData(      referee::refereeParser::ExprDataContext*
 
 //  LCOV_EXCL_START 
 //  GCOV_EXCL_START 
-    throw std::runtime_error(__PRETTY_FUNCTION__);
+    throw Exception(position(ctx), "no such signal or conf value: '" + name + "'");
 //  GCOV_EXCL_STOP
 //  LCOV_EXCL_STOP
 }
@@ -763,7 +763,7 @@ std::any Antlr2AST::visitInteger(       referee::refereeParser::IntegerContext* 
 
 //  LCOV_EXCL_START 
 //  GCOV_EXCL_START 
-    throw std::runtime_error(__PRETTY_FUNCTION__);
+    throw Exception(position(ctx), "unsupported integer literal");
 //  GCOV_EXCL_STOP
 //  LCOV_EXCL_STOP
 }
@@ -793,14 +793,14 @@ std::any Antlr2AST::visitExprMmbr(      referee::refereeParser::ExprMmbrContext*
         {
 //  LCOV_EXCL_START 
 //  GCOV_EXCL_START 
-            throw std::runtime_error(__PRETTY_FUNCTION__);
+            throw Exception(position(ctx), "'" + name + "' is a conf value, which is constant for the whole trace -- freeze names a signal");
 //  GCOV_EXCL_STOP
 //  LCOV_EXCL_STOP
         }
             
 //  LCOV_EXCL_START 
 //  GCOV_EXCL_START 
-        throw std::runtime_error(__PRETTY_FUNCTION__);
+        throw Exception(position(ctx), "no such member: '" + name + "'");
 //  GCOV_EXCL_STOP
 //  LCOV_EXCL_STOP
     }

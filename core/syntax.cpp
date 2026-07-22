@@ -117,7 +117,7 @@ unsigned    TypeContext::index(std::string name)
     
 //  LCOV_EXCL_START 
 //  GCOV_EXCL_START 
-    throw std::runtime_error(__PRETTY_FUNCTION__);
+    throw std::runtime_error("no such context member: '" + name + "'");
 //  GCOV_EXCL_STOP
 //  LCOV_EXCL_STOP
 }
@@ -152,7 +152,7 @@ unsigned    TypeStruct::index(std::string name)
 
 //  LCOV_EXCL_START 
 //  GCOV_EXCL_START 
-    throw std::runtime_error(__PRETTY_FUNCTION__);
+    throw std::runtime_error("no such struct member: '" + name + "'");
 //  GCOV_EXCL_STOP
 //  LCOV_EXCL_STOP
 }
@@ -192,7 +192,7 @@ unsigned    TypeEnum::index(std::string name)
 
 //  LCOV_EXCL_START 
 //  GCOV_EXCL_START 
-    throw std::runtime_error(__PRETTY_FUNCTION__);
+    throw std::runtime_error("no such enum member: '" + name + "'");
 //  GCOV_EXCL_STOP
 //  LCOV_EXCL_STOP
 }
