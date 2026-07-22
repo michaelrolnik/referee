@@ -88,52 +88,56 @@ They do not merely need re-checking — several are *about* the old meaning.
 different sizes because the extent is fixed per run. Under the new meaning that
 is no longer the property being tested.
 
-### CSV: the array is a count column plus element columns
+### CSV: columns to the widest row, absent elements marked
 
-A CSV has fixed columns, so a record cannot carry three elements while its
-neighbour carries five. The extent is a property of the header — which is why
-`inferSizes` reads it from column names today.
-
-The way through is to encode the array as what it is: two fields, the second
-of which is the elements.
+A CSV has fixed columns, so the header is sized to the **widest row in the
+file** and a cell that is not an element is marked absent:
 
 ```csv
-__time__,pkt.count,pkt[0],pkt[1],pkt[2],pkt[3]
-0,3,0xDE,0xAD,0xBE,0x00
-1000,2,0x01,0x02,0x00,0x00
+__time__,pkt[0],pkt[1],pkt[2],pkt[3]
+0,0xDE,0xAD,0xBE,-
+1000,0x01,0x02,-,-
 ```
 
-The element columns give the **capacity** — four, from the header, as now — and
-`pkt.count` gives the **length**, per record. The first row has three elements;
-the second has two. Columns stay fixed and lengths vary, which is what was
-wanted.
+`pkt` has three elements in the first record and two in the second. The count
+is derived by the loader, not declared.
 
-This is the pattern the MCTP examples already write by hand:
+That is better than a companion `pkt.count` column, and the reason is not
+tidiness: **a count column is a second source of truth.** It can say three
+while four cells hold values, and nothing detects the disagreement — one of the
+two is simply wrong and the loader has to pick. A marker has one source, so the
+question cannot arise.
 
-```text
-data len : byte;            #  becomes pkt.count
-data pkt : byte[];          #  becomes pkt's element columns
-```
+It also reads as what it is. The ragged shape is visible in the file rather
+than inferred by comparing a number against a row.
 
-with every requirement carrying `i >= len => …` itself. Promoting it into the
-loader is what makes the guard automatic.
+#### Three things to settle before implementing
 
-#### And it removes the need for a pool, for CSV at least
+**The marker must not be a valid value.** `-` is safe for integers, bytes,
+numbers, booleans and enums — none of them can spell it. It is **not** safe for
+a `string` array, where `-` is a perfectly good string. Either strings use a
+different marker, or an empty cell means absent and `-` means the one-character
+string, or string arrays are not carried in CSV. This is the only real hole in
+the scheme and it should be closed deliberately.
 
-If capacity is fixed by the header, the elements can stay **inline in the row**
-and the descriptor's pointer simply points at them. Rows stay fixed-stride and
-`.rdb` needs no data section.
+**Absence must be trailing.** An array has no holes, so `1,-,3` is not a
+length-two array with a gap — it is an error. Accepting it silently would mean
+inventing a semantics for something the type system cannot express.
 
-That matters more than it first looks: **where the elements live is a loader
-detail, invisible above it.** Code generation sees `{count, pointer}` and does
-not care whether the pointer addresses the row or a pool. So a format that
-genuinely carries variable-length data — YAML, or an `.rdb` written from one —
-can pool its elements, and CSV can keep them inline, without two paths anywhere
-except the loader.
+**Empty cells.** `1,2,,` and `1,2,-,-` should mean the same thing or clearly
+different things; either is defensible, deciding neither is not.
 
-One naming question left: `pkt.count` as a column name collides with a struct
-field actually called `count`, and `.count` is already a pseudo-member on
-arrays. Worth choosing deliberately rather than discovering later.
+#### It also removes the need for a pool, for CSV
+
+Capacity is still fixed by the header, so the elements stay **inline in the
+row** and the descriptor points at them. Rows stay fixed-stride and `.rdb`
+needs no data section.
+
+Which generalises: **where the elements live is a loader detail, invisible
+above it.** Code generation sees `{count, pointer}` and does not care whether
+the pointer addresses the row or a pool. A format carrying genuinely
+variable-length data can pool; CSV keeps them inline; and there is no branch
+anywhere except the loader.
 
 ### Quantifiers as runtime loops
 
