@@ -506,23 +506,40 @@ namespace {
 // The extents an already-packed trace carries, so a specification that leaves
 // them out can be compiled against it. The .rdb schema stores concrete
 // TypeArray counts, so this is a read rather than an inference.
+//  Recover the same path-keyed extent table from an already-built .rdb
+//  schema that inferSizes() recovers from CSV column names, so a
+//  specification resolves identically against either. Arrays nested inside
+//  structs are reached by extending the path, which is why this recurses
+//  rather than walking only the top-level array spine.
+static void     collectSizes(std::string const& path, Type* type, Referee::Sizes& out)
+{
+    std::vector<unsigned>   dims;
+    auto*                   t = type;
+
+    for(;;)
+    {
+        auto* array = dynamic_cast<TypeArray*>(t);
+        if (array == nullptr) break;
+        dims.push_back(array->count);
+        t = array->type;
+    }
+
+    if (!dims.empty())
+        out[path] = dims;
+
+    if (auto* strct = dynamic_cast<TypeStruct*>(t))
+    {
+        for (auto const& m : strct->members)
+            collectSizes(path + "." + m.name, m.data, out);
+    }
+}
+
 Referee::Sizes  sizesFromSchema(std::vector<referee::db::PropDecl> const& props)
 {
     Referee::Sizes  out;
 
     for (auto const& prop : props)
-    {
-        std::vector<unsigned>   dims;
-        for (auto* t = prop.type; ; )
-        {
-            auto* array = dynamic_cast<TypeArray*>(t);
-            if (array == nullptr) break;
-            dims.push_back(array->count);
-            t = array->type;
-        }
-        if (!dims.empty())
-            out[prop.name] = std::move(dims);
-    }
+        collectSizes(prop.name, prop.type, out);
 
     return out;
 }

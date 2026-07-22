@@ -1,0 +1,39 @@
+# Array extents taken from the trace for arrays that are *not* at the top level.
+#
+# Regression. `T[]` says "the extent comes from the trace", and the extent
+# table was keyed by declaration name with the dimensions positioned along the
+# top-level array spine. A nested array therefore had nowhere to record its
+# extent, so this file's declarations were rejected outright with "the size of
+# '<array>' is not given here". Worse, the CSV scanner truncated every column
+# name at its first dot, so two arrays inside one struct both keyed to the
+# outer name and would have merged their extents into one vector by position.
+#
+# The table is now keyed by dotted path with subscripts elided, so
+# `m.raw[3]` records an extent for `m` (none) and for `m.raw` (four), and
+# `g[1].v[2]` records `g` (two) and `g.v` (three).
+
+data m : struct { len : byte; raw : byte[]; tag : integer[]; };
+data g : struct { v : integer[]; }[];
+
+# Two arrays in one struct, with *different* extents. Under the old keying
+# these collided; whichever column was scanned last would have won.
+G(m.raw.count == 4);
+G(m.tag.count == 2);
+G(m.raw.count != m.tag.count);
+
+# An array of structs, each holding an array -- the extent of the inner array
+# is recorded once, under `g.v`, and applies to every element of `g`.
+G(g.count == 2);
+G(g[0].v.count == 3);
+G(g[1].v.count == 3);
+
+# The values must actually be reachable, not merely the extents right.
+G(m.raw[0] >= 10);
+G(m.tag[0] >= 7);
+G(g[0].v[0] == 1);
+G(g[1].v[2] == 6);
+
+# Quantifiers expand over the recovered extents.
+all v in m.tag: v >= 7;
+all row, i in g: all x, j in row.v: x == i * 3 + j + 1;
+G(all v, i in m.raw: i < m.len => v > 0);

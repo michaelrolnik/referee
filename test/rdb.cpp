@@ -658,6 +658,20 @@ TEST(Rdb, AccumulateOverRecords)
     EXPECT_TRUE(Referee::executeAll(in, ref, {{csv, false}}, "", out)) << out.str();
 }
 
+// `T[]` for arrays that are not at the top level. The extent table was keyed
+// by declaration name with dimensions positioned along the top-level array
+// spine, so a nested array had nowhere to record its extent and two arrays in
+// one struct collided. It is now keyed by dotted path.
+TEST(Rdb, NestedArrayExtents)
+{
+    auto    ref = std::string(REFEREE_TEST_DATA_DIR) + "/nested_extents.ref";
+    auto    csv = std::string(REFEREE_TEST_DATA_DIR) + "/nested_extents.csv";
+
+    std::ifstream       in(ref);
+    std::ostringstream  out;
+    EXPECT_TRUE(Referee::executeAll(in, ref, {{csv, false}}, "", out)) << out.str();
+}
+
 // Equality on enum values. Two bugs: `==` had no enum case at all, and once
 // added it compared pointers rather than values, because TypeEnum is a
 // composite and so is never loaded by visit(ExprData*). Pointer comparison is

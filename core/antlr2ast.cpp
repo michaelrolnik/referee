@@ -1107,7 +1107,10 @@ std::any Antlr2AST::visitTypeArray(     referee::refereeParser::TypeArrayContext
                 throw Exception(position(ctx),
                     "the size of '" + (m_declName.empty() ? std::string("<array>") : m_declName)
                     + "' is not given here and could not be taken from the trace"
-                      " -- write the extent, or supply a trace to take it from");
+                      " -- write the extent, or supply a trace to take it from"
+                      " (an unsized array inside a named `type` alias cannot be"
+                      " resolved: the alias is declared once but used at many"
+                      " paths, so write its extent)");
 
             sizes[k] = known->second[declPos];
         }
@@ -1141,7 +1144,18 @@ std::any Antlr2AST::visitTypeStruct(    referee::refereeParser::TypeStructContex
     for(auto i = 0u; i < size; i++)
     {
         auto    name    = names[i]->getText();
+
+        //  Extend the path while this member's type is built, so an unsized
+        //  array inside it can find its extent under `outer.member` rather
+        //  than under `outer` -- where it would have no position, and would
+        //  collide with any sibling array.
+        auto    saved   = m_declName;
+        if(!m_declName.empty())
+            m_declName += "." + name;
+
         auto    type    = types[i]->accept(this);
+
+        m_declName      = saved;
 
         members.push_back(Named<Type>(name, std::any_cast<Type*>(type)));
     }

@@ -54,44 +54,54 @@ namespace referee::db
 
 //  Read array extents off a trace's flattened column names. `readings[0]`,
 //  `readings[1]`, … means three elements; `g[0][1]` contributes to both
-//  dimensions. Reported per declaration, outermost dimension first, which is
-//  the order the subscripts are written in.
+//  dimensions. Reported per *path*, outermost dimension first, which is the
+//  order the subscripts are written in.
+//
+//  The key is the dotted path with subscripts elided, so `msg[0].raw[3]`
+//  records an extent for `msg` and another for `msg.raw`. Keying by the
+//  leading name alone -- which is what this did originally -- meant a nested
+//  array had nowhere to record its extent, so `struct { raw : byte[] }` could
+//  not be resolved, and two arrays in one struct would have merged their
+//  extents into one vector by position.
 Referee::Sizes  inferSizes(loader::Row const& doc)
 {
     std::map<std::string, std::vector<unsigned>>    out;
 
     for (auto const& col : doc.columnNames())
     {
-        auto    open = col.find('[');
-        if (open == std::string::npos)
-            continue;
+        std::string path;
 
-        //  The declaration is everything before the first subscript; a struct
-        //  field under an array (`path.pts[0].x`) keeps its dotted prefix, and
-        //  only the leading name identifies the declaration.
-        auto    name = col.substr(0, open);
-        auto    dot  = name.find('.');
-        if (dot != std::string::npos)
-            name = name.substr(0, dot);
-
-        auto&   dims = out[name];
-
-        std::size_t pos = open;
-        for (unsigned dim = 0; pos < col.size() && col[pos] == '['; dim++)
+        for (std::size_t pos = 0; pos < col.size(); )
         {
-            auto    close = col.find(']', pos);
-            if (close == std::string::npos)
-                break;
+            //  a name segment, up to the next subscript or dot
+            auto    beg = pos;
+            while (pos < col.size() && col[pos] != '[' && col[pos] != '.')
+                pos++;
 
-            unsigned    index = 0;
-            try         { index = std::stoul(col.substr(pos + 1, close - pos - 1)); }
-            catch (...) { break; }
+            if (pos > beg)
+                path += (path.empty() ? "" : ".") + col.substr(beg, pos - beg);
 
-            if (dims.size() <= dim)
-                dims.resize(dim + 1, 0);
-            dims[dim] = std::max(dims[dim], index + 1);
+            //  every subscript group that follows belongs to this path
+            for (unsigned dim = 0; pos < col.size() && col[pos] == '['; dim++)
+            {
+                auto    close = col.find(']', pos);
+                if (close == std::string::npos)
+                    break;
 
-            pos = close + 1;
+                unsigned    index = 0;
+                try         { index = std::stoul(col.substr(pos + 1, close - pos - 1)); }
+                catch (...) { break; }
+
+                auto&   dims = out[path];
+                if (dims.size() <= dim)
+                    dims.resize(dim + 1, 0);
+                dims[dim] = std::max(dims[dim], index + 1);
+
+                pos = close + 1;
+            }
+
+            if (pos < col.size() && col[pos] == '.')
+                pos++;
         }
     }
 

@@ -82,12 +82,18 @@ globally, it is never the case that off < 0 holds;
 # all raise "cannot be temporal". It may contain `Xs` / `Xw` / `Ys` / `Yw` and
 # freeze, which is what makes the adjacent-octet rules below expressible.
 #
-# One measured caveat: a `while` scope does **not** compose with a lookahead.
-# Both of these fail where the `globally ... => Xs(...)` spelling passes, so
-# the guard has to move from the scope into the body when the body looks ahead:
+# One thing worth understanding rather than working around: a `while` scope
+# does not compose with a *strong* lookahead, and that is correct. `while P`
+# desugars to `between P and !P`, so the body is interpreted over the scope's
+# subtrace. At the last state of the scope there is no next state *within it*,
+# so `Xs` is false there and `Xw` is vacuously true -- measured, and exactly
+# what strong and weak next are supposed to do.
 #
-#     while off == 7 && (b & 0x80) != 0, it is always the case that Xs(...) holds;   FAIL
-#     while off == 7, it is always the case that (b & 0x80) != 0 => Xs(...) holds;   FAIL
+# The consequence for this requirement is not a workaround but a meaning: the
+# octet after the flags byte has `off == 8`, so it is outside a `while off == 7`
+# scope by construction. A rule that reaches across the boundary cannot be
+# scoped at the boundary; it has to be stated globally with the guard as an
+# implication.
 #
 # On a SOM packet the octet after the flags byte is the message type.
 @mctp_known_message_type
