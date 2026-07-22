@@ -674,6 +674,22 @@ TEST(Rdb, ExternalFunctions)
         << out.str();
 }
 
+// -L takes a .so as well as a directory. Naming the object is what a build
+// producing a single library wants; the directory form is for a plugin
+// directory shared across specifications.
+TEST(Rdb, ExternalFunctionLibraryAsAFile)
+{
+    auto    ref = std::string(REFEREE_TEST_DATA_DIR) + "/extfunc.ref";
+    auto    csv = std::string(REFEREE_TEST_DATA_DIR) + "/extfunc.csv";
+    auto    so  = std::string(REFEREE_TEST_PLUGIN_DIR) + "/libhelpers.so";
+
+    std::ifstream       in(ref);
+    std::ostringstream  out;
+    EXPECT_TRUE(Referee::executeAll(in, ref, {{csv, false}}, "", out,
+                                    Referee::Detail::Summary, {}, {so}))
+        << out.str();
+}
+
 // A declared function with no implementation on the path is refused at setup,
 // naming the symbol it looked for and where it looked.
 TEST(Rdb, ExternalFunctionMissingSymbol)

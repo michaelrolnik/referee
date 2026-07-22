@@ -671,7 +671,11 @@ void    TypeCalcImpl::visit(ExprCall*               expr)
 
         if(want != nullptr && want->count == 0 && have != nullptr)
         {
-            if(widen(have->type) != widen(want->type))
+            //  Element types must match *exactly*, not widened. `byte` reads
+            //  as an integer everywhere else, but an array's layout is its
+            //  element width: accepting `integer[4]` for a `byte[]` would
+            //  hand the callee eight-byte elements to read as octets.
+            if(have->type != want->type)
                 throw Exception(expr->args[i]->where(),
                     "bad type: argument " + std::to_string(i + 1) + " of '" + expr->name
                     + "' is an array of the wrong element type");

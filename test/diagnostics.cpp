@@ -334,6 +334,61 @@ TEST(Diagnostics, WriterRejectsMisuse)
 // Both are behavioural changes rather than test fixes, so they are left for a
 // separate pass.
 
+// Slicing: what may be sliced, and by what.
+TEST(Diagnostics, RejectsBadSlices)
+{
+    char const* cases[] = {
+        //  only an array can be sliced
+        "data i : integer;\nG(i[0:1] == 0);\n",
+        "data s : string;\nG(s[0:1] == 0);\n",
+        "type P : struct { x : integer; };\ndata p : P;\nG(p[0:1] == 0);\n",
+        //  bounds are integers, not numbers or booleans
+        "data v : integer[4];\ndata r : number;\nG(v[r:2][0] == 0);\n",
+        "data v : integer[4];\ndata b : boolean;\nG(v[0:b][0] == 0);\n",
+    };
+
+    int     n = 0;
+    for (auto const* src : cases)
+        EXPECT_THROW(parseSnippet(src, "slice" + std::to_string(n++)), std::exception) << src;
+}
+
+// A `func` is checked against its declaration and nothing else: the
+// implementation may not exist at compile time, so the declaration is the only
+// contract there is.
+TEST(Diagnostics, RejectsBadCalls)
+{
+    //  Every snippet uses names of its own. AST signal nodes are interned
+    //  process-globally, so a name declared with one type in another test
+    //  leaks its type into this one -- the open bug noted in
+    //  test/logic/nested_extents.ref.
+    char const* cases[] = {
+        //  not declared
+        "data ca : integer;\nG(ca_nosuch(ca) == 0);\n",
+        //  wrong arity, both directions
+        "func cb_f : (integer) -> integer;\ndata cb : integer;\nG(cb_f() == 0);\n",
+        "func cc_f : (integer) -> integer;\ndata cc : integer;\nG(cc_f(cc, cc) == 0);\n",
+        //  wrong argument type -- no silent widening, since a C function has
+        //  one signature and reinterpreting the bits would be worse than a
+        //  rejection
+        "func cd_f : (integer) -> integer;\ndata cd : number;\nG(cd_f(cd) == 0);\n",
+        "func ce_f : (number) -> number;\ndata ce : string;\nG(ce_f(ce) == 0.0);\n",
+        //  an array parameter takes an array, of exactly the right element
+        //  type: `byte` reads as an integer everywhere else, but an array's
+        //  layout is its element width
+        "func cf_f : (byte[]) -> integer;\ndata cf : integer;\nG(cf_f(cf) == 0);\n",
+        "func cg_f : (byte[]) -> integer;\ndata cg : integer[4];\nG(cg_f(cg) == 0);\n",
+        //  declared twice
+        "func ch_f : (integer) -> integer;\nfunc ch_f : (integer) -> integer;\n"
+        "data ch : integer;\nG(ch_f(ch) == 0);\n",
+        //  the result is used as its declared type
+        "func ci_f : (integer) -> boolean;\ndata ci : integer;\nG(ci_f(ci) + 1 == 2);\n",
+    };
+
+    int     n = 0;
+    for (auto const* src : cases)
+        EXPECT_THROW(parseSnippet(src, "call" + std::to_string(n++)), std::exception) << src;
+}
+
 // A diagnostic must describe what is wrong with the specification, not name
 // the C++ function that noticed. Twenty-nine sites threw bare
 // __PRETTY_FUNCTION__, which surfaced to users as, for example,

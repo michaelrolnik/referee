@@ -119,6 +119,39 @@ std::string     tmpPath(std::string const& tag, std::string const& ext)
 
 } // namespace
 
+// A mistyped option should say what was meant. CLI11 reports "not expected",
+// which is no help when the cause is a typo -- and for a subcommand with a
+// multi-value positional it does not even name the offending token, so the
+// scan is over argv rather than over the message.
+TEST(Cli, SuggestsMistypedOptions)
+{
+    struct Case { char const* typo; char const* meant; };
+
+    Case    cases[] = {
+        { "--sucess",  "--success" },
+        { "--verbse",  "--verbose" },
+        { "--includ",  "--include" },
+        { "--librari", "--library" },
+        { "--failur",  "--failure" },
+    };
+
+    auto    ref = std::string(REFEREE_TEST_DATA_DIR) + "/pass.ref";
+    auto    csv = std::string(REFEREE_TEST_DATA_DIR) + "/pass.csv";
+
+    for (auto const& c : cases)
+    {
+        auto    r = run(quote(REFEREE_BIN) + " execute " + quote(ref) + " " + quote(csv)
+                        + " " + c.typo + " x 2>&1");
+        EXPECT_NE(r.output.find(std::string("did you mean ") + c.meant), std::string::npos)
+            << c.typo << " -> " << r.output;
+    }
+
+    //  Nothing close: stay quiet rather than guess.
+    auto    r = run(quote(REFEREE_BIN) + " execute " + quote(ref) + " " + quote(csv)
+                    + " --zzzzzzzzzz 2>&1");
+    EXPECT_EQ(r.output.find("did you mean"), std::string::npos) << r.output;
+}
+
 // `--stub` emits a C skeleton implementing the declared functions. The point
 // is that the first build is a copy rather than a transcription -- C cannot
 // diagnose a signature mismatch -- so the test is that the generated pair
