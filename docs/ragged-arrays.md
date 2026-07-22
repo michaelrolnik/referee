@@ -127,11 +127,28 @@ inventing a semantics for something the type system cannot express.
 **Empty cells.** `1,2,,` and `1,2,-,-` should mean the same thing or clearly
 different things; either is defensible, deciding neither is not.
 
+#### Capacity is not a concept
+
+Nothing above the loader ever sees how many cells a header happens to have.
+Indexing is `base + i × elemsize` from the descriptor's pointer; a bounds check
+is against `count`. There is no operation that reads a capacity, so it does not
+belong in the type, the schema, a requirement, or the descriptor.
+
+It is an allocation figure and nothing else — how many bytes this row needs,
+which is already the loader's business and has always been. The widest row in
+the file decides it, the loader reserves that much, and the word does not need
+to appear anywhere else.
+
+That distinction is easy to lose. An earlier revision of this document had
+capacity in the *type*, which forced the capacity-versus-length split that the
+`{count, T*}` shape exists to remove — and it crept back in here as a property
+of the CSV encoding. It is neither. `count` is the only length anything can
+observe.
+
 #### It also removes the need for a pool, for CSV
 
-Capacity is still fixed by the header, so the elements stay **inline in the
-row** and the descriptor points at them. Rows stay fixed-stride and `.rdb`
-needs no data section.
+The elements stay **inline in the row** and the descriptor points at them, so
+rows stay fixed-stride and `.rdb` needs no data section.
 
 Which generalises: **where the elements live is a loader detail, invisible
 above it.** Code generation sees `{count, pointer}` and does not care whether
