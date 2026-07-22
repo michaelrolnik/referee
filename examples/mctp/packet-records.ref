@@ -1,0 +1,170 @@
+# PROPOSAL A -- one record per MCTP packet
+#
+#     data len : byte;
+#     data pkt : byte[];
+#
+# The capture tool has already cut the byte stream into transactions; each
+# trace record is one whole SMBus block write carrying one MCTP packet, padded
+# to a fixed width with a companion length. Run it with:
+#
+#     referee execute examples/mctp/packet-records.ref examples/mctp/packet-records.csv
+#
+# Requirements are written in the Dwyer specification-pattern vocabulary
+# wherever it reaches, and in raw operators only where it does not. The three
+# exceptions are marked and explained at the end.
+#
+# ── Why the length field ─────────────────────────────────────────────────────
+# `byte[]` takes its extent from the trace, but that extent is fixed for the
+# whole run -- REF arrays are homogeneous, so every record has the same number
+# of elements. MCTP packets are not all the same length. So the array is sized
+# to the largest packet the binding allows and `len` says how much of it is
+# real, which is the Pascal-string shape. Every requirement that walks the
+# array guards on `len`; every requirement that names a header field does not,
+# because the header is present at fixed offsets in any packet.
+#
+# The per-record extent type `T[<= N]` sketched in docs/quantifiers.md would
+# fold `len` into the array and remove the guards. It is not built, and this
+# file is what its absence costs: one extra signal and one guard clause.
+#
+# ── Wire layout, MCTP over SMBus/I2C (DSP0237) ───────────────────────────────
+#   off  field
+#    0   destination slave address, write (bit 0 clear)
+#    1   command code, always 0x0F
+#    2   byte count -- offsets 3 .. len-2, so len == byte count + 4
+#    3   source slave address (bit 0 set)
+#    4   MCTP header version in bits 3:0
+#    5   destination EID
+#    6   source EID
+#    7   SOM bit 7 | EOM bit 6 | pkt seq bits 5:4 | TO bit 3 | msg tag bits 2:0
+#    8.. message body; on a SOM packet the first body byte is IC | message type
+#   len-1 PEC
+
+data len : byte;
+data pkt : byte[];
+
+# ── Header fields, named once ────────────────────────────────────────────────
+# Computed signals are the only abstraction REF has -- there are no functions
+# or macros -- and they are enough here. Put this block in its own file and
+# `import` it, and every MCTP specification in the project shares one decoding.
+data cmd     = pkt[1];
+data bytecnt = pkt[2];
+data hdrver  = pkt[4] & 0x0F;
+data dsteid  = pkt[5];
+data srceid  = pkt[6];
+data flags   = pkt[7];
+data som     = (flags & 0x80) != 0;
+data eom     = (flags & 0x40) != 0;
+data seq     = (flags & 0x30) >> 4;
+data to      = (flags & 0x08) != 0;
+data tag     = flags & 0x07;
+data msgtype = pkt[8] & 0x7F;
+data ic      = (pkt[8] & 0x80) != 0;
+
+# ── Per-packet invariants: universality under the global scope ───────────────
+@mctp_command_code
+globally, it is always the case that cmd == 0x0F holds;
+
+@mctp_header_version
+globally, it is always the case that hdrver == 0x01 holds;
+
+@mctp_byte_count_agrees
+globally, it is always the case that len == bytecnt + 4 holds;
+
+@mctp_sequence_is_two_bits
+globally, it is always the case that seq <= 3 holds;
+
+# Absence reads better than universality when the requirement is a prohibition:
+# a destination address with bit 0 set would be a read, and MCTP is carried by
+# block *write*.
+@smbus_destination_is_a_write
+globally, it is never the case that (pkt[0] & 0x01) != 0 holds;
+
+# ── The `while` scope: a condition that selects which packets are constrained ─
+# Only a SOM packet carries a message type, so the constraint belongs inside a
+# scope rather than behind an implication. This is what `while` is for.
+@mctp_known_message_type
+while som, it is always the case that msgtype == 0x00      # MCTP control
+                                   || msgtype == 0x01      # PLDM
+                                   || msgtype == 0x7E      # vendor defined, PCI
+                                   || msgtype == 0x7F      # vendor defined, IANA
+                                    holds;
+
+# Padding beyond the declared length is not data and must not be read as data.
+# The quantifier expands at compile time over the array's extent, one guarded
+# conjunct per element, so the guard costs nothing at run time.
+@mctp_padding_is_zero
+globally, it is always the case that (all v, i in pkt: i >= len => v == 0) holds;
+
+# ── Cross-packet rules: response and precedence ──────────────────────────────
+# A fragmented message spans several records, and the reassembly rules are
+# relations *between* records -- which is exactly what these two patterns say.
+@mctp_message_terminates
+globally, if som has occurred, then in response eom eventually holds;
+
+# The reassembly timeout is the same requirement with a bound. Uncomment once
+# the trace's time unit is settled:
+# globally, if som has occurred, then in response eom eventually holds within 100 milliseconds;
+
+# No end-of-message without a start. Precedence is the past-facing mirror of
+# response, and states the half that response cannot.
+@mctp_no_orphan_eom
+globally, if eom holds, then it must have been the case that som has occurred before it;
+
+# ── Where the pattern vocabulary stops ───────────────────────────────────────
+# A pattern body may not contain a *looping* temporal operator -- `G`, `F`,
+# `H`, `O`, the untils and releases, or the accumulators `Itg` / `Sum` / `Cnt`
+# all raise "cannot be temporal". It may contain `Xs` / `Xw` / `Ys` / `Yw` and
+# freeze, because those are a fixed one-step shift rather than a walk.
+#
+# That is exactly enough for the packet-sequencing rules, which compare a
+# packet with the one after it: freeze binds the current packet so `t.seq` is
+# its sequence number and `seq` is the following packet's. Written as
+# universality with the guard as an implication, since a `while` scope does not
+# compose with a lookahead (see byte-stream.ref).
+@mctp_sequence_increments
+globally, it is always the case that t@(!eom => Xs(seq == (t.seq + 1) % 4)) holds;
+
+@mctp_message_fields_constant
+globally, it is always the case that t@(!eom => Xs(tag    == t.tag
+                                                && to     == t.to
+                                                && srceid == t.srceid
+                                                && dsteid == t.dsteid)) holds;
+
+# ── What this form cannot say at all ─────────────────────────────────────────
+#
+# 1. PEC. It is a CRC-8 over the whole transaction. REF has no fold over an
+#    array and no function abstraction, so the only spelling is the fully
+#    unrolled polynomial -- eight shift/xor steps per byte, across every byte,
+#    written out by hand. Not practical. Have the capture tool emit
+#    `pec_ok : boolean` and write
+#        globally, it is always the case that pec_ok holds;
+#    This is the same division of labour that produced `len`: arithmetic
+#    belongs to the tool, and the relations between fields belong here.
+#
+# 2. Total payload bytes of a fragmented message. `Sum` and `Cnt` select
+#    states with a condition and are bounded by a `[lo:hi]` *time* window, not
+#    by a terminator, so "bytes from SOM to EOM" needs either a window wide
+#    enough for one message and no more --
+#        G(som => Sum[0:100000](true, bytecnt) <= 65536);
+#    -- which works only if messages are time-bounded, or the freeze form
+#        t@(Sum(Ss(!eom, __time__ == t.__time__), bytecnt))
+#    which is exact but quadratic and hard to read. Neither can be written as
+#    a pattern, since accumulators are barred from pattern bodies.
+#    Scope-bounded accumulation would fix both problems at once.
+#
+# 3. Anything below MCTP. Inter-byte timing, clock stretching, ACK/NACK,
+#    arbitration loss -- none of it survives the cut into packets. That is the
+#    byte-stream form's job; see byte-stream.ref.
+#
+# ── Verified ─────────────────────────────────────────────────────────────────
+# Every requirement above holds against packet-records.csv, and each was also
+# checked to *discriminate*, by injecting one defect at a time:
+#
+#   defect                      caught by
+#   command code 0x0E           mctp_command-code
+#   header version 2            mctp_header-version
+#   byte count off by one       mctp_byte-count-agrees
+#   sequence 2 instead of 1     mctp_sequence-increments
+#   tag changed mid-message     mctp_message-fields-constant
+#   padding byte non-zero       mctp_padding-is-zero
+#   EOM never set               mctp_message-terminates, and both cross-packet rules

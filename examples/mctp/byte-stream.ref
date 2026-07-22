@@ -1,0 +1,165 @@
+# PROPOSAL B -- one record per octet
+#
+#     data b   : byte;
+#     data off : integer;
+#     data dir : Dir;
+#
+# Each trace record is a single octet on the wire. Run it with:
+#
+#     referee execute examples/mctp/byte-stream.ref examples/mctp/byte-stream.csv
+#
+# ── First, a correction to the shape ─────────────────────────────────────────
+# The obvious spelling is
+#
+#     data i2c_miso : byte;
+#     data i2c_mosi : byte;
+#
+# but I2C is not SPI: there is one bidirectional data line, not two. At any
+# instant only one direction is being driven, so a two-signal model always has
+# one signal holding a stale or meaningless value, and every requirement has to
+# know which. One octet plus a direction says the same thing without the trap:
+#
+#     type Dir : enum { M2S, S2M };
+#     data dir : Dir;
+#     data b   : byte;
+#
+# ── Second, the framing problem, which is the whole story ────────────────────
+# A byte stream carries no structure. To say "the command code must be 0x0F"
+# you must first know *which* octet is the command code, and that is a parse.
+# REF is a checker over states, not a parser: it has no way to compute an
+# octet's position in a transaction. `Cnt` walks forward from the current state
+# and is bounded by a time window rather than by a terminator, so it cannot
+# count backward to the last START; and there are no past-facing accumulators.
+#
+# Without a position signal, every framing predicate is a guess. Measured on a
+# trace of three packets, one of which carries a payload octet that happens to
+# be 0x0F:
+#
+#     Cnt(b == 0x0F)              == 4      <- matches a payload byte too
+#     Cnt(off == 1 && b == 0x0F)  == 3      <- correct: three packets
+#
+# So this form is only usable if the capture tool supplies the framing. That is
+# not a concession: a logic analyser already recovers START, STOP, ACK and the
+# R/W bit in order to produce anything useful, and the byte offset within the
+# transaction falls out of the same pass. The division of labour is the same
+# one that gives the packet form its `len`.
+
+type Dir : enum { M2S, S2M };
+data dir : Dir;
+data b   : byte;
+data off : integer;             # octet index within the transaction, 0-based
+
+# ── Fixed-offset field checks: the `while` scope carries the offset ──────────
+# With `off` present, every header field of the packet form is available here
+# too. The offset belongs in the scope, not in the body: "while we are at
+# octet 1, the value must be the command code" is the requirement, and putting
+# it in the scope keeps the body about the field rather than about the framing.
+@smbus_destination_is_a_write
+while off == 0, it is always the case that (b & 0x01) == 0 holds;
+
+@mctp_command_code
+while off == 1, it is always the case that b == 0x0F holds;
+
+@mctp_header_version
+while off == 4, it is always the case that (b & 0x0F) == 0x01 holds;
+
+@mctp_sequence_is_two_bits
+while off == 7, it is always the case that ((b & 0x30) >> 4) <= 3 holds;
+
+# ── Precedence: the framing itself, stated as a requirement ──────────────────
+# A command code can only appear where a transaction has already begun. This is
+# the one framing property the byte form can state about itself, and it is
+# worth stating, because it is what fails first when `off` is wrong.
+@mctp_command_follows_address
+globally, if b == 0x0F && off == 1 holds, then it must have been the case that off == 0 has occurred before it;
+
+@offset_is_never_negative
+globally, it is never the case that off < 0 holds;
+
+# ── Where the pattern vocabulary stops ───────────────────────────────────────
+# A pattern body may not contain a *looping* temporal operator -- `G`, `F`,
+# `H`, `O`, the untils and releases, or the accumulators `Itg` / `Sum` / `Cnt`
+# all raise "cannot be temporal". It may contain `Xs` / `Xw` / `Ys` / `Yw` and
+# freeze, which is what makes the adjacent-octet rules below expressible.
+#
+# One measured caveat: a `while` scope does **not** compose with a lookahead.
+# Both of these fail where the `globally ... => Xs(...)` spelling passes, so
+# the guard has to move from the scope into the body when the body looks ahead:
+#
+#     while off == 7 && (b & 0x80) != 0, it is always the case that Xs(...) holds;   FAIL
+#     while off == 7, it is always the case that (b & 0x80) != 0 => Xs(...) holds;   FAIL
+#
+# On a SOM packet the octet after the flags byte is the message type.
+@mctp_known_message_type
+globally, it is always the case that
+    (off == 7 && (b & 0x80) != 0)
+        => Xs(b == 0x00 || b == 0x01 || b == 0x7E || b == 0x7F) holds;
+
+# The offset signal itself has to be well formed, or every requirement above is
+# built on sand. Weak next, so the last octet of the trace is not required to
+# have a successor.
+@offset_advances_by_one
+globally, it is always the case that t@(Xw(off == t.off + 1 || off == 0)) holds;
+
+# The byte count names the offset the transaction ends at, and freeze is what
+# lets a later state be described in terms of an earlier one's *value*. `F` is
+# a looping operator, so this one cannot be a pattern at all.
+G(t@(off == 2 => F(off == t.b + 3)));
+
+# ── What this form cannot say ────────────────────────────────────────────────
+#
+# 1. Data-dependent lookahead. `Xs` nests to a depth written in the source, so
+#    "the octet `bytecnt` positions ahead" has no spelling -- the depth is a
+#    value, not a literal. This is why the byte-count check above is phrased as
+#    "some later state has offset t.b + 3" rather than as a direct index. Any
+#    requirement of the form "field X is at a variable offset" is out of reach.
+#
+# 2. Counting the octets of one transaction. `Cnt(off > 0)` walks to the end of
+#    the trace, not to the end of this packet, for the same reason the packet
+#    form cannot total a fragmented message. Measured: both spellings fail.
+#
+# 3. Backward reasoning of any kind, since there are no past accumulators.
+#    "How many octets since the last START" is not expressible, which is
+#    precisely why `off` must come from the trace.
+#
+# ── What this form can say that the packet form cannot ───────────────────────
+# Everything below MCTP, because it is the only form where sub-packet events
+# still exist. Given the signals a capture already has --
+#
+#     data ack     : boolean;
+#     data start   : boolean;
+#     data stop    : boolean;
+#     data scl_low : integer;     # clock-stretch duration
+#
+# -- the I2C layer becomes expressible, and it reads well as patterns, because
+# timing bounds are what the pattern vocabulary was designed around:
+#
+#     globally, if start has occurred, then in response stop eventually holds within 1 milliseconds;
+#     globally, it is never the case that scl_low > 25000 holds;
+#     globally, it is always the case that !ack => Xw(start || stop) holds;
+#
+# None of this survives the cut into packets.
+#
+# ── Recommendation ───────────────────────────────────────────────────────────
+# Use both, at two layers, in one run.
+#
+#     referee execute mctp.ref  --success good/*.csv --failure bad/*.csv
+#     referee execute i2c.ref   --success good/*.csv --failure bad/*.csv
+#
+# The packet form is where MCTP requirements belong: field constraints are
+# direct array reads, the reassembly rules are relations between adjacent
+# records, and nearly all of it reads as plain specification patterns. The byte
+# form is where electrical and timing requirements belong, and it is a poor
+# place for MCTP -- every field check is conditioned on an offset the trace had
+# to supply anyway, and the interesting cross-packet properties are unreachable
+# because a message spans a data-dependent number of records.
+#
+# If only one form can be captured, capture packets. The byte stream can always
+# be re-cut into packets by the tool; packets cannot be un-cut back into a
+# stream with its timing intact.
+#
+# ── Verified ─────────────────────────────────────────────────────────────────
+# Every requirement above holds against byte-stream.csv. The two "cannot say"
+# claims and the `while`-plus-lookahead caveat were each checked by writing the
+# requirement and observing it fail; the framing-ambiguity counts were
+# measured, not estimated.
