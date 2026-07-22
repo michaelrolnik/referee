@@ -1,11 +1,12 @@
 # PROPOSAL C -- one record per MCTP *message*, packets as a struct array
 #
-#     type Pkt : struct { flags : byte; len : byte; raw : byte[64]; };
-#     data npkts : byte;
-#     data msg   : Pkt[4];
+#     data mctp_message : struct {
+#         npkts      : byte;
+#         i2c_packet : struct { flags : byte; len : byte; raw : byte[]; }[];
+#     };
 #
-# This is the shape suggested by `data mctp_message : struct { i2c_packet : byte[] }`,
-# taken as far as it goes. Run it with:
+# This is your shape, taken as far as it goes -- and it now compiles as
+# written, since nested `T[]` extents are resolved from the trace. Run it with:
 #
 #     referee execute examples/mctp/message-records.ref examples/mctp/message-records.csv
 #
@@ -17,7 +18,7 @@
 #
 #   * cross-packet rules become quantifiers rather than temporal formulas, so
 #     they can be stated as specification patterns and read as one sentence;
-#   * `msg[i-1]` works inside a quantifier -- expansion substitutes a literal
+#   * `mctp_message.i2c_packet[i-1]` works inside a quantifier -- expansion substitutes a literal
 #     index, so neighbour comparisons are ordinary expressions;
 #   * DSP0236 8.4.2's "all packets the same size except the last" becomes
 #     expressible, which it is not in either other form, because it quantifies
@@ -38,13 +39,25 @@
 
 import "spec.ref";
 
-type Pkt : struct { flags : byte; len : byte; raw : byte[64]; };
+#  The declaration you proposed, at full depth: a message is a struct, it
+#  holds an array of packets, and each packet holds a variable-length body.
+#  Every extent -- how many packet slots, how many octets per packet -- comes
+#  from the trace. None of the three is written here.
+data mctp_message : struct {
+    npkts       : byte;                 # packets that are real
+    dsteid      : byte;
+    srceid      : byte;
+    i2c_packet  : struct {
+        flags   : byte;                 # SOM | EOM | Pkt Seq # | TO | Msg tag
+        len     : byte;                 # this packet's transmission unit
+        raw     : byte[];               # body; on the SOM packet raw[0] is IC | msg type
+    }[];
+};
 
-data npkts : byte;              # packets in this message
-data msg   : Pkt[4];            # padded to the maximum
-
-data msgtype = msg[0].raw[0] & 0x7F;
-data ic      = (msg[0].raw[0] & 0x80) != 0;
+#  Naming the parts once keeps the requirements readable.
+data npkts   = mctp_message.npkts;
+data msgtype = mctp_message.i2c_packet[0].raw[0] & 0x7F;
+data ic      = (mctp_message.i2c_packet[0].raw[0] & 0x80) != 0;
 
 # ── DSP0236 8.8 -- framing ───────────────────────────────────────────────────
 # "Multiple-packet message assembly begins when the endpoint ... receives a
@@ -55,19 +68,19 @@ data ic      = (msg[0].raw[0] & 0x80) != 0;
 # requirement: a message has one start and one end, not at least one.
 @exactly_one_som
 globally, it is always the case that
-    (one q, i in msg: i < npkts && (q.flags & FLAG_SOM) != 0) holds;
+    (one q, i in mctp_message.i2c_packet: i < npkts && (q.flags & FLAG_SOM) != 0) holds;
 
 @exactly_one_eom
 globally, it is always the case that
-    (one q, i in msg: i < npkts && (q.flags & FLAG_EOM) != 0) holds;
+    (one q, i in mctp_message.i2c_packet: i < npkts && (q.flags & FLAG_EOM) != 0) holds;
 
 @som_is_the_first_packet
 globally, it is always the case that
-    (all q, i in msg: i < npkts => ((q.flags & FLAG_SOM) != 0 <=> i == 0)) holds;
+    (all q, i in mctp_message.i2c_packet: i < npkts => ((q.flags & FLAG_SOM) != 0 <=> i == 0)) holds;
 
 @eom_is_the_last_packet
 globally, it is always the case that
-    (all q, i in msg: i < npkts => ((q.flags & FLAG_EOM) != 0 <=> i == npkts - 1)) holds;
+    (all q, i in mctp_message.i2c_packet: i < npkts => ((q.flags & FLAG_EOM) != 0 <=> i == npkts - 1)) holds;
 
 # ── DSP0236 8.2 Table 1 -- sequence numbering ────────────────────────────────
 # "After the SOM packet, the packet sequence number shall increment modulo 4
@@ -78,9 +91,9 @@ globally, it is always the case that
 # packet sequence number can be any value (0-3) if the SOM bit is set".
 @sequence_increments_modulo_4
 globally, it is always the case that
-    (all q, i in msg: i > 0 && i < npkts
+    (all q, i in mctp_message.i2c_packet: i > 0 && i < npkts
         => ((q.flags & FLAG_SEQ) >> 4)
-           == ((((msg[i-1].flags & FLAG_SEQ) >> 4) + 1) % MCTP_SEQ_MODULUS)) holds;
+           == ((((mctp_message.i2c_packet[i-1].flags & FLAG_SEQ) >> 4) + 1) % MCTP_SEQ_MODULUS)) holds;
 
 # ── DSP0236 8.2 Table 1 and 8.6 -- message identity ──────────────────────────
 # "For messages that are split up into multiple packets, the Tag Owner (TO) and
@@ -88,8 +101,8 @@ globally, it is always the case that
 #  EOM." 8.6 lists Msg Tag, TO and Source EID as the identifying fields.
 @tag_and_owner_are_constant
 globally, it is always the case that
-    (all q, i in msg: i > 0 && i < npkts
-        => (q.flags & (FLAG_TO | FLAG_TAG)) == (msg[i-1].flags & (FLAG_TO | FLAG_TAG))) holds;
+    (all q, i in mctp_message.i2c_packet: i > 0 && i < npkts
+        => (q.flags & (FLAG_TO | FLAG_TAG)) == (mctp_message.i2c_packet[i-1].flags & (FLAG_TO | FLAG_TAG))) holds;
 
 # ── DSP0236 8.4.2 -- transmission unit sizes ─────────────────────────────────
 # This is the clause that justifies the whole form. All three sentences are
@@ -99,23 +112,23 @@ globally, it is always the case that
 #  size, except for the transmission unit in the last packet."
 @non_final_packets_share_one_size
 globally, it is always the case that
-    (all q, i in msg: i + 1 < npkts => q.len == msg[0].len) holds;
+    (all q, i in mctp_message.i2c_packet: i + 1 < npkts => q.len == mctp_message.i2c_packet[0].len) holds;
 
 # "Except for the last packet, this size shall be at least the baseline
 #  transmission unit size."
 @non_final_packets_are_at_least_baseline
 globally, it is always the case that
-    (all q, i in msg: i + 1 < npkts => q.len >= MCTP_BASELINE_MTU) holds;
+    (all q, i in mctp_message.i2c_packet: i + 1 < npkts => q.len >= MCTP_BASELINE_MTU) holds;
 
 # "The size of the transmission unit in the last packet shall be less than or
 #  equal to the transmission unit size used for the other packets (if any)."
 @final_packet_is_no_larger
 globally, it is always the case that
-    (all q, i in msg: i == npkts - 1 && npkts > 1 => q.len <= msg[0].len) holds;
+    (all q, i in mctp_message.i2c_packet: i == npkts - 1 && npkts > 1 => q.len <= mctp_message.i2c_packet[0].len) holds;
 
 # No packet may exceed the array it is stored in.
 @packet_fits_its_slot
-globally, it is always the case that (all q in msg: q.len <= 64) holds;
+globally, it is always the case that (all q in mctp_message.i2c_packet: q.len <= 64) holds;
 
 # ── DSP0236 8.12 Table 3 -- message type ─────────────────────────────────────
 @known_message_type
@@ -130,7 +143,7 @@ globally, it is always the case that msgtype == MSGTYPE_CONTROL
 # ── Padding discipline ───────────────────────────────────────────────────────
 @unused_slots_are_zero
 globally, it is always the case that
-    (all q, i in msg: i >= npkts => q.len == 0 && q.flags == 0) holds;
+    (all q, i in mctp_message.i2c_packet: i >= npkts => q.len == 0 && q.flags == 0) holds;
 
 @a_message_has_at_least_one_packet
 globally, it is never the case that npkts == 0 holds;
@@ -147,8 +160,10 @@ globally, it is never the case that npkts == 0 holds;
 # `sum x in xs:` form would replace this with a single clause.
 @message_body_is_bounded
 globally, it is always the case that
-    (0 < npkts ? msg[0].len : 0) + (1 < npkts ? msg[1].len : 0)
-  + (2 < npkts ? msg[2].len : 0) + (3 < npkts ? msg[3].len : 0) <= 256 holds;
+    (0 < npkts ? mctp_message.i2c_packet[0].len : 0)
+  + (1 < npkts ? mctp_message.i2c_packet[1].len : 0)
+  + (2 < npkts ? mctp_message.i2c_packet[2].len : 0)
+  + (3 < npkts ? mctp_message.i2c_packet[3].len : 0) <= 256 holds;
 
 # ── A trap worth knowing ─────────────────────────────────────────────────────
 # A *bare* requirement is evaluated only at the first state. Every rule above
