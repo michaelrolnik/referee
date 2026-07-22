@@ -67,6 +67,9 @@ typedef struct referee_Point { int64_t x; int64_t y; } referee_Point;
 int64_t referee_sum2(const referee_Point *p)    { return p->x + p->y; }
 bool    referee_is_first(uint8_t e)             { return e == 1; }
 
+/*  `func bits::parity` mangles `::` to `__`.  */
+bool    referee_bits__parity(int64_t x)         { return (x & 1) != 0; }
+
 int64_t referee_triple(int64_t x)               { return x * 3; }
 double  referee_half(double x)                  { return x / 2.0; }
 bool    referee_is_even(int64_t x)              { return (x % 2) == 0; }

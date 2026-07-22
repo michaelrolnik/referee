@@ -19,6 +19,12 @@ func crc8      : (byte[], integer) -> byte;
 func capacity  : (byte[]) -> integer;
 func first     : (byte[]) -> integer;
 
+# `::` separates a namespace from a name. It is a lexical convention, not a
+# scoping construct -- this declares a function whose name contains `::`, which
+# mangles to `referee_bits__parity`. `.` could not be used: it is member
+# access, and the head of a dotted name resolves as a signal.
+func bits::parity : (integer) -> boolean;
+
 # A struct crosses by const pointer; an enum by value, as its one-byte storage.
 type Point : struct { x : integer; y : integer; };
 type Kind  : enum { FIRST, SECOND };
@@ -90,3 +96,6 @@ G(pec >= 0 && pec <= 255);
 # alias, so the answer was wrong rather than refused.
 G(sum2(pt) == pt.x + pt.y);
 G(is_first(k) <=> k.FIRST);
+
+# A namespaced name, called and mangled.
+G(bits::parity(i) <=> i % 2 == 1);

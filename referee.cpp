@@ -931,6 +931,16 @@ namespace {
 
 std::string     cTypeName(Type* type, ::Module& mod);
 
+//  `::` is not a C identifier character. A namespaced function name mangles
+//  to `__`, so `math::sqrt` is declared and defined as `referee_math__sqrt`.
+std::string     cSymbol(std::string name)
+{
+    for (auto at = name.find("::"); at != std::string::npos; at = name.find("::", at))
+        name.replace(at, 2, "__");
+
+    return "referee_" + name;
+}
+
 //  The C spelling of a named type. Everything referee emits is prefixed, both
 //  to keep out of the user's namespace and because the header lands in
 //  someone else's translation unit.
@@ -1152,7 +1162,7 @@ void    Referee::emitHeader(std::string const& refPath,
     for (auto const& funcName : mod.getFuncNames())
     {
         auto const& decl = mod.getFunc(funcName);
-        auto        head = cTypeName(decl.ret, mod) + " referee_" + funcName + "(";
+        auto        head = cTypeName(decl.ret, mod) + " " + cSymbol(funcName) + "(";
 
         os << head;
 

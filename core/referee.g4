@@ -376,7 +376,11 @@ mmbrID      : ID
 typeID      : ID
             ;
 
-funcID      : ID
+//  `::` separates namespace from name. It is a lexical convention rather than
+//  a scoping construct -- `math::sqrt` is a function whose name contains a
+//  `::` -- so there are no resolution rules to learn. `.` could not be used:
+//  it is member access, and the head of a dotted name resolves as a signal.
+funcID      : ID ('::' ID)*
             ;
 
 dataID      : ID

@@ -1410,7 +1410,11 @@ void    CompileExprImpl::visit(ExprUw*           expr)
 void    CompileExprImpl::visit( ExprCall*       expr)
 {
     auto const& decl    = m_refmod->getFunc(expr->name);
+    //  `::` is not a C identifier character, so a namespaced name mangles to
+    //  `__`: `math::sqrt` binds to `referee_math__sqrt`.
     auto        symbol  = "referee_" + expr->name;
+    for(std::size_t at = symbol.find("::"); at != std::string::npos; at = symbol.find("::", at))
+        symbol.replace(at, 2, "__");
 
     //  An array crosses as a descriptor -- { count, data } -- rather than as a
     //  bare pointer. In memory a REF array is flat and contiguous, so the
