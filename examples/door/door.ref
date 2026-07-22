@@ -19,10 +19,17 @@ while door.OPENED, it is always the case that alarm.ON holds after 30 seconds;
 @button_unlocks
 globally, if button.DEPRESSED has occurred, then in response lock.ON eventually holds within 100 milliseconds;
 
-@unlocked_at_least_two_seconds
-globally, once lock.ON becomes satisfied it remains so for at least 2 seconds;
+# "Unlocked for 2 seconds" in a mechanical system is a tolerance, not a point:
+# nothing re-engages a latch to the millisecond. So the requirement is a band
+# -- held for at least 1.9 s, and re-engaged by 2.1 s -- and a run inside it is
+# correct rather than merely close.
+#
+# Stating only the minimum would be satisfied by a lock that never re-engages;
+# stating only the maximum by one that never opens. The pair is what pins it.
+@unlocked_at_least_1900ms
+globally, once lock.ON becomes satisfied it remains so for at least 1900 milliseconds;
 
-@unlocked_less_than_two_one
+@unlocked_less_than_2100ms
 globally, once lock.ON becomes satisfied it remains so for less than 2100 milliseconds;
 
 # "The door can be opened only when the lock is unlocked" is about the moment

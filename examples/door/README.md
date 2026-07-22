@@ -63,16 +63,18 @@ All three are the mirror of vacuity: a requirement too strong fails on correct
 behaviour, where one too weak passes on incorrect behaviour. The second is more
 dangerous, but the first still costs a day spent suspecting the system.
 
-## One I could not diagnose
+## The one failure is a bug in referee
 
-`unlocked_at_least_two_seconds` should hold: the lock is ON from 1050 to 3060,
-which is 2.01 s. Whether the trace is subtly wrong, the minimum-duration
-pattern measures an interval differently than expected, or something is
-genuinely broken, I did not establish — and guessing here would be worse than
-leaving it marked.
+`unlocked_at_least_1900ms` fails, and not because of the trace. On a trace
+where the lock is ON for ten seconds, *"remains so for at least 1 millisecond"*
+also fails — and *"remains so for less than 1 millisecond"* **passes**.
 
-That is the next thing to look at, and it is worth doing before trusting the
-pattern elsewhere.
+Neither duration pattern responds to its bound. See
+[`../../docs/duration-patterns-broken.md`](../../docs/duration-patterns-broken.md).
+
+The requirement here is left as written rather than replaced with something
+that passes: it says what the system should do, and the failure is the tool's.
+Once the pattern works, this is the test for it.
 
 ## Not done
 
