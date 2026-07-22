@@ -24,6 +24,32 @@ Smaller traces hide this: below about N = 8000 the fixed compilation cost
 linear. The corpus use case is where it bites, and that is precisely where
 `Cnt` over a message is the natural thing to write.
 
+## Scope: the windowed form is not affected
+
+A window bounds the walk to the window's width, so the cost is O(N × window)
+— linear in trace length:
+
+| N | `Cnt[0:1000](a)` under `G` | `Cnt(a)` under `G` |
+| ---: | ---: | ---: |
+| 20 000 | 0.24 s | 0.38 s |
+| 40 000 | 0.45 s | 1.03 s |
+| 80 000 | 0.93 s | 3.87 s |
+
+Only the **unbounded** form walks to the end of the trace from every state.
+
+That matters for how large this defect actually is. It is not "accumulators
+are unusable under a temporal operator"; it is "an *unbounded* accumulator
+under a temporal operator, on a long trace, is slower than it should be". A
+bare `Cnt(c) == 3` at the initial state is a single walk and costs nothing.
+
+Every accumulator in `examples/mctp/` is windowed already, and linear today —
+because the semantics pushed that way independently: a per-message bound needs
+a window, since the condition selects states and does not delimit them. The
+performance advice and the correctness advice happen to coincide.
+
+Worth fixing regardless. But the honest severity is a slow shape with a
+well-supported alternative, not a feature that cannot be used.
+
 ## The cause
 
 `isLoopTemporal` in `core/visitors/compile.cpp` decides which operators get
