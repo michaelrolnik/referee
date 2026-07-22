@@ -40,6 +40,20 @@ public:
     void    addPropExpr(std::string const& name, Type* type, Expr* expr); // computed prop
     void    addConf(std::string const& name, Type* data);
 
+    //  An external function's signature. The body lives in a .so found on the
+    //  -L path; nothing here refers to it, so a specification that declares a
+    //  func still compiles without one -- it fails at JIT setup instead.
+    struct  Func
+    {
+        std::vector<Type*>  args;
+        Type*               ret;
+    };
+
+    void            addFunc(std::string const& name, std::vector<Type*> args, Type* ret);
+    bool            hasFunc(std::string const& name);
+    Func const&     getFunc(std::string const& name);
+    std::vector<std::string> const&  getFuncNames()  {return m_funcNames;}
+
     Type*   getType(std::string const& name);
     Type*   getProp(std::string const& name);               // type of any data (CSV or computed)
     Expr*   getPropExpr(std::string const& name);           // defining expression (null if CSV-backed)
@@ -77,6 +91,7 @@ private:
     std::map<std::string, Type*>    m_name2data;  // ALL props (CSV + computed) for type lookup
     std::map<std::string, Expr*>    m_name2expr;  // only computed props
     std::map<std::string, Type*>    m_name2conf;
+    std::map<std::string, Func>     m_name2func;
     std::vector<Expr*>              m_exprs;
     std::vector<Spec*>              m_specs;
     std::vector<std::string>        m_exprNames;    //  parallel to m_exprs
@@ -88,5 +103,6 @@ private:
 
     std::vector<std::string>        m_propNames;  // ALL props in decl order → __prop_t slot layout
     std::vector<std::string>        m_confNames;
+    std::vector<std::string>        m_funcNames;
     std::vector<std::string>        m_typeNames;
 };

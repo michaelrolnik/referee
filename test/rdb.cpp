@@ -658,6 +658,50 @@ TEST(Rdb, AccumulateOverRecords)
     EXPECT_TRUE(Referee::executeAll(in, ref, {{csv, false}}, "", out)) << out.str();
 }
 
+// External functions: a `func` declaration binds to a `referee_`-prefixed
+// symbol in a .so found on the -L search path. Everything resolves before the
+// first trace row is read.
+TEST(Rdb, ExternalFunctions)
+{
+    auto    ref = std::string(REFEREE_TEST_DATA_DIR) + "/extfunc.ref";
+    auto    csv = std::string(REFEREE_TEST_DATA_DIR) + "/extfunc.csv";
+
+    std::ifstream       in(ref);
+    std::ostringstream  out;
+    EXPECT_TRUE(Referee::executeAll(in, ref, {{csv, false}}, "", out,
+                                    Referee::Detail::Summary, {},
+                                    {REFEREE_TEST_PLUGIN_DIR}))
+        << out.str();
+}
+
+// A declared function with no implementation on the path is refused at setup,
+// naming the symbol it looked for and where it looked.
+TEST(Rdb, ExternalFunctionMissingSymbol)
+{
+    auto    ref = std::string(REFEREE_TEST_DATA_DIR) + "/extfunc_bad.ref";
+    auto    csv = std::string(REFEREE_TEST_DATA_DIR) + "/extfunc.csv";
+
+    std::ifstream       in(ref);
+    std::ostringstream  out;
+    EXPECT_THROW((void) Referee::executeAll(in, ref, {{csv, false}}, "", out,
+                                            Referee::Detail::Summary, {},
+                                            {REFEREE_TEST_PLUGIN_DIR}),
+                 std::exception);
+}
+
+// With no -L at all, a specification that declares a func says so rather than
+// failing later or silently resolving from the host process.
+TEST(Rdb, ExternalFunctionNeedsALibraryPath)
+{
+    auto    ref = std::string(REFEREE_TEST_DATA_DIR) + "/extfunc.ref";
+    auto    csv = std::string(REFEREE_TEST_DATA_DIR) + "/extfunc.csv";
+
+    std::ifstream       in(ref);
+    std::ostringstream  out;
+    EXPECT_THROW((void) Referee::executeAll(in, ref, {{csv, false}}, "", out),
+                 std::exception);
+}
+
 // `T[]` for arrays that are not at the top level. The extent table was keyed
 // by declaration name with dimensions positioned along the top-level array
 // spine, so a nested array had nowhere to record its extent and two arrays in

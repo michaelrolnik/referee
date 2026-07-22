@@ -325,6 +325,35 @@ Position    Antlr2AST::position(antlr4::ParserRuleContext* rule)
     );
 }
 
+std::any Antlr2AST::visitDeclFunc(     referee::refereeParser::DeclFuncContext*    ctx)
+{
+    auto    name    = ctx->funcID()->getText();
+
+    //  A function signature names types only, so no declaration path is being
+    //  built and an unsized array in it has nowhere to take an extent from.
+    //  Write the extent, or take the array from a signal that has one.
+    std::vector<Type*>  args;
+    for(auto* arg: ctx->funcArgs()->type())
+        args.push_back(std::any_cast<Type*>(arg->accept(this)));
+
+    auto    ret     = std::any_cast<Type*>(ctx->type()->accept(this));
+
+    module->addFunc(name, std::move(args), ret);
+
+    return nullptr;
+}
+
+std::any Antlr2AST::visitExprCall(     referee::refereeParser::ExprCallContext*    ctx)
+{
+    auto                name = ctx->funcID()->getText();
+    std::vector<Expr*>  args;
+
+    for(auto* arg: ctx->expression())
+        args.push_back(std::any_cast<Expr*>(arg->accept(this)));
+
+    return  static_cast<Expr*>(build<ExprCall>(ctx, name, args));
+}
+
 std::any Antlr2AST::visitDeclConf(      referee::refereeParser::DeclConfContext*    ctx)
 {
     auto    name    = ctx->confID()->getText();

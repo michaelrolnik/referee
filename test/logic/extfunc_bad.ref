@@ -1,0 +1,4 @@
+# Declared but not implemented anywhere on the -L path.
+func nosuch : (integer) -> integer;
+data i : integer;
+G(nosuch(i) == i);

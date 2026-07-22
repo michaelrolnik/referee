@@ -70,6 +70,8 @@
 #include "llvm/Support/raw_os_ostream.h"
 #include "llvm/TargetParser/Host.h"
 #include "llvm/ExecutionEngine/Orc/LLJIT.h"
+#include <dlfcn.h>
+#include <filesystem>
 #include "llvm/ExecutionEngine/Orc/Shared/ExecutorSymbolDef.h"
 #include "llvm/ExecutionEngine/Orc/Shared/ExecutorAddress.h"
 #if __has_include("llvm/ExecutionEngine/Orc/AbsoluteSymbols.h")
@@ -350,9 +352,93 @@ struct JitWithSpecs
     ::Module*                               astModule = nullptr;
 };
 
+//  Bind every `func` the specification declared to a symbol in one of the
+//  objects on the -L path. The symbol carries a `referee_` prefix, so only
+//  declared entry points are ever looked at -- two plugins that each happen to
+//  have a private helper called `crc8` do not collide, and a func named `read`
+//  cannot resolve to read(2).
+static void     bindExternalFunctions(llvm::orc::LLJIT&               jit,
+                                      ::Module&                       astModule,
+                                      std::vector<std::string> const& libraryPaths)
+{
+    auto const& funcNames = astModule.getFuncNames();
+    if (funcNames.empty())
+        return;             //  nothing declared: the path is not even scanned
+
+    //  Deterministic order. readdir order is not stable across filesystems,
+    //  and a verdict must not depend on it.
+    std::vector<std::string>    objects;
+    for (auto const& dir : libraryPaths)
+    {
+        std::vector<std::string>    here;
+        std::error_code             ec;
+        for (auto const& e : std::filesystem::directory_iterator(dir, ec))
+            if (e.path().extension() == ".so")
+                here.push_back(e.path().string());
+        std::sort(here.begin(), here.end());
+        objects.insert(objects.end(), here.begin(), here.end());
+    }
+
+    if (objects.empty())
+        throw std::runtime_error(fmt::format(
+            "specification declares {} external function(s) but no .so was found"
+            " -- pass -L with a directory containing them",
+            funcNames.size()));
+
+    std::vector<void*>  handles;
+    for (auto const& obj : objects)
+    {
+        auto*   h = dlopen(obj.c_str(), RTLD_NOW | RTLD_LOCAL);
+        if (h == nullptr)
+            throw std::runtime_error(fmt::format("cannot load '{}': {}", obj, dlerror()));
+        handles.push_back(h);
+    }
+
+    llvm::orc::MangleAndInterner    Mangle(jit.getExecutionSession(), jit.getDataLayout());
+    llvm::orc::SymbolMap            symMap;
+
+    for (auto const& name : funcNames)
+    {
+        auto    symbol = "referee_" + name;
+
+        //  A duplicate is an error, not a race: two implementations may
+        //  differ, and nothing in the report would show which one ran.
+        void*                       found = nullptr;
+        std::vector<std::string>    definedBy;
+        for (std::size_t i = 0; i < handles.size(); i++)
+        {
+            dlerror();
+            if (void* p = dlsym(handles[i], symbol.c_str()); p != nullptr && dlerror() == nullptr)
+            {
+                found = p;
+                definedBy.push_back(objects[i]);
+            }
+        }
+
+        if (definedBy.empty())
+            throw std::runtime_error(fmt::format(
+                "external function '{}' is declared but '{}' was not found in: {}",
+                name, symbol, fmt::join(objects, ", ")));
+
+        if (definedBy.size() > 1)
+            throw std::runtime_error(fmt::format(
+                "external function '{}' is defined more than once as '{}': {}",
+                name, symbol, fmt::join(definedBy, ", ")));
+
+        symMap[Mangle(symbol)] = {
+            llvm::orc::ExecutorAddr::fromPtr(found),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable,
+        };
+    }
+
+    if (auto Err = jit.getMainJITDylib().define(llvm::orc::absoluteSymbols(std::move(symMap))))
+        throw std::runtime_error("failed to bind external functions");
+}
+
 JitWithSpecs    buildJitFromRef(std::istream& refStream, std::string const& refName,
                                 std::vector<std::string> const& includePaths,
-                                Referee::Sizes const& sizes)
+                                Referee::Sizes const& sizes,
+                                std::vector<std::string> const& libraryPaths = {})
 {
     JitWithSpecs    out;
 
@@ -387,6 +473,10 @@ JitWithSpecs    buildJitFromRef(std::istream& refStream, std::string const& refN
     auto    built = Referee::compile(refStream, refName, &out.jit->getDataLayout(), includePaths, sizes);
     out.astOwner  = std::move(built.astOwner);
     out.astModule = built.ast;
+
+    //  Resolve before a single trace row is read: a missing or duplicated
+    //  symbol should never be discoverable halfway through a corpus.
+    bindExternalFunctions(*out.jit, *out.astModule, libraryPaths);
 
     // Requirement functions are named "[file:]row:col .. row:col". Report them
     // grouped by file and then in source order, so a program assembled from
@@ -822,7 +912,8 @@ bool    Referee::executeAll(std::istream& refStream, std::string refName,
                             std::string const& confPath,
                             std::ostream& os,
                             Detail        detail,
-                            std::vector<std::string> const& includePaths)
+                            std::vector<std::string> const& includePaths,
+                            std::vector<std::string> const& libraryPaths)
 {
     if (traces.empty())
         throw std::runtime_error("no traces given");
@@ -846,7 +937,7 @@ bool    Referee::executeAll(std::istream& refStream, std::string refName,
     {
         std::istringstream  refForJit(refSrc);
         js = buildJitFromRef(refForJit, refName, includePaths,
-                             sizesFromSchema(first->props()));
+                             sizesFromSchema(first->props()), libraryPaths);
     }
 
         auto    atLeast = [&](Detail want) {

@@ -503,6 +503,35 @@ public:
     std::string const   name;
 };
 
+//  A call to an external function. Variadic in a way no other node is, so it
+//  carries its arguments in a vector rather than as fixed lhs/rhs members.
+class ExprCall final
+    : public Visitable<Expr, ExprCall>
+{
+public:
+    ExprCall(std::string name, std::vector<Expr*> args)
+        : name(name)
+        , args(args)
+    {
+    }
+
+    //  A call is temporal exactly when one of its arguments is: the callee
+    //  sees values, never states, so it cannot introduce time-dependence of
+    //  its own.
+    bool    is_temporal() override
+    {
+        for(auto* arg: args)
+            if(arg->is_temporal())
+                return true;
+
+        return false;
+    }
+
+public:
+    std::string const           name;
+    std::vector<Expr*> const    args;
+};
+
 class ExprData final
     : public Visitable<ExprNullary, ExprData>
 {

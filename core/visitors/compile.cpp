@@ -267,6 +267,7 @@ struct CompileExprImpl
              , ExprUs
              , ExprUw
              , ExprXor
+             , ExprCall
              , ExprBand
              , ExprBor
              , ExprShl
@@ -331,6 +332,7 @@ struct CompileExprImpl
     void    visit(ExprUs*           expr) override;
     void    visit(ExprUw*           expr) override;
     void    visit(ExprXor*          expr) override;
+    void    visit(ExprCall*         expr) override;
     void    visit(ExprBand*      expr) override;
     void    visit(ExprBor*       expr) override;
     void    visit(ExprShl*       expr) override;
@@ -1394,6 +1396,45 @@ void    CompileExprImpl::visit(ExprUs*           expr)
 void    CompileExprImpl::visit(ExprUw*           expr)
 {
     UR(expr, m_T, m_F, m_T, "Uw");
+}
+
+//  A call to an external function. The symbol carries a `referee_` prefix, so
+//  `func crc8` binds to `referee_crc8` -- which keeps the specification's
+//  namespace out of C's global one, and means a func named `read` cannot
+//  accidentally resolve to read(2).
+//
+//  The declaration is emitted into the LLVM module as an external, and the JIT
+//  resolves it against the objects loaded from the -L path. Nothing is checked
+//  here beyond what type calculation already checked: C has no way to confirm
+//  that the linked function matches, which is what the generated header is for.
+void    CompileExprImpl::visit( ExprCall*       expr)
+{
+    auto const& decl    = m_refmod->getFunc(expr->name);
+    auto        symbol  = "referee_" + expr->name;
+
+    std::vector<llvm::Type*>    paramTypes;
+    for(auto* type: decl.args)
+        paramTypes.push_back(Compile::make(m_context, m_module, type, expr->name));
+
+    auto    retType     = Compile::make(m_context, m_module, decl.ret, expr->name);
+    auto    funcType    = llvm::FunctionType::get(retType, paramTypes, false);
+    auto    callee      = m_module->getOrInsertFunction(symbol, funcType);
+
+    //  A `byte` parameter is one octet: the caller works in i64, so narrow at
+    //  the boundary. A `byte` result is widened back, the same way a byte read
+    //  out of a trace is.
+    std::vector<llvm::Value*>   args;
+    for(std::size_t i = 0; i < expr->args.size(); i++)
+    {
+        auto    value = make(expr->args[i]);
+
+        if(decl.args[i] == Factory<TypeByte>::create())
+            value = m_builder->CreateTrunc(value, m_builder->getInt8Ty(), "byte_arg");
+
+        args.push_back(value);
+    }
+
+    m_value = widenByte(m_builder->CreateCall(callee, args, expr->name + "()"), decl.ret);
 }
 
 void    CompileExprImpl::visit( ExprXor*        expr)

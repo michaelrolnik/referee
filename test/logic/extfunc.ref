@@ -1,0 +1,43 @@
+# External functions: a `func` declaration, and calls to it.
+#
+# The implementation is test/plugins/helpers.c, compiled to a .so that referee
+# finds on the -L search path. The C symbol carries a `referee_` prefix, so
+# `func triple` binds to `referee_triple`.
+#
+# What this covers: each primitive across the boundary, a call nested inside
+# another, a call in a computed signal, and a call inside a temporal loop --
+# calls are ordinary expressions and may appear anywhere one may.
+
+func triple    : (integer) -> integer;
+func half      : (number)  -> number;
+func is_even   : (integer) -> boolean;
+func crc8_step : (byte, byte) -> byte;
+
+data i : integer;
+data r : number;
+data b : byte;
+
+# One per primitive result type.
+G(triple(i)  == i * 3);
+G(half(r)    == r / 2.0);
+G(is_even(i) <=> i % 2 == 0);
+
+# `byte` is a storage width, not a value kind: the argument is narrowed at the
+# call and the result widened back, so this compares against an integer.
+G(crc8_step(0, 0) == 0);
+G(crc8_step(0, b) >= 0);
+G(crc8_step(0, b) <= 255);
+
+# A call is an expression: it nests, and it composes with everything else.
+G(triple(triple(i)) == i * 9);
+G(triple(i) + triple(i) == triple(i) * 2);
+G(is_even(triple(i)) <=> is_even(i));
+
+# In a computed signal -- the idiom, because __prepare__ evaluates it once per
+# state rather than once per state per enclosing loop iteration.
+data t3 = triple(i);
+G(t3 == i * 3);
+
+# Inside a temporal loop, which is permitted and merely more expensive.
+Sum(true, triple(i)) == 3 * Sum(true, i);
+Cnt(is_even(i)) == 1;

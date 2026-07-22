@@ -24,6 +24,7 @@
 
 #include "typecalc.hpp"
 #include "../factory.hpp"
+#include "../module.hpp"
 
 #include <exception>
 
@@ -52,6 +53,7 @@ struct TypeCalcImpl
              , ExprOr
              , ExprAnd
              , ExprXor
+             , ExprCall
              , ExprBand
              , ExprBor
              , ExprShl
@@ -147,6 +149,7 @@ struct TypeCalcImpl
     void    visit(ExprChoice*           expr) override;
     void    visit(ExprSub*              expr) override;
     void    visit(ExprXor*              expr) override;
+    void    visit(ExprCall*             expr) override;
     void    visit(ExprBand*          expr) override;
     void    visit(ExprBor*           expr) override;
     void    visit(ExprShl*           expr) override;
@@ -610,6 +613,47 @@ void    TypeCalcImpl::visit(ExprSub*                expr)
 
 //  `^` does double duty: logical xor on booleans -- there is no `^^` to pair
 //  with `&&` and `||` -- and bitwise xor on integers, as in C.
+//  An external function is checked against its declaration and nothing else:
+//  the implementation is a .so that may not even be present at compile time,
+//  so the declaration is the only contract available. Arguments must match
+//  exactly -- no widening -- because a C function has one signature and
+//  silently passing an integer where a number was declared would reinterpret
+//  the bits.
+void    TypeCalcImpl::visit(ExprCall*               expr)
+{
+    if(!m_module->hasFunc(expr->name))
+    {
+        throw Exception(expr->where(), "no such function: '" + expr->name + "'");
+    }
+
+    auto const& decl = m_module->getFunc(expr->name);
+
+    if(decl.args.size() != expr->args.size())
+    {
+        throw Exception(expr->where(),
+            "function '" + expr->name + "' takes " + std::to_string(decl.args.size())
+            + " argument(s), " + std::to_string(expr->args.size()) + " given");
+    }
+
+    for(std::size_t i = 0; i < decl.args.size(); i++)
+    {
+        auto    got = make(expr->args[i]);
+
+        //  `byte` is a storage width, not a value kind: an argument declared
+        //  `byte` is satisfied by any integer and truncated at the call, and a
+        //  `byte` result is widened. So match on the widened view, exactly as
+        //  every other rule in this file does.
+        if(widen(got) != widen(decl.args[i]))
+        {
+            throw Exception(expr->args[i]->where(),
+                "bad type: argument " + std::to_string(i + 1) + " of '" + expr->name
+                + "' does not match the declared type");
+        }
+    }
+
+    m_type = widen(decl.ret);
+}
+
 void    TypeCalcImpl::visit(ExprXor*                expr)
 {
     if(make(expr->lhs) == typeInteger && make(expr->rhs) == typeInteger)

@@ -88,6 +88,34 @@ void    Module::addConf(std::string const& name, Type* data)
     m_confNames.push_back(name);
 }
 
+void    Module::addFunc(std::string const& name, std::vector<Type*> args, Type* ret)
+{
+    if(m_name2func.contains(name))
+    {
+        throw std::runtime_error("function '" + name + "' is declared more than once");
+    }
+
+    m_name2func[name] = Func{std::move(args), ret};
+    m_funcNames.push_back(name);
+}
+
+bool    Module::hasFunc(std::string const& name)
+{
+    return m_name2func.contains(name);
+}
+
+Module::Func const&     Module::getFunc(std::string const& name)
+{
+    auto    it  = m_name2func.find(name);
+
+    if(it == m_name2func.end())
+    {
+        throw std::runtime_error("no such function: '" + name + "'");
+    }
+
+    return it->second;
+}
+
 Type*   Module::getType(std::string const& name)
 {
     if(!m_name2type.contains(name))

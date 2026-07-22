@@ -423,6 +423,16 @@ rdb_exe             = executable(
 )
 
 # tests
+
+# The .so behind test/logic/extfunc.ref's `func` declarations. Built as a
+# plain shared library and handed to the tests by directory, which is exactly
+# how a user's plugin reaches referee: via -L.
+test_plugin         = shared_library(
+    'helpers',
+    'test/plugins/helpers.c',
+    install : false,
+)
+
 test_data_dir       = meson.project_source_root() / 'test' / 'logic'
 
 tests_exe           = executable(
@@ -442,6 +452,7 @@ tests_exe           = executable(
         # those translation units are ever counted.
         '-DREFEREE_BIN="' + referee_exe.full_path() + '"',
         '-DRDB_BIN="' + rdb_exe.full_path() + '"',
+        '-DREFEREE_TEST_PLUGIN_DIR="' + meson.project_build_root() + '"',
     ],
     dependencies : [
         core_dep,

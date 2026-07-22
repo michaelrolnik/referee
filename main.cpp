@@ -47,7 +47,14 @@ int main(int argc, char * argv[])
     // Registered per subcommand rather than on the app so that it can be given
     // after the subcommand name, which is where users expect to type it.
     std::vector<std::string>    includePaths;
+    // Directories scanned for the .so objects backing `func` declarations.
+    // Same shape as -I, and inert unless the specification declares a func.
+    std::vector<std::string>    libraryPaths;
     auto    addIncludeOption = [&](CLI::App* sub) {
+        sub->add_option("-L,--library", libraryPaths,
+            "Directory to search for .so objects implementing `func` declarations (repeatable)")
+            ->allow_extra_args(false)
+            ->check(CLI::ExistingDirectory);
         sub->add_option("-I,--include", includePaths,
             "Directory to search for imported .ref files (repeatable)")
             // One directory per occurrence, as a compiler's -I does. Left
@@ -147,7 +154,7 @@ int main(int argc, char * argv[])
             std::ifstream   refStream(runRef, std::ios_base::in);
             bool            allPass = Referee::executeAll(
                                 refStream, runRef, traces, runConf,
-                                std::cout, detail, includePaths);
+                                std::cout, detail, includePaths, libraryPaths);
             if (!allPass) return 1;
         }
     }

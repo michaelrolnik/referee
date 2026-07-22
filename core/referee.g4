@@ -47,9 +47,19 @@ declaraion  : declType
             | declData
             | declConf
             | declImport
+            | declFunc
             ;
 
 declImport  : 'import' string
+            ;
+
+//  An external function, implemented in C and resolved at run time against
+//  the objects found on the -L search path. The C symbol carries a `referee_`
+//  prefix, so `func crc8` binds to `referee_crc8`.
+declFunc    : 'func' funcID ':' '(' funcArgs ')' '->' type
+            ;
+
+funcArgs    : (type (',' type)*)?
             ;
 
 quant       : all                                   # QuantAll
@@ -114,6 +124,7 @@ expression  : sign? integer                                     # ExprConst
             | string                                            # ExprConst
             | boolean                                           # ExprConst
 
+            | funcID '(' (expression (',' expression)*)? ')'   # ExprCall
             | dataID                                            # ExprData
             | expression '.' mmbrID                             # ExprMmbr
             | expression '[' expression ']'                     # ExprIndx
@@ -363,6 +374,9 @@ mmbrID      : ID
             ;
 
 typeID      : ID
+            ;
+
+funcID      : ID
             ;
 
 dataID      : ID
