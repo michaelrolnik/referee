@@ -355,6 +355,18 @@ struct JitWithSpecs
     ::Module*                               astModule = nullptr;
 };
 
+namespace {
+//  `::` is not a C identifier character. A namespaced function name mangles
+//  to `__`, so `math::sqrt` is declared and defined as `referee_math__sqrt`.
+std::string     cSymbol(std::string name)
+{
+    for (auto at = name.find("::"); at != std::string::npos; at = name.find("::", at))
+        name.replace(at, 2, "__");
+
+    return "referee_" + name;
+}
+} // namespace
+
 //  Bind every `func` the specification declared to a symbol in one of the
 //  objects on the -L path. The symbol carries a `referee_` prefix, so only
 //  declared entry points are ever looked at -- two plugins that each happen to
@@ -412,7 +424,11 @@ static void     bindExternalFunctions(llvm::orc::LLJIT&               jit,
 
     for (auto const& name : funcNames)
     {
-        auto    symbol = "referee_" + name;
+        //  `::` is not an identifier character in C, so a namespaced name
+        //  mangles to `__`. Three places have to agree on this -- the code
+        //  generator, the header emitter and this lookup -- so it lives in
+        //  one function rather than being written out three times.
+        auto    symbol = cSymbol(name);
 
         //  A duplicate is an error, not a race: two implementations may
         //  differ, and nothing in the report would show which one ran.
@@ -931,15 +947,6 @@ namespace {
 
 std::string     cTypeName(Type* type, ::Module& mod);
 
-//  `::` is not a C identifier character. A namespaced function name mangles
-//  to `__`, so `math::sqrt` is declared and defined as `referee_math__sqrt`.
-std::string     cSymbol(std::string name)
-{
-    for (auto at = name.find("::"); at != std::string::npos; at = name.find("::", at))
-        name.replace(at, 2, "__");
-
-    return "referee_" + name;
-}
 
 //  The C spelling of a named type. Everything referee emits is prefixed, both
 //  to keep out of the user's namespace and because the header lands in
