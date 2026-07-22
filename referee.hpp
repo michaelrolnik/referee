@@ -127,13 +127,16 @@ public:
     };
     static Schema   parseSchema(std::istream& is, std::string name,
                                 std::vector<std::string> const& includePaths = {},
-                                Sizes const& sizes = {});
+                                Sizes const& sizes = {},
+                                bool allowUnsized = false);
 
     /// Emit a C header declaring the specification's named types and the
     /// prototypes of its `func` declarations, so an implementation compiles
     /// against the same layout referee uses rather than a transcription of it.
-    /// `sizes` resolves `T[]` extents, which is why the caller may need a
-    /// trace: a struct holding an unsized array has a trace-dependent C type.
+    /// The specification alone is enough: a header describes types and
+    /// signatures, and an array parameter carries its extent at run time. A
+    /// trace is optional, and only makes a difference for a named type whose
+    /// member array is unsized -- there the extent is part of the C layout.
     static void     emitHeader(std::string const& refPath,
                                std::ostream& os,
                                std::vector<std::string> const& includePaths = {},

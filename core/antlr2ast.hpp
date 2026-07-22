@@ -89,7 +89,12 @@ public:
     Antlr2AST(std::string name,
               std::string path = "",
               std::vector<std::string> searchPaths = {},
-              Sizes sizes = {});
+              Sizes sizes = {},
+              //  Header generation reads only the type and func declarations,
+              //  so it has no business demanding a trace to size signals it
+              //  will never emit. In this mode an unresolved `T[]` stays
+              //  unsized rather than being an error.
+              bool  allowUnsized = false);
     ~Antlr2AST();
 
     std::any visitDeclImport(   referee::refereeParser::DeclImportContext*      ctx) override;
@@ -245,6 +250,7 @@ private:
     std::string                 m_declName;     //  declaration being typed
     unsigned                    m_declDim = 0;  //  which of its dimensions
     bool                        m_inFuncSig = false;    //  inside a `func` signature
+    bool                        m_allowUnsized = false; //  extents may stay unresolved
     std::string                 m_rootDir;      //  directory of the root .ref
     std::string                 m_currentDir;   //  directory of the file being visited
     char const*                 m_currentFile   = nullptr;  //  label, relative to root

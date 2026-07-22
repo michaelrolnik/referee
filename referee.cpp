@@ -290,7 +290,8 @@ Referee::Schema::~Schema()                                      = default;
 
 Referee::Schema     Referee::parseSchema(std::istream& is, std::string name,
                                          std::vector<std::string> const& includePaths,
-                                         Sizes const& sizes)
+                                         Sizes const& sizes,
+                                         bool allowUnsized)
 {
     Schema  out;
     antlr4::ANTLRInputStream    input(is);
@@ -311,7 +312,7 @@ Referee::Schema     Referee::parseSchema(std::istream& is, std::string name,
     static std::atomic<unsigned>    s_uniq{0};
     auto    uniqName    = name + "#schema:" + std::to_string(s_uniq.fetch_add(1));
 
-    out.astOwner    = std::make_unique<Antlr2AST>(uniqName, name, includePaths, sizes);
+    out.astOwner    = std::make_unique<Antlr2AST>(uniqName, name, includePaths, sizes, allowUnsized);
     auto*   tree    = parser.program();
     if (errors.any())
         throw std::runtime_error(errors.summary(name));
@@ -1004,10 +1005,13 @@ void    Referee::emitHeader(std::string const& refPath,
                             std::vector<std::string> const& includePaths,
                             std::string const& tracePath)
 {
-    //  `T[]` extents come from the trace, so a struct holding an unsized array
-    //  has a trace-dependent C type and the header is specific to the shape it
-    //  was generated against. Without a trace the parse fails with the same
-    //  message a compile would give.
+    //  The specification is enough. A header describes types and signatures,
+    //  and an array parameter carries its extent in the descriptor built at
+    //  the call -- so nothing here needs a trace to be correct.
+    //
+    //  A trace still refines one case: a named type whose member array is
+    //  unsized has a genuinely trace-dependent C layout, and passing one makes
+    //  that extent concrete rather than leaving it as a marker.
     Sizes   sizes;
     if (!tracePath.empty())
     {
@@ -1023,7 +1027,7 @@ void    Referee::emitHeader(std::string const& refPath,
     if (!is)
         throw std::runtime_error("cannot open " + refPath);
 
-    auto    schema  = parseSchema(is, refPath, includePaths, sizes);
+    auto    schema  = parseSchema(is, refPath, includePaths, sizes, /*allowUnsized*/ true);
     auto&   mod     = *schema.ast;
 
     os << "/*\n"

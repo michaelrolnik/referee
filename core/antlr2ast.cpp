@@ -72,10 +72,12 @@ struct Antlr2AST::ParsedFile
 };
 
 Antlr2AST::Antlr2AST(std::string name, std::string path,
-                     std::vector<std::string> searchPaths, Sizes sizes)
+                     std::vector<std::string> searchPaths, Sizes sizes,
+                     bool allowUnsized)
     : module(Factory<Module>::create(name))
     , m_searchPaths(std::move(searchPaths))
     , m_sizes(std::move(sizes))
+    , m_allowUnsized(allowUnsized)
 {
     if (!path.empty())
     {
@@ -447,7 +449,16 @@ std::any Antlr2AST::visitExprQuant(     referee::refereeParser::ExprQuantContext
     if(array == nullptr)
         throw Exception(where, "quantifier needs an array to range over");
     if(array->count == 0)
+    {
+        //  Declaration-only mode (header generation) never evaluates
+        //  expressions, so a quantifier it cannot expand is not an error
+        //  there -- it stands in for a formula nothing will look at. Anywhere
+        //  else an unexpandable quantifier is exactly the error it says.
+        if(m_allowUnsized)
+            return static_cast<Expr*>(build<ExprConstBoolean>(ctx, true));
+
         throw Exception(where, "quantifier needs an array of known size");
+    }
 
     auto    ids     = ctx->ID();
     auto    elemNm  = ids[0]->getText();
@@ -1139,8 +1150,9 @@ std::any Antlr2AST::visitTypeArray(     referee::refereeParser::TypeArrayContext
 
         if(sizes[k] == 0)
         {
-            //  A signature's extent is carried by the descriptor at run time.
-            if(m_inFuncSig)
+            //  A signature's extent is carried by the descriptor at run time,
+            //  and header generation never needs one at all.
+            if(m_inFuncSig || m_allowUnsized)
             {
                 type = Factory<TypeArray>::create(type, 0u);
                 continue;

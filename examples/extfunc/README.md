@@ -14,10 +14,8 @@ Three commands, from the repository root.
 ```bash
 mkdir -p build/plugins
 
-# 1. referee emits the header from the specification and a trace
-./build/referee header examples/mctp/packet-records.ref \
-                --like examples/mctp/packet-records.csv \
-                -o build/mctp.h
+# 1. referee emits the header from the specification
+./build/referee header examples/mctp/packet-records.ref -o build/mctp.h
 
 # 2. you compile the implementation against it
 cc -shared -fPIC -Wall -Wextra -Werror -I build \

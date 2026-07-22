@@ -167,18 +167,31 @@ This is the load-bearing piece. C has no way to check that the function you link
 
 The header should also emit a version symbol the loader checks at startup, so a stale object built against an older specification fails loudly instead of reading the wrong offsets.
 
-#### The header depends on the trace
+#### The specification is enough
 
-An unsized array inside a struct takes its extent from the trace, so the C type of a struct containing one is **trace-dependent**. `struct { flags : byte; len : byte; raw : byte[]; }` is 66 bytes against a 64-octet trace and 34 against a 32-octet one.
+An earlier draft of this design had `referee header` require a trace, on the
+grounds that an unsized array makes a type's C layout trace-dependent. That is
+true of a *struct member*, and false of everything else — and it was the wrong
+default: a header describes types and signatures, and an array **parameter**
+carries its extent in the descriptor built at the call, so the common case
+needs nothing but the `.ref`.
 
-So `referee header` cannot work from a `.ref` alone:
+Header generation therefore reads declarations only. Unsized arrays stay
+unsized, and a quantifier that cannot be expanded stands in for a formula
+nothing will look at — expressions are never examined, so neither is an error
+there.
 
 ```bash
-referee header spec.ref --like trace.csv -o spec.h
+referee header spec.ref -o spec.h                    # the normal case
+referee header spec.ref --trace capture.csv -o spec.h  # only if a named type
+                                                       # has an unsized member
 ```
 
-and the emitted header is specific to that trace's shape. The layout-version symbol proposed above therefore has to cover the resolved extents, not just the specification — otherwise an object built against a 64-octet capture links cleanly against a 32-octet one and reads past the end of every packet. That is the failure this whole mechanism exists to prevent, so it is worth getting right first rather than bolting on.
-
+`--trace` remains for the one case that genuinely needs it: a named type whose
+member array is unsized has a real trace-dependent layout, and passing a trace
+makes that extent concrete. When it matters, the layout-version symbol must
+cover the resolved extents, or an object built against a 64-octet capture
+links cleanly against a 32-octet one and reads past the end of every packet.
 
 ### 3. Calling
 
@@ -240,8 +253,8 @@ Two mitigations, neither complete:
 The whole feature is three commands and one directory.
 
 ```bash
-# 1. referee emits the header from the specification and a trace
-referee header mctp.ref --like captures/nominal.csv -o build/mctp.h
+# 1. referee emits the header from the specification
+referee header mctp.ref -o build/mctp.h
 
 # 2. you write and compile the implementation
 cc -shared -fPIC -I build helpers/mctp.c -o plugins/libmctp.so
