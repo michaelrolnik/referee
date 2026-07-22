@@ -352,6 +352,15 @@ std::any Antlr2AST::visitDeclFunc(     referee::refereeParser::DeclFuncContext* 
     return nullptr;
 }
 
+std::any Antlr2AST::visitExprSlice(    referee::refereeParser::ExprSliceContext*   ctx)
+{
+    auto    arg = std::any_cast<Expr*>(ctx->expression(0)->accept(this));
+    auto    lo  = std::any_cast<Expr*>(ctx->expression(1)->accept(this));
+    auto    hi  = std::any_cast<Expr*>(ctx->expression(2)->accept(this));
+
+    return  static_cast<Expr*>(build<ExprSlice>(ctx, arg, lo, hi));
+}
+
 std::any Antlr2AST::visitExprCall(     referee::refereeParser::ExprCallContext*    ctx)
 {
     auto                name = ctx->funcID()->getText();

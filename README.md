@@ -346,6 +346,7 @@ The generated header is the load-bearing piece: C cannot diagnose a signature mi
 
 - **Symbols carry a `referee_` prefix.** `func read` binds to `referee_read` and so cannot reach `read(2)`, and referee inspects only `referee_*`, so one plugin's private helpers cannot collide with another's.
 - **Names may be namespaced** with `::` to any depth — `func std::math::sqrt`, mangled to `referee_std__math__sqrt`. It is a lexical convention, not a scoping construct. `.` could not be used: it is member access.
+- **A slice gives a call the length it means.** `pkt[lo:hi]` is the elements from `lo` up to but not including `hi`, and its extent is a value rather than a compile-time constant — so `crc8(pkt[0:len])` passes exactly the octets that are real, with no second argument to keep in step.
 - **Arrays cross as a `{count, data}` descriptor**, structs by `const` pointer, enums and other primitives by value. `count` is the array's *extent*, not the meaningful length, so a caller with a shorter payload passes its own length — and the callee can check it.
 - **`-L` takes a `.so` or a directory of them**, repeatable. Loading is deterministic, a duplicate entry point is an error rather than a race, resolution never falls back to the host process, and a specification declaring no `func` never scans the path at all.
 

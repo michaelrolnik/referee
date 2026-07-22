@@ -127,6 +127,7 @@ expression  : sign? integer                                     # ExprConst
             | funcID '(' (expression (',' expression)*)? ')'   # ExprCall
             | dataID                                            # ExprData
             | expression '.' mmbrID                             # ExprMmbr
+            | expression '[' expression ':' expression ']'      # ExprSlice
             | expression '[' expression ']'                     # ExprIndx
 
             | '!' expression                                    # ExprNot

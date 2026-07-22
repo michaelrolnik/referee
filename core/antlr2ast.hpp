@@ -100,6 +100,7 @@ public:
     std::any visitDeclImport(   referee::refereeParser::DeclImportContext*      ctx) override;
     std::any visitExprQuant(    referee::refereeParser::ExprQuantContext*       ctx) override;
     std::any visitDeclFunc(     referee::refereeParser::DeclFuncContext*    ctx) override;
+    std::any visitExprSlice(    referee::refereeParser::ExprSliceContext*   ctx) override;
     std::any visitExprCall(     referee::refereeParser::ExprCallContext*    ctx) override;
     std::any visitDeclConf(     referee::refereeParser::DeclConfContext*        ctx) override;
     std::any visitDeclDataTyped(referee::refereeParser::DeclDataTypedContext*   ctx) override;

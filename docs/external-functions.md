@@ -384,7 +384,20 @@ The tiers should be built in that order, because each one removes reasons to nee
 2. **Failure signalling.** What does a `func` do when its input is malformed — return a sentinel, or is there an error channel? A sentinel that collides with a valid value is a silent wrong verdict. The simplest answer is that `func` results are total: the specification guards the call, not the callee.
 3. **Should `--library` be recorded in the `.rdb`?** Traces are meant to outlive the specification. If a verdict depended on a binary, the trace arguably should say which — but a trace is a recording and a library is not part of it.
 4. **Multi-dimensional arrays.** A descriptor of descriptors does not exist in memory — storage is flat, so `byte[][]` would need an array of inner descriptors materialised per call, which is O(rows) work for something rare in this domain. The alternatives are a strided descriptor (`{count, stride, data}`) or leaving 2-D out of v1. Leaving it out is probably right until something needs it.
-5. **Slicing.** `pkt.raw[0:len]` would make a descriptor's `count` the meaningful length rather than the capacity, and remove the separate length argument from every call. It is a language feature with uses well beyond this one — it is also what "the first `len` octets" wants to say in a quantifier — so it should be designed on its own merits, not as an ABI convenience.
+5. ~~Slicing.~~ **Built, for calls.** `pkt[lo:hi]` lowers to the same
+   descriptor an array does, except both fields are values: the count is
+   `hi - lo` and the pointer is offset to element `lo`. So a call can be given
+   exactly the octets that are real, with no length argument to keep in step.
+
+   Not yet built for quantifiers, and it needs a different lowering there:
+   expansion is compile-time, so a runtime extent cannot drive it. The way in
+   is to desugar — `all x in pkt[0:len]: P` becomes expansion over the full
+   extent with each conjunct guarded by `i < len`, which is exactly what
+   people write by hand today.
+
+   Bounds are not checked. A slice wider than its array reads past it, as an
+   out-of-range index already does; there is no bounds checking to be
+   consistent with, and adding it for this one construct would surprise.
 5. **Should `-L` accept a file as well as a directory?** `-L plugins/libmctp.so` is unambiguous and would suit a build that produces one object. It costs nothing to allow, but two ways to say the same thing is its own tax.
 6. ~~What names a symbol?~~ **Settled: `referee_`.** See *Symbol naming* above.
 7. **May a `func` shadow a built-in?** Once tier 2 exists, `crc8` is both a built-in name and a plausible `func` name. Silently preferring one is a trap either way. Reserving the built-in names is the simpler rule, and `func` can always pick another.

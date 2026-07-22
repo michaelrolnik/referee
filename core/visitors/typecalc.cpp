@@ -54,6 +54,7 @@ struct TypeCalcImpl
              , ExprAnd
              , ExprXor
              , ExprCall
+             , ExprSlice
              , ExprBand
              , ExprBor
              , ExprShl
@@ -150,6 +151,7 @@ struct TypeCalcImpl
     void    visit(ExprSub*              expr) override;
     void    visit(ExprXor*              expr) override;
     void    visit(ExprCall*             expr) override;
+    void    visit(ExprSlice*            expr) override;
     void    visit(ExprBand*          expr) override;
     void    visit(ExprBor*           expr) override;
     void    visit(ExprShl*           expr) override;
@@ -619,6 +621,25 @@ void    TypeCalcImpl::visit(ExprSub*                expr)
 //  exactly -- no widening -- because a C function has one signature and
 //  silently passing an integer where a number was declared would reinterpret
 //  the bits.
+//  A slice has the element type of what it slices and an extent that is not
+//  known here -- count 0, the same marker a `func` signature uses. That is
+//  what lets a slice be passed where an array parameter is declared.
+void    TypeCalcImpl::visit(ExprSlice*              expr)
+{
+    auto*   array = dynamic_cast<TypeArray*>(make(expr->arg));
+
+    if(array == nullptr)
+        throw Exception(expr->arg->where(), "bad type: only an array can be sliced");
+
+    if(make(expr->lo) != typeInteger)
+        throw Exception(expr->lo->where(), "bad type: a slice bound must be an integer");
+
+    if(make(expr->hi) != typeInteger)
+        throw Exception(expr->hi->where(), "bad type: a slice bound must be an integer");
+
+    m_type = Factory<TypeArray>::create(array->type, 0u);
+}
+
 void    TypeCalcImpl::visit(ExprCall*               expr)
 {
     if(!m_module->hasFunc(expr->name))

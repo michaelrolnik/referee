@@ -503,6 +503,31 @@ public:
     std::string const   name;
 };
 
+//  A half-open slice of an array: `raw[lo:hi]` is the elements from `lo` up to
+//  but not including `hi`. Its extent is a *value*, not a compile-time
+//  constant -- which is the point. An array's own extent is the padded maximum
+//  for the run, and a slice is how a specification says how much of that is
+//  real, so a callee is handed a length rather than trusted with one.
+class ExprSlice final
+    : public Visitable<Expr, ExprSlice>
+{
+public:
+    ExprSlice(Expr* arg, Expr* lo, Expr* hi)
+        : arg(arg), lo(lo), hi(hi)
+    {
+    }
+
+    bool    is_temporal() override
+    {
+        return arg->is_temporal() || lo->is_temporal() || hi->is_temporal();
+    }
+
+public:
+    Expr* const     arg;
+    Expr* const     lo;
+    Expr* const     hi;
+};
+
 //  A call to an external function. Variadic in a way no other node is, so it
 //  carries its arguments in a vector rather than as fixed lhs/rhs members.
 class ExprCall final

@@ -77,6 +77,7 @@ struct RewriteImpl
              , ExprUw
              , ExprXor
              , ExprCall
+             , ExprSlice
              , ExprBand
              , ExprBor
              , ExprShl
@@ -158,6 +159,7 @@ public:
     void    visit(ExprUw*           expr) override;
     void    visit(ExprXor*          expr) override;
     void    visit(ExprCall*         expr) override;
+    void    visit(ExprSlice*        expr) override;
     void    visit(ExprBand*      expr) override;
     void    visit(ExprBor*       expr) override;
     void    visit(ExprShl*       expr) override;
@@ -616,6 +618,12 @@ void    RewriteImpl::visit( ExprUw*             expr)
         make(expr->lhs),
         make(expr->rhs));
 
+}
+
+void    RewriteImpl::visit( ExprSlice*          expr)
+{
+    m_expr = Factory<ExprSlice>::create(expr->where(),
+                make(expr->arg), make(expr->lo), make(expr->hi));
 }
 
 void    RewriteImpl::visit( ExprCall*           expr)

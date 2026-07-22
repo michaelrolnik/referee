@@ -268,6 +268,7 @@ struct CompileExprImpl
              , ExprUw
              , ExprXor
              , ExprCall
+             , ExprSlice
              , ExprBand
              , ExprBor
              , ExprShl
@@ -333,6 +334,7 @@ struct CompileExprImpl
     void    visit(ExprUw*           expr) override;
     void    visit(ExprXor*          expr) override;
     void    visit(ExprCall*         expr) override;
+    void    visit(ExprSlice*        expr) override;
     void    visit(ExprBand*      expr) override;
     void    visit(ExprBor*       expr) override;
     void    visit(ExprShl*       expr) override;
@@ -1398,6 +1400,34 @@ void    CompileExprImpl::visit(ExprUw*           expr)
     UR(expr, m_T, m_F, m_T, "Uw");
 }
 
+//  A slice lowers to the descriptor an array crosses the boundary as, except
+//  that both fields are values rather than one being a compile-time constant:
+//  the count is `hi - lo`, and the data pointer is offset to element `lo`.
+//
+//  Bounds are not checked here. A slice wider than the array would read past
+//  it, exactly as an out-of-range index does today -- the language has no
+//  bounds checking to be consistent with, and adding it for this one construct
+//  would be surprising rather than safe.
+void    CompileExprImpl::visit( ExprSlice*      expr)
+{
+    auto    base    = make(expr->arg);           //  composites are pointers already
+    auto    lo      = make(expr->lo);
+    auto    hi      = make(expr->hi);
+
+    auto    arrayTy = Compile::make(m_context, m_module, expr->arg->type(), "slice");
+    auto    zero    = llvm::ConstantInt::get(m_builder->getInt64Ty(), 0);
+    auto    data    = m_builder->CreateGEP(arrayTy, base, {zero, lo}, "slice.data");
+    auto    count   = m_builder->CreateSub(hi, lo, "slice.count");
+
+    auto    descTy  = llvm::StructType::get(*m_context,
+                            {m_builder->getInt64Ty(), m_builder->getPtrTy()});
+
+    m_value = m_builder->CreateInsertValue(
+                m_builder->CreateInsertValue(
+                    llvm::UndefValue::get(descTy), count, {0}, "slice.0"),
+                data, {1}, "slice");
+}
+
 //  A call to an external function. The symbol carries a `referee_` prefix, so
 //  `func crc8` binds to `referee_crc8` -- which keeps the specification's
 //  namespace out of C's global one, and means a func named `read` cannot
@@ -1463,6 +1493,14 @@ void    CompileExprImpl::visit( ExprCall*       expr)
             value = m_builder->CreateLoad(
                         Compile::make(m_context, m_module, decl.args[i], expr->name),
                         value, false, "enum_arg");
+
+        //  A slice already *is* the descriptor -- it carries a runtime count,
+        //  which is the whole reason to write one.
+        if(dynamic_cast<ExprSlice*>(expr->args[i]) != nullptr)
+        {
+            args.push_back(value);
+            continue;
+        }
 
         if(dynamic_cast<TypeArray*>(decl.args[i]))
         {
