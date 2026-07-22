@@ -119,6 +119,42 @@ std::string     tmpPath(std::string const& tag, std::string const& ext)
 
 } // namespace
 
+// `--stub` emits a C skeleton implementing the declared functions. The point
+// is that the first build is a copy rather than a transcription -- C cannot
+// diagnose a signature mismatch -- so the test is that the generated pair
+// compiles together, untouched, at -Wall -Wextra -Werror.
+TEST(Cli, StubCompilesAgainstItsOwnHeader)
+{
+    auto    ref = tmpPath("stub", ".ref");
+    {
+        std::ofstream   f(ref);
+        f << "type P : struct { x : integer; y : integer; };\n"
+             "type K : enum { A, B };\n"
+             //  a namespaced name, a struct by pointer, a slice, an enum
+             "func std::math::hypot2 : (P) -> integer;\n"
+             "func crc8              : (byte[], integer) -> byte;\n"
+             "func kind              : (K) -> boolean;\n"
+             "func nothing           : () -> boolean;\n";
+    }
+
+    auto    hdr = tmpPath("stub", ".h");
+    auto    src = tmpPath("stub", ".c");
+
+    EXPECT_EQ(run(quote(REFEREE_BIN) + " header " + quote(ref) + " -o " + quote(hdr)).status, 0);
+
+    auto    r = run(quote(REFEREE_BIN) + " header " + quote(ref) + " --stub --header-name "
+                    + quote(hdr) + " -o " + quote(src));
+    EXPECT_EQ(r.status, 0) << r.output;
+
+    auto    obj = tmpPath("stub", ".o");
+    auto    c   = run("cc -c -std=c11 -Wall -Wextra -Werror " + quote(src)
+                      + " -o " + quote(obj) + " 2>&1");
+    EXPECT_EQ(c.status, 0) << c.output;
+
+    std::remove(ref.c_str()); std::remove(hdr.c_str());
+    std::remove(src.c_str()); std::remove(obj.c_str());
+}
+
 // The generated header is the only mechanism that makes an implementation and
 // a specification agree -- C cannot diagnose a signature mismatch. So the test
 // is not that the header looks right, but that a C compiler accepts it and

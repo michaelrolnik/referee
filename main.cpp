@@ -163,7 +163,8 @@ int main(int argc, char * argv[])
     // header subcommand: emits a C header for the specification's named types
     // and its `func` prototypes. Takes an optional trace, because a struct
     // holding an unsized array has a trace-dependent C type.
-    std::string headerRef, headerLike, headerOut;
+    std::string headerRef, headerLike, headerOut, headerName;
+    bool        headerStub = false;
     auto        header = app.add_subcommand(
         "header", "Emit a C header for the specification's types and functions");
     header->add_option("reffile", headerRef, "REF specification file")
@@ -176,6 +177,10 @@ int main(int argc, char * argv[])
         "Trace whose array extents the header is generated against")
         ->check(CLI::ExistingFile);
     header->add_option("-o,--output", headerOut, "Write here instead of stdout");
+    header->add_flag("--stub", headerStub,
+        "Emit a C skeleton implementing the declared functions, not the header");
+    header->add_option("--header-name", headerName,
+        "Name to #include from a --stub skeleton (default: spec.h)");
     addIncludeOption(header);
 
     // execute subcommand
@@ -237,15 +242,22 @@ int main(int argc, char * argv[])
         }
         else if(app.got_subcommand("header"))
         {
+            auto    emit = [&](std::ostream& os) {
+                if (headerStub)
+                    Referee::emitStub(headerRef, headerName, os, includePaths, headerLike);
+                else
+                    Referee::emitHeader(headerRef, os, includePaths, headerLike);
+            };
+
             if (headerOut.empty())
             {
-                Referee::emitHeader(headerRef, std::cout, includePaths, headerLike);
+                emit(std::cout);
             }
             else
             {
                 std::ofstream   os(headerOut, std::ios_base::out | std::ios_base::trunc);
                 if (!os) { std::cerr << "cannot write " << headerOut << "\n"; return 1; }
-                Referee::emitHeader(headerRef, os, includePaths, headerLike);
+                emit(os);
             }
         }
         else if(app.got_subcommand("execute"))

@@ -142,6 +142,18 @@ public:
                                std::vector<std::string> const& includePaths = {},
                                std::string const& tracePath = {});
 
+    /// Emit a C skeleton implementing every `func` the specification declares:
+    /// the header included, each signature written out, and a body to fill in.
+    /// The signatures are generated from the same table the header and the
+    /// symbol lookup use, so the first build is a copy rather than a
+    /// transcription -- which is where a mismatch would otherwise be made,
+    /// and C cannot diagnose one.
+    static void     emitStub(std::string const& refPath,
+                             std::string const& headerName,
+                             std::ostream& os,
+                             std::vector<std::string> const& includePaths = {},
+                             std::string const& tracePath = {});
+
     /// One trace to check, and whether it is expected to violate the
     /// specification. A corpus of traces that *must* be rejected is how a
     /// specification is kept from going vacuous: a requirement mistyped into
