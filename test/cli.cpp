@@ -132,6 +132,7 @@ TEST(Cli, HeaderCompilesAndMatchesTheLayout)
              "type Pkt   : struct { flags : byte; len : byte; raw : byte[8]; kind : Dir; };\n"
              "type Point : struct { x : number; y : number; };\n"
              "func classify : (byte) -> Dir;\n"
+             "func crc8     : (byte[], integer) -> byte;\n"
              "data d : Dir;\n";
     }
 
@@ -156,7 +157,12 @@ TEST(Cli, HeaderCompilesAndMatchesTheLayout)
              "_Static_assert(offsetof(referee_Pkt, kind) == 10, \"enum offset\");\n"
              "_Static_assert(sizeof(referee_Point) == 16, \"two doubles\");\n"
              //  the prototype must be satisfiable exactly as generated
-             "referee_Dir referee_classify(uint8_t b) { return b ? referee_Dir_M2S : referee_Dir_S2M; }\n";
+             //  the descriptor is two words, count first
+             "_Static_assert(sizeof(referee_slice_byte) == 16, \"two words\");\n"
+             "_Static_assert(offsetof(referee_slice_byte, count) == 0, \"count first\");\n"
+             "_Static_assert(offsetof(referee_slice_byte, data) == 8, \"data second\");\n"
+             "referee_Dir referee_classify(uint8_t b) { return b ? referee_Dir_M2S : referee_Dir_S2M; }\n"
+             "uint8_t referee_crc8(referee_slice_byte s, int64_t n) { return (uint8_t)(s.count + (size_t)n); }\n";
     }
 
     auto    obj = tmpPath("hdr", ".o");

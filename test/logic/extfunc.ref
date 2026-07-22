@@ -13,9 +13,17 @@ func half      : (number)  -> number;
 func is_even   : (integer) -> boolean;
 func crc8_step : (byte, byte) -> byte;
 
+# An array parameter is written unsized: the extent travels in the descriptor
+# built at the call, so one declaration serves any trace shape.
+func crc8      : (byte[], integer) -> byte;
+func capacity  : (byte[]) -> integer;
+func first     : (byte[]) -> integer;
+
 data i : integer;
 data r : number;
-data b : byte;
+data b   : byte;
+data len : byte;
+data pkt : byte[];
 
 # One per primitive result type.
 G(triple(i)  == i * 3);
@@ -41,3 +49,27 @@ G(t3 == i * 3);
 # Inside a temporal loop, which is permitted and merely more expensive.
 Sum(true, triple(i)) == 3 * Sum(true, i);
 Cnt(is_even(i)) == 1;
+
+# ── Arrays: the motivating case ──────────────────────────────────────────────
+# A CRC is the reason external functions exist. REF has no fold over an array
+# and no function abstraction, so the only spelling in the language itself is
+# the fully unrolled polynomial -- eight shift/xor steps per octet, per octet.
+
+# The descriptor's count is the extent, and agrees with REF's own view of it.
+G(capacity(pkt) == 4);
+G(capacity(pkt) == pkt.count);
+
+# The data pointer addresses the array's storage, not a copy of it.
+G(first(pkt) == pkt[0]);
+
+# Because the count is real, the callee can refuse a length it was handed.
+G(crc8(pkt, 99) == 0xFF);
+G(crc8(pkt, 0) == 0);
+
+# Values checked against an independent implementation, not against itself.
+G(__time__ == 0    => crc8(pkt, 3) == 0xC1);    # DE AD BE
+G(__time__ == 1000 => crc8(pkt, 4) == 0xE3);    # 01 02 03 04
+
+# The PEC idiom: a computed signal, evaluated once per state.
+data pec = crc8(pkt, len);
+G(pec >= 0 && pec <= 255);

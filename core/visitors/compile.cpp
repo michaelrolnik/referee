@@ -1412,9 +1412,23 @@ void    CompileExprImpl::visit( ExprCall*       expr)
     auto const& decl    = m_refmod->getFunc(expr->name);
     auto        symbol  = "referee_" + expr->name;
 
+    //  An array crosses as a descriptor -- { count, data } -- rather than as a
+    //  bare pointer. In memory a REF array is flat and contiguous, so the
+    //  descriptor is built at the call from a compile-time count and the
+    //  pointer the caller already holds.
+    auto    sliceType = [&]() {
+        return llvm::StructType::get(*m_context,
+                    {m_builder->getInt64Ty(), m_builder->getPtrTy()});
+    };
+
     std::vector<llvm::Type*>    paramTypes;
     for(auto* type: decl.args)
-        paramTypes.push_back(Compile::make(m_context, m_module, type, expr->name));
+    {
+        if(dynamic_cast<TypeArray*>(type))
+            paramTypes.push_back(sliceType());
+        else
+            paramTypes.push_back(Compile::make(m_context, m_module, type, expr->name));
+    }
 
     auto    retType     = Compile::make(m_context, m_module, decl.ret, expr->name);
     auto    funcType    = llvm::FunctionType::get(retType, paramTypes, false);
@@ -1430,6 +1444,23 @@ void    CompileExprImpl::visit( ExprCall*       expr)
 
         if(decl.args[i] == Factory<TypeByte>::create())
             value = m_builder->CreateTrunc(value, m_builder->getInt8Ty(), "byte_arg");
+
+        if(dynamic_cast<TypeArray*>(decl.args[i]))
+        {
+            //  The extent is the *argument's*: a signature may leave it out,
+            //  and that is the whole point of the descriptor.
+            auto*   array = dynamic_cast<TypeArray*>(expr->args[i]->type());
+            //  `value` is already the address of the storage: composites are
+            //  never loaded. `count` is the extent, which is fixed for the run
+            //  -- it is capacity, not the meaningful length, so a caller with
+            //  a shorter payload still passes its own length alongside.
+            auto    desc = llvm::UndefValue::get(sliceType());
+            auto    n    = llvm::ConstantInt::get(m_builder->getInt64Ty(), array->count);
+
+            value = m_builder->CreateInsertValue(
+                        m_builder->CreateInsertValue(desc, n, {0}, "slice.count"),
+                        value, {1}, "slice");
+        }
 
         args.push_back(value);
     }

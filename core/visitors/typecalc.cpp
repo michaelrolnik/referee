@@ -643,6 +643,21 @@ void    TypeCalcImpl::visit(ExprCall*               expr)
         //  `byte` is satisfied by any integer and truncated at the call, and a
         //  `byte` result is widened. So match on the widened view, exactly as
         //  every other rule in this file does.
+        //  An unsized array parameter accepts any extent, provided the
+        //  element type matches: the count travels in the descriptor.
+        auto*   want    = dynamic_cast<TypeArray*>(decl.args[i]);
+        auto*   have    = dynamic_cast<TypeArray*>(got);
+
+        if(want != nullptr && want->count == 0 && have != nullptr)
+        {
+            if(widen(have->type) != widen(want->type))
+                throw Exception(expr->args[i]->where(),
+                    "bad type: argument " + std::to_string(i + 1) + " of '" + expr->name
+                    + "' is an array of the wrong element type");
+
+            continue;
+        }
+
         if(widen(got) != widen(decl.args[i]))
         {
             throw Exception(expr->args[i]->where(),

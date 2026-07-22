@@ -332,11 +332,18 @@ std::any Antlr2AST::visitDeclFunc(     referee::refereeParser::DeclFuncContext* 
     //  A function signature names types only, so no declaration path is being
     //  built and an unsized array in it has nowhere to take an extent from.
     //  Write the extent, or take the array from a signal that has one.
+    //  `T[]` in a signature means "an array of any extent": the descriptor
+    //  built at the call carries the count, so nothing here needs resolving.
+    //  Everywhere else an unsized array must take an extent from the trace.
+    m_inFuncSig     = true;
+
     std::vector<Type*>  args;
     for(auto* arg: ctx->funcArgs()->type())
         args.push_back(std::any_cast<Type*>(arg->accept(this)));
 
     auto    ret     = std::any_cast<Type*>(ctx->type()->accept(this));
+
+    m_inFuncSig     = false;
 
     module->addFunc(name, std::move(args), ret);
 
@@ -1132,6 +1139,13 @@ std::any Antlr2AST::visitTypeArray(     referee::refereeParser::TypeArrayContext
 
         if(sizes[k] == 0)
         {
+            //  A signature's extent is carried by the descriptor at run time.
+            if(m_inFuncSig)
+            {
+                type = Factory<TypeArray>::create(type, 0u);
+                continue;
+            }
+
             if(known == m_sizes.end() || declPos >= known->second.size())
                 throw Exception(position(ctx),
                     "the size of '" + (m_declName.empty() ? std::string("<array>") : m_declName)

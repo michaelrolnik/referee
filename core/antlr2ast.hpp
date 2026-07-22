@@ -244,6 +244,7 @@ private:
     Sizes                       m_sizes;
     std::string                 m_declName;     //  declaration being typed
     unsigned                    m_declDim = 0;  //  which of its dimensions
+    bool                        m_inFuncSig = false;    //  inside a `func` signature
     std::string                 m_rootDir;      //  directory of the root .ref
     std::string                 m_currentDir;   //  directory of the file being visited
     char const*                 m_currentFile   = nullptr;  //  label, relative to root

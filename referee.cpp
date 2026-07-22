@@ -29,6 +29,7 @@
 
 #include <atomic>
 #include <filesystem>
+#include <set>
 #include <iostream>
 
 #include "antlr4-runtime/antlr4-runtime.h"
@@ -931,8 +932,15 @@ std::string     cNameOf(Type* type, ::Module& mod)
     return {};
 }
 
+//  The descriptor a REF array crosses the boundary as. Named after its
+//  element type, so one typedef serves every array of that element.
+std::string     cSliceName(Type* elem, ::Module& mod);
+
 std::string     cTypeName(Type* type, ::Module& mod)
 {
+    if (auto* array = dynamic_cast<TypeArray*>(type))
+        return cSliceName(array->type, mod);
+
     if (type == Factory<TypeBoolean>::create()) return "bool";
     if (type == Factory<TypeByte>::create())    return "uint8_t";
     if (type == Factory<TypeInteger>::create()) return "int64_t";
@@ -942,10 +950,36 @@ std::string     cTypeName(Type* type, ::Module& mod)
     if (auto named = cNameOf(type, mod); !named.empty())
         return named;
 
-    if (auto* array = dynamic_cast<TypeArray*>(type))
-        return cTypeName(array->type, mod);         //  extent emitted by the caller
-
     return "/* unsupported */ void";
+}
+
+//  Element spelling for a slice typedef's name: `byte` -> referee_slice_byte.
+std::string     cSliceName(Type* elem, ::Module& mod)
+{
+    std::string tag;
+
+    if      (elem == Factory<TypeBoolean>::create()) tag = "bool";
+    else if (elem == Factory<TypeByte>::create())    tag = "byte";
+    else if (elem == Factory<TypeInteger>::create()) tag = "integer";
+    else if (elem == Factory<TypeNumber>::create())  tag = "number";
+    else if (elem == Factory<TypeString>::create())  tag = "string";
+    else if (auto named = cNameOf(elem, mod); !named.empty())
+                                                    tag = named.substr(8);
+    else                                            tag = "unsupported";
+
+    return "referee_slice_" + tag;
+}
+
+//  A struct member keeps an array's element type: the extent is in the
+//  declarator, so no descriptor is involved.
+std::string     cMemberType(Type* type, ::Module& mod)
+{
+    for (auto* t = type; ; )
+    {
+        auto* array = dynamic_cast<TypeArray*>(t);
+        if (array == nullptr) return cTypeName(t, mod);
+        t = array->type;
+    }
 }
 
 //  Array extents belong after the declarator in C, so a member is emitted as
@@ -1036,28 +1070,90 @@ void    Referee::emitHeader(std::string const& refPath,
         if (auto* st = dynamic_cast<TypeStruct*>(type))
         {
             os << "typedef struct referee_" << typeName << " {\n";
+            //  Inside a struct an array is inline storage with a static
+            //  extent, so it stays a C array -- a descriptor is only needed
+            //  where the extent is not already in the type.
+            std::size_t width = 0;
             for (auto const& m : st->members)
-                os << "    " << cTypeName(m.data, mod) << " " << m.name
-                   << cArraySuffix(m.data) << ";\n";
+                width = std::max(width, cMemberType(m.data, mod).size());
+
+            for (auto const& m : st->members)
+                os << "    " << cMemberType(m.data, mod)
+                   << std::string(width - cMemberType(m.data, mod).size() + 1, ' ')
+                   << m.name << cArraySuffix(m.data) << ";\n";
             os << "} referee_" << typeName << ";\n\n";
             continue;
         }
     }
 
-    //  Prototypes.
-    if (!mod.getFuncNames().empty())
-        os << "/*  Implement these. The prefix is part of the symbol name.  */\n";
+    //  One descriptor typedef per element type that a signature actually
+    //  mentions. `count` is the array's extent -- its capacity, not the
+    //  meaningful length -- so a caller with a shorter payload passes its own
+    //  length alongside, and the callee can bounds-check against `count`.
+    std::set<std::string>   slices;
+    auto                    noteSlice = [&](Type* t)
+    {
+        if (auto* array = dynamic_cast<TypeArray*>(t))
+            slices.insert(cSliceName(array->type, mod) + "|" + cMemberType(array, mod));
+    };
 
     for (auto const& funcName : mod.getFuncNames())
     {
         auto const& decl = mod.getFunc(funcName);
+        for (auto* a : decl.args) noteSlice(a);
+        noteSlice(decl.ret);
+    }
 
-        os << cTypeName(decl.ret, mod) << " referee_" << funcName << "(";
+    if (!slices.empty())
+    {
+        os << "/*\n"
+           << " *  Arrays cross the boundary as a descriptor. `count` is the extent --\n"
+           << " *  the capacity -- not the meaningful length, so a caller with a shorter\n"
+           << " *  payload passes its own length as a separate argument and the callee\n"
+           << " *  can check it against `count`.\n"
+           << " */\n";
+
+        for (auto const& entry : slices)
+        {
+            auto    bar  = entry.find('|');
+            auto    name = entry.substr(0, bar);
+            auto    elem = entry.substr(bar + 1);
+
+            auto    ptr   = "const " + elem + "*";
+            auto    width = std::max(std::string("size_t").size(), ptr.size()) + 2;
+
+            os << "typedef struct " << name << " {\n"
+               << "    " << "size_t" << std::string(width - 6, ' ') << "count;\n"
+               << "    " << ptr << std::string(width - ptr.size(), ' ') << "data;\n"
+               << "} " << name << ";\n\n";
+        }
+    }
+
+    //  Prototypes, one parameter per line. A signature names types only, so
+    //  the parameters are numbered; the point of the header is that the shape
+    //  is right, and a reader can rename them when implementing.
+    if (!mod.getFuncNames().empty())
+        os << "/*  Implement these. The `referee_` prefix is part of the symbol name.  */\n\n";
+
+    for (auto const& funcName : mod.getFuncNames())
+    {
+        auto const& decl = mod.getFunc(funcName);
+        auto        head = cTypeName(decl.ret, mod) + " referee_" + funcName + "(";
+
+        os << head;
+
         if (decl.args.empty())
-            os << "void";
+        {
+            os << "void);\n\n";
+            continue;
+        }
+
         for (std::size_t i = 0; i < decl.args.size(); i++)
-            os << (i ? ", " : "") << cTypeName(decl.args[i], mod);
-        os << ");\n";
+        {
+            if (i) os << ",\n" << std::string(head.size(), ' ');
+            os << cTypeName(decl.args[i], mod) << " arg" << i;
+        }
+        os << ");\n\n";
     }
 
     os << "\n#ifdef __cplusplus\n}\n#endif\n"
