@@ -85,9 +85,10 @@ referee header spec.ref -o spec.h
 
 emits, from the same code that lays out the trace:
 
-- a `typedef enum` per REF `enum`, with the member values REF actually stores (the member index — this is exactly the thing a hand-written header gets wrong);
-- a `struct` per REF `struct`, matching REF's layout and alignment;
-- a prototype per `func`.
+- a one-byte typedef plus member constants per REF `enum` — *not* a C `enum`, for the reason given above;
+- a `struct` per REF `struct`, matching REF's layout and alignment, with unsized arrays resolved against the trace it was generated from;
+- a prototype per `func`, taking composites by `const` pointer;
+- a layout-version symbol covering both the specification and the resolved extents.
 
 This is the load-bearing piece. C has no way to check that the function you linked matches the signature the specification declared — a mismatch is undefined behaviour, not a diagnostic. Generating the header is the only mechanism that makes the two agree, so the workflow should make it the obvious path: generate, `#include`, compile.
 
