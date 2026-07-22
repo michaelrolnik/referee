@@ -33,7 +33,7 @@ uint8_t crc8(const uint8_t *arg0, int64_t arg0_count, int64_t arg1);
 
 Passing the extent rather than relying on the declared one matters: the array's extent is fixed for a run, but the *meaningful* length usually is not — that is what the `len` companion signal is for in all three MCTP examples. The C function needs the real length, and the caller passes it.
 
-### Structs
+#### Passing structs
 
 Structs should be passed, and should be in v1 — they are the *cheapest* thing in this design, not the hardest. Two facts make that so.
 
@@ -57,25 +57,13 @@ func decode : (Pkt) -> Hdr;         // not v1
 
 If it is wanted later, spell it as a call that writes through a pointer the caller owns. That does bend the purity contract — the function now writes — so it needs its own thought rather than falling out of the parameter design.
 
-#### Two traps the generated header must avoid
+##### Two traps the generated header must avoid
 
 Both are cases where a *hand-written* header is quietly wrong, and where a naively generated one would be too. They are the strongest argument for generating it at all.
 
 **Enums are one byte, C enums are four.** `TypeEnum::size()` is 1 and REF stores the member index in an `i8`. A generated `typedef enum { A, B } E;` is `int` in C — four bytes, four-byte aligned. For `struct { e : E; f : E; }` REF says 2 bytes and C says 8. Every field after an enum shifts. The header must emit `typedef uint8_t E;` with the members as constants, or `enum E : uint8_t` where the dialect allows it — never a bare C enum.
 
 **Booleans must be `bool`, not `int`.** REF stores one byte; `_Bool` is one byte and matches. `int` does not.
-
-#### The consequence for `referee header`
-
-An unsized array inside a struct takes its extent from the trace, so the C type of a struct containing one is **trace-dependent**. `struct { flags : byte; len : byte; raw : byte[]; }` is 66 bytes against a 64-octet trace and 34 against a 32-octet one.
-
-So `referee header` cannot work from a `.ref` alone:
-
-```bash
-referee header spec.ref --like trace.csv -o spec.h
-```
-
-and the emitted header is specific to that trace's shape. The layout-version symbol proposed above therefore has to cover the resolved extents, not just the specification — otherwise an object built against a 64-octet capture links cleanly against a 32-octet one and reads past the end of every packet. That is the failure this whole mechanism exists to prevent, so it is worth getting right first rather than bolting on.
 
 ### 2. Generated header
 
@@ -93,6 +81,19 @@ emits, from the same code that lays out the trace:
 This is the load-bearing piece. C has no way to check that the function you linked matches the signature the specification declared — a mismatch is undefined behaviour, not a diagnostic. Generating the header is the only mechanism that makes the two agree, so the workflow should make it the obvious path: generate, `#include`, compile.
 
 The header should also emit a version symbol the loader checks at startup, so a stale object built against an older specification fails loudly instead of reading the wrong offsets.
+
+#### The header depends on the trace
+
+An unsized array inside a struct takes its extent from the trace, so the C type of a struct containing one is **trace-dependent**. `struct { flags : byte; len : byte; raw : byte[]; }` is 66 bytes against a 64-octet trace and 34 against a 32-octet one.
+
+So `referee header` cannot work from a `.ref` alone:
+
+```bash
+referee header spec.ref --like trace.csv -o spec.h
+```
+
+and the emitted header is specific to that trace's shape. The layout-version symbol proposed above therefore has to cover the resolved extents, not just the specification — otherwise an object built against a 64-octet capture links cleanly against a 32-octet one and reads past the end of every packet. That is the failure this whole mechanism exists to prevent, so it is worth getting right first rather than bolting on.
+
 
 ### 3. Calling
 
@@ -139,11 +140,54 @@ Two mitigations, neither complete:
 - **State the contract and mark it in the header.** A `func` must be a pure function of its arguments: same inputs, same output, no I/O, no globals, no mutation. Unenforceable, so it belongs in the generated header as a comment and in the documentation as a rule.
 - **Record what was linked.** The report and the `.rdb` should carry the path and content hash of every loaded object. A verdict that depends on a binary should say which binary, or it is not reproducible in the sense the rest of the tool means.
 
-## Linking
+## The workflow
 
-At JIT time, `referee execute spec.ref trace.csv --library libmctp_helpers.so`. ORC already resolves symbols from the process and from loaded objects, so this is a `DynamicLibrarySearchGenerator` and an error path. A missing symbol should fail before any trace is read, naming the function and the expected prototype.
+The whole feature is three commands and one directory.
 
-For AOT checkers (see `native-checkers.md`) the object is an ordinary link input, which is simpler and is an argument for that path.
+```bash
+# 1. referee emits the header from the specification and a trace
+referee header mctp.ref --like captures/nominal.csv -o build/mctp.h
+
+# 2. you write and compile the implementation
+cc -shared -fPIC -I build helpers/mctp.c -o plugins/libmctp.so
+
+# 3. referee finds it
+referee execute mctp.ref captures/*.csv -L plugins
+```
+
+`-L` mirrors `-I` exactly: repeatable, searched in the order given, one directory per occurrence, `->allow_extra_args(false)` so it does not swallow the trace positionals that follow, `->check(CLI::ExistingDirectory)`. It is registered per subcommand for the same reason `-I` is — that is where people type it. Anything the specification can be compiled by (`execute`, `compile`, `header`) takes it.
+
+### What gets loaded
+
+Every `*.so` in every `-L` directory, in a **deterministic order** — directories in the order given, files sorted by name within each. `readdir` order is not stable across filesystems, and load order decides which definition of a duplicate symbol wins; a verdict that depends on the order the kernel happened to return directory entries is exactly the class of silent wrong answer this tool exists to avoid.
+
+Two rules make the scan safe rather than merely convenient:
+
+**A duplicate symbol is an error, not a race.** If two objects both define `crc8`, referee refuses to run and names both files. First-wins is indefensible here: the two implementations may differ, and nothing in the report would show which was used.
+
+**Resolution is restricted to the loaded objects.** Not the process. ORC's default generator will happily resolve a symbol out of the host binary or libc, so `func read : (integer) -> integer;` would silently bind to `read(2)` and a typo'd name would bind to whatever else happens to be exported. Only symbols from `-L` objects count; anything else is "not found", named at startup.
+
+**Nothing is loaded unless something is declared.** With no `func` in the specification, `-L` is inert — the directory is not even scanned. A specification with no external functions keeps the property that a `.ref` plus a trace determines the verdict, and pays nothing.
+
+### Failure before any trace is read
+
+All of it resolves at JIT-setup time, before the first row is loaded:
+
+- a `func` with no matching symbol — names the function, the expected prototype, and the directories searched;
+- a duplicate symbol — names both objects;
+- a layout-version mismatch — names the object and both versions.
+
+None of these should be discoverable halfway through a corpus.
+
+### Why a directory rather than named libraries
+
+Naming each object (`--library libmctp.so`) or naming it in the declaration (`func crc8 : … from "mctp";`) would make the mapping explicit and remove the duplicate-symbol question. It also puts a build-layout detail into the specification, or into every invocation, for no gain once the two rules above are in place: the scan is deterministic and collisions are refused. A plugin directory is the right shape — drop the `.so` in, and every specification in the project can use it.
+
+The one thing it costs is that a specification does not record which object it needs. That is what the hash in the report is for (below).
+
+## AOT checkers
+
+For a compiled checker (see `native-checkers.md`) there is no scan and no loader: the objects are ordinary link inputs and the linker enforces both rules for free — an undefined symbol and a duplicate definition are both link errors. The runtime path is the one that has to reimplement what `ld` already does, which is an argument for the AOT path rather than against this one.
 
 ## Standard library
 
@@ -171,8 +215,9 @@ The tiers should be built in that order, because each one removes reasons to nee
 
 1. **`sum x in xs:`** — largest gain, no cost to any existing guarantee, and independent of everything else here.
 2. **Built-in CRC and bit intrinsics** — removes the motivating case for external functions entirely.
-3. **`func` with value parameters, plus `referee header`** — the escape hatch, with the generated header from day one rather than added later.
-4. **The whole-state convention** — only if 3 proves insufficient in practice, and only with a generated, versioned struct and accessors.
+3. **`referee header`** — before the calling machinery, not after. It is what makes a signature mismatch a diagnostic instead of undefined behaviour, and the trace-dependence above means its shape needs settling first.
+4. **`func` declarations, `-L` loading, and calls** — the escape hatch, against a header that already exists.
+5. **The whole-state convention** — only if 4 proves insufficient in practice, and only with a generated, versioned struct and accessors.
 
 ## Open questions
 
@@ -180,4 +225,6 @@ The tiers should be built in that order, because each one removes reasons to nee
 2. **Failure signalling.** What does a `func` do when its input is malformed — return a sentinel, or is there an error channel? A sentinel that collides with a valid value is a silent wrong verdict. The simplest answer is that `func` results are total: the specification guards the call, not the callee.
 3. **Should `--library` be recorded in the `.rdb`?** Traces are meant to outlive the specification. If a verdict depended on a binary, the trace arguably should say which — but a trace is a recording and a library is not part of it.
 4. **Extents for multi-dimensional arrays.** `(byte[][], integer)` would pass two extents plus a pointer; the flattening convention needs stating before anything relies on it.
-5. **Does `referee header` need to emit the reverse** — a stub `.c` with empty bodies — so the first build is a copy-paste rather than transcription? Cheap, and it is where the signature mismatches would otherwise happen.
+5. **Should `-L` accept a file as well as a directory?** `-L plugins/libmctp.so` is unambiguous and would suit a build that produces one object. It costs nothing to allow, but two ways to say the same thing is its own tax.
+6. **What names a symbol?** Plain C linkage means `func crc8` looks for `crc8`. That is what makes the generated header usable as-is, and it also means the specification's namespace and the C namespace are the same one. A prefix (`ref_crc8`) would isolate them at the cost of every header being uglier.
+7. **Does `referee header` need to emit the reverse** — a stub `.c` with empty bodies — so the first build is a copy-paste rather than transcription? Cheap, and it is where the signature mismatches would otherwise happen.
