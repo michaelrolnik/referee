@@ -1,0 +1,13 @@
+{"kind":"header","version":1,"specification":{"path":"examples/door/door.ref"},"trace":{"path":"examples/door/nominal.csv","states":48},"states":{"time":[0,500000000,1000000000,1050000000,1150000000,1250000000,1350000000,1450000000,1550000000,1650000000,1750000000,1850000000,1950000000,2050000000,2150000000,2250000000,2350000000,2450000000,2550000000,2650000000,2750000000,2850000000,2950000000,3000000000,4000000000,5000000000,6000000000,7000000000,8000000000,9000000000,10000000000,11000000000,12000000000,13000000000,14000000000,15000000000,16000000000,17000000000,18000000000,19000000000,20000000000,21000000000,22000000000,23000000000,24000000000,25000000000,26000000000,27000000000]}}
+{"kind":"signal","id":"p0","name":"button","type":"enum","encoding":"sparse","at":[0,2,3],"values":["RELEASED","DEPRESSED","RELEASED"]}
+{"kind":"signal","id":"p1","name":"lock","type":"enum","encoding":"sparse","at":[0,3,23],"values":["OFF","ON","OFF"]}
+{"kind":"signal","id":"p2","name":"alarm","type":"enum","encoding":"sparse","at":[0],"values":["OFF"]}
+{"kind":"signal","id":"p3","name":"door","type":"enum","encoding":"sparse","at":[0,7],"values":["CLOSED","OPENED"]}
+{"kind":"requirement","where":"power_up_locked","verdict":"pass","vacuous":false}
+{"kind":"requirement","where":"alarm_only_when_open","verdict":"pass","vacuous":false}
+{"kind":"requirement","where":"alarm_after_thirty_seconds","verdict":"pass","vacuous":false}
+{"kind":"requirement","where":"button_unlocks","verdict":"pass","vacuous":false}
+{"kind":"requirement","where":"unlocked_at_least_1900ms","verdict":"pass","vacuous":false}
+{"kind":"requirement","where":"unlocked_less_than_2100ms","verdict":"pass","vacuous":false}
+{"kind":"requirement","where":"no_opening_without_unlocking","verdict":"pass","vacuous":false}
+{"kind":"requirement","where":"no_unlocking_without_button","verdict":"pass","vacuous":false}

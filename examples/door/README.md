@@ -35,6 +35,29 @@ no_opening_without_unlocking             PASS
 no_unlocking_without_button              PASS
 ```
 
+## Look at it
+
+```bash
+./build/referee execute examples/door/door.ref examples/door/nominal.csv \
+                --explain examples/door/nominal.ndjson
+
+python3 tools/view.py       examples/door/nominal.ndjson -o nominal.html
+python3 tools/view_bokeh.py examples/door/nominal.ndjson -o nominal.bokeh.html
+```
+
+Both are committed beside the trace: `nominal.html` (35 KB, static) and
+`nominal.bokeh.html` (1.6 MB, hover and zoom, BokehJS inlined so it opens
+offline).
+
+Every signal comes out **sparse** — a door system changes state a few dozen
+times across 48 states, so `alarm` is a single entry and `door` is two. That is
+the encoding heuristic doing what it is for, and it is visible in the file
+rather than only in a benchmark.
+
+The eight requirements show verdicts and no rows: referee emits per-requirement
+columns only once the subexpression evaluator exists. The signals are the
+picture for now.
+
 ## `__time__` is in nanoseconds
 
 Worth stating early, because getting it wrong here cost real time and produced

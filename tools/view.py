@@ -140,7 +140,8 @@ def render(lines, out):
 
         #  What a requirement reads is itself information: one touching fewer
         #  signals than expected is worth noticing.
-        reads = [signals[row["ref"]]["name"] for row in r["rows"] if "ref" in row]
+        rows  = r.get("rows", [])
+        reads = [signals[row["ref"]]["name"] for row in rows if "ref" in row]
         if reads:
             p.append(f'<div class=sigs>reads: {html.escape(", ".join(reads))}</div>')
 
@@ -149,10 +150,15 @@ def render(lines, out):
             p.append(f'<div class=why>{html.escape(v["reason"])}'
                      + (f' &mdash; {html.escape(v["detail"])}' if v.get("detail") else "") + "</div>")
 
-        if not r["scope"]["active"]:
+        #  Absent scope is not an empty scope: one is "not known", the
+        #  other is "never opened", and only the second is vacuity.
+        if "scope" in r and not r["scope"]["active"]:
             p.append('<div class=why>scope never opened &mdash; nothing was checked</div>')
 
-        for row in r["rows"]:
+        if not rows:
+            p.append('<div class=sigs>verdict only — no rows produced yet</div>')
+
+        for row in rows:
             src  = signals.get(row["ref"]) if "ref" in row else row
             vals = dense(src, n)
             p.append(f'<div class=lbl>{html.escape(row["label"])}</div>'

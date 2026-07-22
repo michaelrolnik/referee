@@ -111,17 +111,21 @@ def render(lines, path):
         note = []
         if r["vacuous"]:
             note.append("VACUOUS: " + r["vacuity"]["reason"])
-        if not r["scope"]["active"]:
+        if "scope" in r and not r["scope"]["active"]:
             note.append("scope never opened")
 
         title = f"{r.get('name') or r['where']}   [{r['verdict']}]"
         if note:
             title += "   " + " · ".join(note)
 
-        labels  = [row["label"] for row in r["rows"]]
+        rows    = r.get("rows", [])
+        labels  = [row["label"] for row in rows]
         cols    = [densify(signals[row["ref"]] if "ref" in row else row, n)
-                   for row in r["rows"]]
-        wits    = [row.get("witnesses") for row in r["rows"]]
+                   for row in rows]
+        wits    = [row.get("witnesses") for row in rows]
+        if not labels:
+            continue        #  verdict only: the title carries it
+
         panels.append(strip(title, labels, cols, times, wits))
 
     #  Linked panning: every panel shares the trace's time axis, so scrolling
