@@ -27,14 +27,28 @@ A `func` is a declaration, like `data` and `conf`, and lives with them at the to
 
 Parameter and return types are REF types.
 
+#### Symbol naming
+
+A `func` named `crc8` binds to the C symbol **`referee_crc8`**. Every generated type carries the same prefix — `referee_slice_byte`, `referee_state_t`.
+
+The obvious alternative, plain linkage, puts the specification's namespace and C's global namespace into the same space, and that turns out to matter in two places:
+
+**It removes a whole class of accidental binding.** `func read : (integer) -> integer;` under plain linkage looks for `read` and finds `read(2)`. The *Resolution is restricted to the loaded objects* rule below was written to stop exactly that, and it still should — but with the prefix it becomes a second line of defence rather than the only one. `referee_read` is not a symbol libc has any reason to define, so the failure mode is a clean "not found" even if something upstream misconfigures the symbol generator.
+
+**It makes the duplicate-symbol rule precise instead of aggressive.** Referee only ever looks at `referee_*`, so two plugins that each happen to have a helper called `crc8` do not collide — only their declared entry points can. Without the prefix the duplicate check would have to reason about every symbol in every loaded object and would fire on incidental clashes between plugin internals, which are none of its business.
+
+It also makes a plugin self-describing: `nm -D libmctp.so | grep referee_` is exactly the list of entry points, separable from the plugin's own machinery.
+
+The cost is that the implementation writes `referee_crc8` rather than `crc8`. The generated header carries the prototype, so this is transcription rather than invention, and a typo produces a missing-symbol error at startup rather than anything subtle.
+
 #### Passing arrays
 
 An array crosses the boundary as a descriptor:
 
 ```c
-typedef struct { size_t count; const uint8_t *data; } ref_slice_byte;
+typedef struct { size_t count; const uint8_t *data; } referee_slice_byte;
 
-uint8_t crc8(ref_slice_byte arg0, int64_t arg1);
+uint8_t referee_crc8(referee_slice_byte arg0, int64_t arg1);
 ```
 
 This is a *synthesised* type, not a mirror of storage. In memory a REF array is `llvm::ArrayType::get(elem, N)` — flat, contiguous, exactly C's `T data[N]`, with `N` fixed for the run. The descriptor is built at the call: two stores, or nothing at all once the optimiser sees through it.
@@ -70,7 +84,7 @@ Structs should be passed, and should be in v1 — they are the *cheapest* thing 
 **A struct-valued expression is already a pointer.** `visit(ExprData*)` loads only primitives; for a composite, `m_value` is the address of the storage. (This is exactly the fact that made enum equality compare pointers instead of values — the same property, in that case a bug, is here a gift.) So `func packet_ok : (Pkt) -> boolean` lowers to
 
 ```c
-bool packet_ok(const Pkt *arg0);
+bool referee_packet_ok(const Pkt *arg0);
 ```
 
 with no copy, no ABI classification, no `sret`, and no marshalling — the pointer the caller already holds is the argument.
@@ -156,7 +170,7 @@ func packet_ok : (__state__) -> boolean;
 One caveat: `__time__` is not a reserved word. It is a plain identifier resolved specially, and `data __state__ : boolean;` parses today. So `__state__` is either reserved — cheap, and almost certainly breaks nobody — or made meaningful only inside a `func` parameter list. Reserving is simpler and gives a better error.
 
 ```c
-bool packet_ok(const ref_state_t *s);
+bool referee_packet_ok(const referee_state_t *s);
 ```
 
 This is genuinely convenient — one signature regardless of how many signals a function reads, and adding a signal does not change it. **I would not ship it first, and I would not ship it in the same shape as the value form.** Three reasons:
@@ -167,7 +181,7 @@ This is genuinely convenient — one signature regardless of how many signals a 
 
 **The value form already covers the motivating case.** PEC needs the octets and the length. Nothing about it wants the whole state.
 
-If it is built, it should be: a **generated** `ref_state_t` (never hand-written), carrying a layout version the loader verifies; accessor macros or inline functions in the generated header rather than direct field access, so the layout can change without breaking source compatibility; and `const` throughout.
+If it is built, it should be: a **generated** `referee_state_t` (never hand-written), carrying a layout version the loader verifies; accessor macros or inline functions in the generated header rather than direct field access, so the layout can change without breaking source compatibility; and `const` throughout.
 
 ## Purity, and what it costs
 
@@ -265,5 +279,6 @@ The tiers should be built in that order, because each one removes reasons to nee
 4. **Multi-dimensional arrays.** A descriptor of descriptors does not exist in memory — storage is flat, so `byte[][]` would need an array of inner descriptors materialised per call, which is O(rows) work for something rare in this domain. The alternatives are a strided descriptor (`{count, stride, data}`) or leaving 2-D out of v1. Leaving it out is probably right until something needs it.
 5. **Slicing.** `pkt.raw[0:len]` would make a descriptor's `count` the meaningful length rather than the capacity, and remove the separate length argument from every call. It is a language feature with uses well beyond this one — it is also what "the first `len` octets" wants to say in a quantifier — so it should be designed on its own merits, not as an ABI convenience.
 5. **Should `-L` accept a file as well as a directory?** `-L plugins/libmctp.so` is unambiguous and would suit a build that produces one object. It costs nothing to allow, but two ways to say the same thing is its own tax.
-6. **What names a symbol?** Plain C linkage means `func crc8` looks for `crc8`. That is what makes the generated header usable as-is, and it also means the specification's namespace and the C namespace are the same one. A prefix (`ref_crc8`) would isolate them at the cost of every header being uglier.
-7. **Does `referee header` need to emit the reverse** — a stub `.c` with empty bodies — so the first build is a copy-paste rather than transcription? Cheap, and it is where the signature mismatches would otherwise happen.
+6. ~~What names a symbol?~~ **Settled: `referee_`.** See *Symbol naming* above.
+7. **May a `func` shadow a built-in?** Once tier 2 exists, `crc8` is both a built-in name and a plausible `func` name. Silently preferring one is a trap either way. Reserving the built-in names is the simpler rule, and `func` can always pick another.
+8. **Does `referee header` need to emit the reverse** — a stub `.c` with empty bodies — so the first build is a copy-paste rather than transcription? Cheap, and it is where the signature mismatches would otherwise happen.
