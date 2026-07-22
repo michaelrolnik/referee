@@ -1,0 +1,35 @@
+type Button : enum { DEPRESSED, RELEASED };
+type State  : enum { ON, OFF };
+type Door   : enum { OPENED, CLOSED };
+
+data button : Button;
+data lock   : State;
+data alarm  : State;
+data door   : Door;
+
+@power_up_locked
+before button.DEPRESSED, lock.OFF eventually holds;
+
+@alarm_only_when_open
+globally, it is never the case that door.CLOSED && alarm.ON holds;
+
+@alarm_after_thirty_seconds
+while door.OPENED, it is always the case that alarm.ON holds after 30 seconds;
+
+@button_unlocks
+globally, if button.DEPRESSED has occurred, then in response lock.ON eventually holds within 100 milliseconds;
+
+@unlocked_at_least_two_seconds
+globally, once lock.ON becomes satisfied it remains so for at least 2 seconds;
+
+@unlocked_less_than_two_one
+globally, once lock.ON becomes satisfied it remains so for less than 2100 milliseconds;
+
+@door_stays_shut_until_unlocked
+between door.CLOSED and lock.OFF, it is always the case that door.CLOSED holds;
+
+@no_opening_without_unlocking
+after lock.ON, if door.OPENED holds, then it must have been the case that lock.OFF has occurred before it;
+
+@no_unlocking_without_button
+after lock.ON, if lock.OFF holds, then it must have been the case that button.DEPRESSED has occurred before it;
