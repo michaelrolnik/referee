@@ -62,8 +62,10 @@ existing one that was never wired up.
 
 1. **`T[]` means unbounded** — each record carries its own length. The natural
    reading wins.
-2. **Elements live in a pool**; the row holds `{count, pointer}`. Rows stay
-   fixed-stride whatever the lengths.
+2. **The row holds `{count, pointer}`.** Where the elements live is a loader
+   detail: inline in the row where the capacity is known from the trace's
+   shape, pooled where it is not. Nothing above the loader sees the
+   difference.
 3. **Quantifiers lower to a runtime loop**, not to unrolled conjuncts. No cap
    is needed anywhere, and `T[<= N]` is not introduced.
 
@@ -86,31 +88,52 @@ They do not merely need re-checking — several are *about* the old meaning.
 different sizes because the extent is fixed per run. Under the new meaning that
 is no longer the property being tested.
 
-### The obstacle: CSV cannot express a per-record length
+### CSV: the array is a count column plus element columns
 
-A CSV has fixed columns. `pkt[0] … pkt[3]` is four columns in every row, so a
-record cannot carry three elements and its neighbour five. The extent is a
-property of the *header*, which is exactly why `inferSizes` reads it from
-column names today.
+A CSV has fixed columns, so a record cannot carry three elements while its
+neighbour carries five. The extent is a property of the header — which is why
+`inferSizes` reads it from column names today.
 
-So `T[]` in a CSV trace has no honest per-record meaning, and something has to
-give:
+The way through is to encode the array as what it is: two fields, the second
+of which is the elements.
 
-* **CSV keeps the old semantics** — `T[]` from a CSV is fixed-extent, from a
-  `.yml` or `.rdb` it is per-record. One spelling, two meanings depending on
-  the trace format, which is the kind of thing that produces a silent wrong
-  answer rather than an error.
-* **CSV grows a length column convention** — `pkt.count` beside `pkt[0..N]`,
-  with the columns as capacity. Honest, and it puts the padding back in the
-  trace instead of the specification, which is arguably where it belonged.
-* **CSV stops supporting unbounded arrays** — declaring `T[]` and loading a CSV
-  is an error naming the formats that can carry it. Simplest and most honest;
-  costs every CSV fixture that uses `T[]` today.
+```csv
+__time__,pkt.count,pkt[0],pkt[1],pkt[2],pkt[3]
+0,3,0xDE,0xAD,0xBE,0x00
+1000,2,0x01,0x02,0x00,0x00
+```
 
-This was raised earlier in the project's life — *"csv is too stupid/simple for
-this, we should use yml for other formats"* — and it is the same wall. It
-should be settled before any code is written, because it decides whether the
-loader has one path or two.
+The element columns give the **capacity** — four, from the header, as now — and
+`pkt.count` gives the **length**, per record. The first row has three elements;
+the second has two. Columns stay fixed and lengths vary, which is what was
+wanted.
+
+This is the pattern the MCTP examples already write by hand:
+
+```text
+data len : byte;            #  becomes pkt.count
+data pkt : byte[];          #  becomes pkt's element columns
+```
+
+with every requirement carrying `i >= len => …` itself. Promoting it into the
+loader is what makes the guard automatic.
+
+#### And it removes the need for a pool, for CSV at least
+
+If capacity is fixed by the header, the elements can stay **inline in the row**
+and the descriptor's pointer simply points at them. Rows stay fixed-stride and
+`.rdb` needs no data section.
+
+That matters more than it first looks: **where the elements live is a loader
+detail, invisible above it.** Code generation sees `{count, pointer}` and does
+not care whether the pointer addresses the row or a pool. So a format that
+genuinely carries variable-length data — YAML, or an `.rdb` written from one —
+can pool its elements, and CSV can keep them inline, without two paths anywhere
+except the loader.
+
+One naming question left: `pkt.count` as a column name collides with a struct
+field actually called `count`, and `.count` is already a pseudo-member on
+arrays. Worth choosing deliberately rather than discovering later.
 
 ### Quantifiers as runtime loops
 
