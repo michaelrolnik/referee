@@ -34,6 +34,24 @@ h2     { font-size: .95rem; margin: 1.6rem 0 .4rem; font-weight: 600; }
 svg    { display: block; margin: .2rem 0 .6rem; overflow: visible; }
 .lbl   { font-size: 11px; fill: #444; }
 .axis  { font-size: 10px; fill: #888; }
+select { font: inherit; padding: .25rem; margin-bottom: 1rem; }
+.hide  { display: none; }
+.sigs  { color: #888; font-size: .8rem; margin: .1rem 0 .4rem; }
+"""
+
+#  Only the signals a requirement actually reads. The format already answers
+#  this -- rows carry `ref` into the signal lines -- so the relevant subset is
+#  exactly the referenced ids, not a guess. Drawing every signal for every
+#  requirement would imply they are all relevant, and the ones that are not
+#  compete for attention with the ones that are.
+JS = """
+const sel = document.getElementById('pick');
+sel.addEventListener('change', () => {
+  const want = sel.value;
+  document.querySelectorAll('[data-req]').forEach(el => {
+    el.classList.toggle('hide', want !== 'all' && el.dataset.req !== want);
+  });
+});
 """
 
 TRUE, FALSE, ABSENT = "#3a7", "#f2f2f2", "#fff"
@@ -105,11 +123,26 @@ def render(lines, out):
                      f'<svg width="{W}" height="{H}">{svg_row(vals, None, n, W, 0, H)}</svg>')
 
     p.append("<h2>requirements</h2>")
-    for r in reqs:
+
+    #  One at a time by default: with more than a handful the page is a wall,
+    #  and scrolling is the wrong way to find one.
+    opts = "".join(f'<option value="{i}">{html.escape(r.get("name") or r["where"])}'
+                   f'{" — vacuous" if r["vacuous"] else ""}</option>'
+                   for i, r in enumerate(reqs))
+    p.append(f'<select id=pick><option value="all">all {len(reqs)} requirements</option>{opts}</select>')
+
+    for ri, r in enumerate(reqs):
         cls = "vac" if r["vacuous"] else ("pass" if r["verdict"] == "pass" else "fail")
         tag = ('<span class="tag t-vac">vacuous</span>' if r["vacuous"] else
                f'<span class="tag t-{r["verdict"]}">{r["verdict"]}</span>')
-        p.append(f'<div class="req {cls}"><b>{html.escape(r.get("name") or r["where"])}</b>{tag}')
+        p.append(f'<div class="req {cls}" data-req="{ri}">'
+                 f'<b>{html.escape(r.get("name") or r["where"])}</b>{tag}')
+
+        #  What a requirement reads is itself information: one touching fewer
+        #  signals than expected is worth noticing.
+        reads = [signals[row["ref"]]["name"] for row in r["rows"] if "ref" in row]
+        if reads:
+            p.append(f'<div class=sigs>reads: {html.escape(", ".join(reads))}</div>')
 
         if r["vacuous"]:
             v = r["vacuity"]
@@ -127,6 +160,7 @@ def render(lines, out):
                      f'{svg_row(vals, row.get("witnesses"), n, W, 0, H)}</svg>')
         p.append("</div>")
 
+    p.append(f"<script>{JS}</script>")
     out.write("\n".join(p) + "\n")
 
 
