@@ -56,11 +56,20 @@ The same applies to accumulators: `Sum`/`Cnt`/`Itg` at a state summarise a windo
 
 ## Format
 
-JSON, newline-delimited per requirement, for a first version. It reads into pandas in one line, which is what makes Bokeh cheap to point at it, and the volume is bounded by (requirements × states), not by anything quadratic.
+Specified separately, in [`run-trace-format.md`](run-trace-format.md) --
+newline-delimited JSON, a header carrying the state timestamps once and one
+line per requirement.
 
-If that turns out too large for long traces, the columnar answer is Parquet or Arrow — but that is a change of encoding, not of design, and it should not be made before there is a trace big enough to justify it.
+The format is the contract and the visualiser is replaceable, which is why it
+is written down first and on its own. Two constraints shaped it: every value
+array is parallel to a single shared `states.time`, so timestamps are not
+repeated per requirement; and each row declares whether it is a `state`,
+`temporal` or `window` value, so a reader cannot accidentally draw a claim
+about a suffix as a fact about an instant.
 
-The file should record which trace and which specification it came from, and — once external functions are in play — the objects that were loaded, for the same reason the report should: a verdict that depended on a binary is not reproducible without knowing which one.
+Vacuity is computed by referee and recorded per requirement, rather than left
+for a reader to infer -- a requirement can be `"verdict": "pass"` and
+`"vacuous": true` at once, and that combination is the whole point.
 
 ## Open questions
 
