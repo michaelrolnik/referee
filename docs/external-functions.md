@@ -41,6 +41,39 @@ It also makes a plugin self-describing: `nm -D libmctp.so | grep referee_` is ex
 
 The cost is that the implementation writes `referee_crc8` rather than `crc8`. The generated header carries the prototype, so this is transcription rather than invention, and a typo produces a missing-symbol error at startup rather than anything subtle.
 
+#### Enums
+
+Given `type Dir : enum { M2S, S2M };` the header emits, in the preferred dialect:
+
+```c
+enum referee_Dir : uint8_t {
+    referee_Dir_M2S = 1,
+    referee_Dir_S2M = 2,
+};
+```
+
+and, where a fixed underlying type is unavailable, falls back to:
+
+```c
+typedef uint8_t referee_Dir;
+static const referee_Dir referee_Dir_M2S = 1;
+static const referee_Dir referee_Dir_S2M = 2;
+```
+
+Four decisions, each with a reason:
+
+**Explicit values, 1-based.** For the reason above: REF stores declaration position plus one, and reserves 0 for "matched nothing".
+
+**Members are qualified and prefixed**, `referee_Dir_M2S` rather than `M2S`. REF enum members are short and generic by nature — `ON`, `OFF`, `SOM`, `EOM`, `A`, `B` — and the header is included into someone else's translation unit. Emitting bare `SOM` into a firmware codebase that already has one is not a hypothetical.
+
+**Constants, not `#define`.** A macro ignores scope and leaks into every header included after this one, which for names this generic is worse than the collision it causes.
+
+**`enum E : uint8_t` where the dialect allows it** (C23, or C++11), because it keeps the one-byte width *and* the distinct type. The `typedef uint8_t` fallback keeps the width but loses the distinction — REF enums are nominal, so two enums with the same members are different types, and under a typedef C cannot tell them apart. Passing a `Two` where a `Dir` was wanted becomes a silent bug on the C side that REF itself would have refused.
+
+**Reordering a REF enum renumbers every member.** The value is the declaration position, so inserting a member in the middle silently changes the meaning of every compiled plugin built against the old header. The layout-version symbol has to cover enum member order, not only struct layout and array extents.
+
+Enums pass and return by value as their one-byte underlying type; nothing about them needs the by-pointer rule.
+
 #### Passing arrays
 
 An array crosses the boundary as a descriptor:
@@ -103,7 +136,17 @@ If it is wanted later, spell it as a call that writes through a pointer the call
 
 Both are cases where a *hand-written* header is quietly wrong, and where a naively generated one would be too. They are the strongest argument for generating it at all.
 
-**Enums are one byte, C enums are four.** `TypeEnum::size()` is 1 and REF stores the member index in an `i8`. A generated `typedef enum { A, B } E;` is `int` in C — four bytes, four-byte aligned. For `struct { e : E; f : E; }` REF says 2 bytes and C says 8. Every field after an enum shifts. The header must emit `typedef uint8_t E;` with the members as constants, or `enum E : uint8_t` where the dialect allows it — never a bare C enum.
+**Enums are one byte, C enums are four.** `TypeEnum::size()` is 1 and REF stores the member in an `i8`. A generated `typedef enum { A, B } E;` is `int` in C — four bytes, four-byte aligned. For `struct { e : E; f : E; }` REF says 2 bytes and C says 8, and every field after an enum shifts.
+
+**Enum values are 1-based, and 0 means "no member matched".** This is the one most worth checking against the code rather than assuming, because both halves are surprising. `TypeEnum::index()` returns the declaration position **plus one**, and the loader writes `i + 1` for a matching cell and leaves `0` when nothing matched. So
+
+```text
+type Dir : enum { M2S, S2M };
+```
+
+stores `M2S` as **1** and `S2M` as **2**, with `0` reserved. A C enum written the obvious way gives `M2S = 0`, which is wrong twice over: every member is off by one, and `M2S` collides with the sentinel that means *this cell did not name any member*. A specification would then read a malformed trace as `M2S` everywhere.
+
+The header must therefore emit **explicit values**, never implicit ones.
 
 **Booleans must be `bool`, not `int`.** REF stores one byte; `_Bool` is one byte and matches. `int` does not.
 
