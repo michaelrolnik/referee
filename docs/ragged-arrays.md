@@ -60,6 +60,9 @@ existing one that was never wired up.
 
 ## The shape, decided
 
+0. **`T[N]` is unchanged.** A written extent keeps the inline representation it
+   has today: `.count` folds to a constant, indexing is a fixed offset,
+   quantifiers unroll. Nothing that compiles today compiles differently.
 1. **`T[]` means unbounded** — each record carries its own length. The natural
    reading wins.
 2. **The row holds `{count, pointer}`.** Where the elements live is a loader
@@ -77,16 +80,31 @@ There is precedent for the storage: a string is already an 8-byte pointer into
 an interned pool with the characters outside the row, so out-of-row data with
 a fixed-size handle is not new here.
 
-### This is a breaking change, and the migration is not cosmetic
+### Two kinds, and the migration is gentler than it looks
 
-Every existing `T[]` changes meaning. `examples/mctp` declares `pkt : byte[]`
-and `payload : byte[]`; `loadsized.ref`, `nested_extents.ref` and
-`arrays_pinned.ref` all rely on `T[]` being one fixed extent for the run.
+`T[N]` and `T[]` become genuinely different types rather than two states of
+one: the first inline with a constant extent, the second a descriptor with a
+length. Consumers branch on which they hold — but only `T[]` is new, so the
+existing path is untouched and every `T[N]` in the tree keeps working
+unchanged. That is what makes this an addition.
 
-They do not merely need re-checking — several are *about* the old meaning.
-`loadsized.ref` exists to assert that one specification holds against traces of
-different sizes because the extent is fixed per run. Under the new meaning that
-is no longer the property being tested.
+`T[]` does change meaning, and an earlier revision of this document overstated
+what that costs. For a trace whose records all happen to be the same length —
+which is every CSV that exists today, since the header fixes the width —
+behaviour is **identical**: `.count` returns the same number, a quantifier
+visits the same elements, and only the lowering differs. A loop instead of
+unrolled conjuncts gives the same answer more slowly.
+
+The difference appears only on a genuinely ragged trace, which no existing
+fixture has. So `examples/mctp`, `nested_extents.ref` and `arrays_pinned.ref`
+should keep passing untouched.
+
+`loadsized.ref` is the one to look at, and not because it breaks. It exists to
+assert that a specification holds against traces of *different sizes* because
+the extent is fixed per run. That property still holds, but it stops being
+interesting — under the new meaning it is what every unbounded array does, so
+the fixture is testing something that has become unremarkable rather than
+something that has become false.
 
 ### CSV: columns to the widest row, absent elements marked
 
