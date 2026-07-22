@@ -39,6 +39,28 @@ Why not one line *per state*: the timestamps would repeat for every requirement,
 
 `libraries` is not decoration. A verdict that depended on an external function is not reproducible without knowing which object was loaded — the same argument that says the `.so` belongs in the report and not in the `.rdb`.
 
+## Signals
+
+The trace's own data, one line each, written once.
+
+```json
+{"kind":"signal","id":"s1","name":"k",   "type":"enum",   "values":["SOM","MID","EOM","SOM"]}
+{"kind":"signal","id":"s2","name":"len", "type":"byte",   "values":[13,13,9,13]}
+{"kind":"signal","id":"s3","name":"eom", "type":"boolean","computed":true,"values":[false,false,true,false]}
+```
+
+Requirement rows reference these by `id` rather than repeating them. Without
+that, a signal read by twenty requirements appears twenty times — but the
+duplication is the smaller problem. The larger one is that a viewer could only
+draw what some requirement happened to mention, and could not draw the trace
+itself, or a neighbouring signal nobody referenced. That is most of why a
+timing diagram is worth looking at: the correlation you did not predict is the
+one you needed to see.
+
+`computed` marks a `data x = expr` signal, which is a property of the
+specification rather than of the recording — the same distinction that keeps
+computed signals out of a `.rdb`.
+
 ## A requirement
 
 ```json
@@ -70,15 +92,15 @@ Why not one line *per state*: the timestamps would repeat for every requirement,
 
 A row is one thing worth drawing over time: the requirement itself, a subexpression, a signal it reads.
 
+A row either carries its own `values` — a subexpression, computed here and
+nowhere else — or a `ref` to a signal line. Exactly one of the two, never both
+and never neither.
+
 ```json
-{
-  "id": "r3",
-  "label": "eom",
-  "where": "mctp.ref:120:44 .. 120:47",
-  "kind": "state",
-  "type": "boolean",
-  "values": [false, false, true, false]
-}
+{ "id": "r1", "label": "eom", "kind": "state", "type": "boolean", "ref": "s3" }
+
+{ "id": "r2", "label": "flags & 0x40", "kind": "state", "type": "integer",
+  "values": [64, 0, 64, 0] }
 ```
 
 `values` is parallel to `states.time`, and `null` means *not evaluated here* — outside a scope, or short-circuited. A viewer should draw `null` as absent, not as false. The two are different, and conflating them is how a vacuous requirement comes to look like a satisfied one.

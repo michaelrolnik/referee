@@ -32,7 +32,7 @@ for n, doc in enumerate(lines, 1):
 def rejects(what, mutate):
     """The invariant holds only if the mutated document is refused."""
     global failed
-    doc = json.loads(json.dumps(lines[1]))
+    doc = json.loads(json.dumps(next(l for l in lines if l["kind"] == "requirement")))
     mutate(doc)
     if not list(validator.iter_errors(doc)):
         print(f"accepted what it must reject: {what}")
@@ -46,6 +46,10 @@ rejects("window row lacking a window",     lambda d: d["rows"][2].pop("windows")
 rejects("a malformed source label",        lambda d: d.__setitem__("where", "nonsense"))
 rejects("a verdict outside pass/fail",     lambda d: d.__setitem__("verdict", "maybe"))
 rejects("an unknown field",                lambda d: d.__setitem__("extra", 1))
+rejects("a row with neither ref nor values",
+        lambda d: d["rows"][1].pop("values"))
+rejects("a row with both ref and values",
+        lambda d: d["rows"][0].__setitem__("values", [True, True, True, True]))
 
 print("ok" if not failed else f"{failed} problem(s)")
 sys.exit(1 if failed else 0)
