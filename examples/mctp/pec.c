@@ -1,0 +1,56 @@
+/*
+ *  The implementation behind `func crc8` in packet-records.ref.
+ *
+ *  Build it, and referee finds it on the -L path:
+ *
+ *      referee header  examples/mctp/packet-records.ref \
+ *                      --like examples/mctp/packet-records.csv \
+ *                      -o build/mctp.h
+ *      cc -shared -fPIC -I build examples/mctp/pec.c -o build/plugins/libpec.so
+ *      referee execute examples/mctp/packet-records.ref \
+ *                      examples/mctp/packet-records.csv -L build/plugins
+ *
+ *  Why this is C and not REF: PEC is a CRC-8 over the transaction, and REF has
+ *  no fold over an array and no function abstraction. The only spelling in the
+ *  language itself is the fully unrolled polynomial -- eight shift/xor steps
+ *  per octet, across every octet, written out by hand. This is the case
+ *  external functions exist for.
+ */
+#include <stdint.h>
+#include <stddef.h>
+
+/*  The descriptor an array crosses the boundary as. `referee header` emits
+ *  this; it is repeated here only so the file reads standalone.  */
+typedef struct referee_slice_byte {
+    size_t          count;
+    const uint8_t*  data;
+} referee_slice_byte;
+
+/*
+ *  SMBus PEC: CRC-8, polynomial 0x07, initial value 0, over the first `n`
+ *  octets of the frame -- everything up to but excluding the PEC byte itself.
+ *
+ *  `s.count` is the array's *extent*, which is the padded maximum for the run,
+ *  not this packet's length. So the caller passes its own length, and the
+ *  descriptor is what makes it possible to check that length rather than
+ *  trust it. A specification bug that passed a wrong length would otherwise
+ *  read padding, or read past the row.
+ */
+uint8_t referee_crc8(referee_slice_byte s, int64_t n)
+{
+    if (n < 0 || (size_t) n > s.count)
+        return 0xFF;                    /*  refuse rather than read out of bounds  */
+
+    uint8_t crc = 0;
+
+    for (int64_t i = 0; i < n; i++)
+    {
+        crc ^= s.data[i];
+
+        for (int bit = 0; bit < 8; bit++)
+            crc = (crc & 0x80) ? (uint8_t) ((crc << 1) ^ 0x07)
+                               : (uint8_t) (crc << 1);
+    }
+
+    return crc;
+}

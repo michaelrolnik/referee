@@ -37,25 +37,29 @@ caught it.
 | **total payload bytes of a message** | ❌ | ❌ | ✅ |
 | reassembly timeout | ✅ | — | ❌ |
 | inter-octet timing, NACK, clock stretch | ❌ | ✅ | ❌ |
-| PEC / CRC-8 | ❌ | ❌ | ❌ |
+| PEC / CRC-8 | ✅ via `func` | ✅ via `func` | ✅ via `func` |
 
 The diagonal is the whole story: **the tighter the record, the more relations
 become local and expressible — and the more timing is lost.** A message-shaped
 record makes reassembly a quantifier and the payload total a sum, but there is
 no longer an interval between SOM and EOM to put a timeout on.
 
-## The one thing no form can say
+## PEC
 
-PEC is a CRC-8 over the transaction. REF has no fold over an array and no
-function abstraction, so the only spelling is the fully unrolled polynomial.
-Have the capture tool emit `pec_ok : boolean` and write
+PEC is a CRC-8 over the transaction, which REF cannot express: there is no
+fold over an array and no function abstraction, so the only spelling in the
+language itself is the fully unrolled polynomial. It is now written as an
+external function:
 
 ```text
-globally, it is always the case that pec_ok holds;
+func crc8 : (byte[], integer) -> byte;
+data pec_ok = crc8(pkt, len - 1) == pkt[len - 1];
 ```
 
-This is the same division of labour that gives every form its length field:
-arithmetic belongs to the tool, relations between fields belong here.
+with the implementation in `pec.c`, loaded from the `-L` path. See
+[`../extfunc/README.md`](../extfunc/README.md) for the three commands, and for
+the one gap this leaves: if a type the signature depends on changes, the
+compiled object still has the old layout and nothing detects it.
 
 ## Recommendation
 
@@ -91,9 +95,9 @@ stream with the timing intact.
 
 ## Language gaps these examples exposed
 
-1. **Nested extents are not inferred.** `data v : T[]` takes its extent from
-   the trace, but `struct { v : T[] }` does not — it is rejected. Every nested
-   array needs a written size, so C pads at two levels.
+1. ~~Nested extents are not inferred.~~ **Fixed.** `struct { v : T[] }` was
+   rejected because the extent table was keyed by declaration name; it is now
+   keyed by path, so proposal C declares all three of its extents unsized.
 2. **No numeric fold.** The quantifiers are all boolean, so the payload total
    in C is written one term per slot. A `sum x in xs:` form would fix the only
    ugly line in these files.

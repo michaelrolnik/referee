@@ -35,6 +35,11 @@
 
 import "spec.ref";
 
+# The PEC check needs a CRC-8, which has no spelling in REF -- there is no fold
+# over an array and no function abstraction. So it is declared here and
+# implemented in pec.c, which referee loads from the -L path. See the README.
+func crc8 : (byte[], integer) -> byte;
+
 data len : byte;
 data pkt : byte[];
 
@@ -139,6 +144,19 @@ globally, it is always the case that bytecnt >= MCTP_MIN_BYTECOUNT holds;
 @padding_beyond_the_frame_is_zero
 globally, it is always the case that (all v, i in pkt: i >= len => v == 0) holds;
 
+# ── PEC ──────────────────────────────────────────────────────────────────────
+# The last octet of the frame is a CRC-8 over everything before it. This was
+# listed under "what this form cannot say" until external functions existed;
+# it is the single highest-yield mechanical check on an SMBus capture.
+#
+# Written as a computed signal rather than inline: __prepare__ evaluates it
+# once per state, where the same call inside a temporal operator would be
+# evaluated once per state per loop iteration.
+data pec_ok = crc8(pkt, len - 1) == pkt[len - 1];
+
+@smbus_pec_is_correct
+globally, it is always the case that pec_ok holds;
+
 # ── Where the pattern vocabulary stops ───────────────────────────────────────
 # A pattern body may not contain a *looping* temporal operator -- `G`, `F`,
 # `H`, `O`, the untils and releases, or the accumulators `Itg` / `Sum` / `Cnt`
@@ -178,20 +196,12 @@ globally, it is always the case that
 #    along a chain would still not exclude the last packet correctly without
 #    knowing whether the neighbour is final.
 #
-# 2. PEC. It is a CRC-8 over the whole transaction. REF has no fold over an
-#    array and no function abstraction, so the only spelling is the fully
-#    unrolled polynomial -- eight shift/xor steps per byte, across every byte.
-#    Have the capture tool emit `pec_ok : boolean` and write
-#        globally, it is always the case that pec_ok holds;
-#    This is the same division of labour that produced `len`: arithmetic
-#    belongs to the tool, relations between fields belong here.
-#
-# 3. Total payload bytes of a message (DSP0236 8.5 defers the limit to each
+# 2. Total payload bytes of a message (DSP0236 8.5 defers the limit to each
 #    message type, but a platform will have one). `Sum` and `Cnt` select states
 #    by condition and are bounded by a `[lo:hi]` *time* window, not by a
 #    terminator, so "bytes from SOM to EOM" needs a window wide enough for one
 #    message and no more, or a quadratic freeze form. Neither can appear in a
 #    pattern, since accumulators are barred from pattern bodies.
 #
-# 4. Anything below MCTP -- inter-byte timing, clock stretching, ACK/NACK,
+# 3. Anything below MCTP -- inter-byte timing, clock stretching, ACK/NACK,
 #    arbitration loss. See byte-stream.ref.
