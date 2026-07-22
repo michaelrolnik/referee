@@ -33,7 +33,49 @@ uint8_t crc8(const uint8_t *arg0, int64_t arg0_count, int64_t arg1);
 
 Passing the extent rather than relying on the declared one matters: the array's extent is fixed for a run, but the *meaningful* length usually is not — that is what the `len` companion signal is for in all three MCTP examples. The C function needs the real length, and the caller passes it.
 
-Only value types cross the boundary. No struct returns in v1: they raise ABI questions (sret, alignment, padding) for very little gain, and a struct result can be split into two calls or one call returning a packed integer.
+### Structs
+
+Structs should be passed, and should be in v1 — they are the *cheapest* thing in this design, not the hardest. Two facts make that so.
+
+**A REF struct is already a C struct in memory.** `TypeStruct::size()` and `alignment()` implement the C rule exactly — align each member to its own alignment, pad the total to the struct's — and `CompileTypeImpl::visit(TypeStruct*)` builds a **non-packed** `llvm::StructType`, so LLVM lays it out by the same ABI rule. The loader writes trace blobs with the same alignment arithmetic. Three independent pieces of the codebase already agree on a C layout, and the existing struct fixtures passing is evidence that they do.
+
+**A struct-valued expression is already a pointer.** `visit(ExprData*)` loads only primitives; for a composite, `m_value` is the address of the storage. (This is exactly the fact that made enum equality compare pointers instead of values — the same property, in that case a bug, is here a gift.) So `func packet_ok : (Pkt) -> boolean` lowers to
+
+```c
+bool packet_ok(const Pkt *arg0);
+```
+
+with no copy, no ABI classification, no `sret`, and no marshalling — the pointer the caller already holds is the argument.
+
+So the rule is: **structs and arrays pass by `const` pointer; primitives pass by value.** By-*value* struct passing is the thing to avoid, because that is where the SysV register-classification rules live and where a mismatch between the header and the JIT would be silent. Passing by pointer sidesteps all of it, and is what a C programmer would write anyway.
+
+**Struct returns stay out of v1.** They genuinely need `sret`, and the C answer is an out-parameter:
+
+```text
+func decode : (Pkt) -> Hdr;         // not v1
+```
+
+If it is wanted later, spell it as a call that writes through a pointer the caller owns. That does bend the purity contract — the function now writes — so it needs its own thought rather than falling out of the parameter design.
+
+#### Two traps the generated header must avoid
+
+Both are cases where a *hand-written* header is quietly wrong, and where a naively generated one would be too. They are the strongest argument for generating it at all.
+
+**Enums are one byte, C enums are four.** `TypeEnum::size()` is 1 and REF stores the member index in an `i8`. A generated `typedef enum { A, B } E;` is `int` in C — four bytes, four-byte aligned. For `struct { e : E; f : E; }` REF says 2 bytes and C says 8. Every field after an enum shifts. The header must emit `typedef uint8_t E;` with the members as constants, or `enum E : uint8_t` where the dialect allows it — never a bare C enum.
+
+**Booleans must be `bool`, not `int`.** REF stores one byte; `_Bool` is one byte and matches. `int` does not.
+
+#### The consequence for `referee header`
+
+An unsized array inside a struct takes its extent from the trace, so the C type of a struct containing one is **trace-dependent**. `struct { flags : byte; len : byte; raw : byte[]; }` is 66 bytes against a 64-octet trace and 34 against a 32-octet one.
+
+So `referee header` cannot work from a `.ref` alone:
+
+```bash
+referee header spec.ref --like trace.csv -o spec.h
+```
+
+and the emitted header is specific to that trace's shape. The layout-version symbol proposed above therefore has to cover the resolved extents, not just the specification — otherwise an object built against a 64-octet capture links cleanly against a 32-octet one and reads past the end of every packet. That is the failure this whole mechanism exists to prevent, so it is worth getting right first rather than bolting on.
 
 ### 2. Generated header
 
