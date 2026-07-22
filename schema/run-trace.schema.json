@@ -87,10 +87,7 @@
       "required": [
         "kind",
         "where",
-        "verdict",
-        "vacuous",
-        "scope",
-        "rows"
+        "verdict"
       ],
       "additionalProperties": false,
       "properties": {
@@ -102,9 +99,9 @@
           "type": "string"
         },
         "where": {
-          "description": "Source label, always present: it is the identity when there is no name.",
+          "description": "Source label, always present: it is the identity when there is no name. A trailing `.N` disambiguates requirements that share a source position.",
           "type": "string",
-          "pattern": "^(.+:)?[0-9]+:[0-9]+ \\.\\. [0-9]+:[0-9]+$"
+          "pattern": "^(.+:)?[0-9]+:[0-9]+ \\.\\. [0-9]+:[0-9]+(\\.[0-9]+)?$"
         },
         "verdict": {
           "enum": [
@@ -120,7 +117,8 @@
           "$ref": "#/$defs/vacuity"
         },
         "scope": {
-          "$ref": "#/$defs/scope"
+          "$ref": "#/$defs/scope",
+          "description": "Omitted when the scope is not known. It must not be guessed: an empty `active` means the scope never opened, which is the vacuity signal, so writing it speculatively would mark every requirement vacuous."
         },
         "witness": {
           "description": "State index that settled the verdict, or null when nothing did.",
@@ -132,10 +130,11 @@
         },
         "rows": {
           "type": "array",
-          "minItems": 1,
+          "minItems": 0,
           "items": {
             "$ref": "#/$defs/row"
-          }
+          },
+          "description": "Absent or empty when only the verdict is known. Referee emits rows once it computes per-subexpression columns; until then a requirement line still says which requirement it is and what it decided, which is what the report shows."
         }
       },
       "allOf": [

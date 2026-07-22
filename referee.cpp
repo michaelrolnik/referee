@@ -661,7 +661,8 @@ JitWithSpecs    buildJitFromRef(std::istream& refStream, std::string const& refN
 bool    runAllSpecs(llvm::orc::LLJIT& jit,
                     std::vector<std::string> const& funcNames,
                     void* frst, void* last, void* conf,
-                    std::ostream& os)
+                    std::ostream& os,
+                    std::ostream* explain = nullptr)
 {
     using SpecFn = bool(*)(void*, void*, void*);
     bool allPass = true;
@@ -682,6 +683,23 @@ bool    runAllSpecs(llvm::orc::LLJIT& jit,
 
         os << std::left << std::setw(40) << name
            << (result ? " PASS" : " FAIL") << "\n";
+
+        //  The same verdict, as a record. No rows yet -- those need
+        //  per-subexpression columns -- and no scope, which must not be
+        //  guessed: an empty `active` means the scope never opened, so
+        //  writing one speculatively would mark everything vacuous.
+        if (explain != nullptr)
+        {
+            json::Writer    w(*explain);
+            {
+                auto    doc = w.object();
+                w.key("kind").value("requirement");
+                w.key("where").value(name);
+                w.key("verdict").value(result ? "pass" : "fail");
+                w.key("vacuous").value(false);
+            }
+            w.line();
+        }
     }
     return allPass;
 }
@@ -1049,7 +1067,7 @@ bool    runOneTrace(JitWithSpecs&            js,
 
     return runAllSpecs(*js.jit, js.funcNames,
                        runStates.data(), runStates.data() + (numStates - 1) * stateStride, rdb.confPtr(),
-                       os);
+                       os, explain);
 }
 
 // Compile, then run against a single trace. The original single-trace entry
