@@ -108,9 +108,14 @@ stream with the timing intact.
    and releases, and the accumulators all raise "cannot be temporal" inside a
    Dwyer pattern. `Xs`/`Xw`/`Ys`/`Yw` and freeze are accepted, which is just
    enough for A's sequencing rules.
-5. **`while` does not compose with a lookahead.** `while P, ... Xs(...)` fails
-   where the equivalent `globally, it is always the case that P => Xs(...)`
-   passes. Possibly a bug; worth a look.
+5. ~~`while` does not compose with a lookahead.~~ **Not a gap — correct.**
+   `while P` desugars to `between P and !P`, so the body is read over the
+   scope's subtrace: at its last state there is no next state *within the
+   scope*, so `Xs` is false there and `Xw` vacuously true. A rule reaching
+   across the boundary cannot be scoped at the boundary.
+6. **No symbol mangling for external functions.** If a type a `func`
+   signature depends on changes, the compiled object keeps the old layout and
+   nothing detects it — see [`../extfunc/README.md`](../extfunc/README.md).
 
 ## A trap worth knowing
 
