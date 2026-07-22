@@ -676,17 +676,27 @@ void    TypeCalcImpl::visit(ExprCall*               expr)
             return;
         }
 
-        auto    want = bi->takesNumber ? typeNumber : typeInteger;
+        //  Overload resolution: all arguments are the same kind, so the call's
+        //  shape is (arity, integer-or-number) and at most one candidate
+        //  accepts it.
+        auto    allNumber = true;
+        for(auto* arg: expr->args)
+            if(widen(make(arg)) != typeNumber)
+                allNumber = false;
 
-        for(std::size_t i = 0; i < expr->args.size(); i++)
-            if(widen(make(expr->args[i])) != want)
-                throw Exception(expr->args[i]->where(),
-                    std::string("bad type: argument ") + std::to_string(i + 1)
-                    + " of '" + expr->name + "' must be "
-                    + (bi->takesNumber ? "a number" : "an integer"));
+        for(auto const* cand: findBuiltins(expr->name))
+        {
+            if(!builtinAccepts(*cand, static_cast<unsigned>(expr->args.size()), allNumber))
+                continue;
 
-        m_type = bi->returnsNumber ? typeNumber : typeInteger;
-        return;
+            m_type = cand->returnsNumber ? typeNumber : typeInteger;
+            return;
+        }
+
+        throw Exception(expr->where(),
+            "bad type: no overload of '" + expr->name + "' takes "
+            + std::to_string(expr->args.size()) + " "
+            + (allNumber ? "number" : "integer") + " argument(s)");
     }
 
     if(!m_module->hasFunc(expr->name))

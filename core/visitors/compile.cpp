@@ -1443,8 +1443,24 @@ void    CompileExprImpl::visit( ExprCall*       expr)
     //  A built-in lowers to an intrinsic or to a couple of instructions --
     //  never to an external symbol -- so it needs no .so, no -L and no
     //  header, and a specification using only built-ins stays self-contained.
-    if(auto const* bi = findBuiltin(expr->name))
+    if(auto const* first = findBuiltin(expr->name))
     {
+        //  Resolve the overload the same way type calculation did -- by the
+        //  call's shape -- so the two cannot disagree about which one this is.
+        auto    allNumber = true;
+        for(auto* arg: expr->args)
+            if(arg->type() == Factory<TypeInteger>::create()
+            || arg->type() == Factory<TypeByte>::create())
+                allNumber = false;
+
+        auto const* bi = first;
+        for(auto const* cand: findBuiltins(expr->name))
+            if(builtinAccepts(*cand, static_cast<unsigned>(expr->args.size()), allNumber))
+            {
+                bi = cand;
+                break;
+            }
+
         std::vector<llvm::Value*>   a;
         for(auto* arg: expr->args)
             a.push_back(make(arg));

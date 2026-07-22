@@ -22,9 +22,17 @@ G(std::math::min(i, i) == i);
 G(std::math::max(i, 10) >= std::math::min(i, 10));
 
 # Number forms.
-G(std::math::fabs(r) >= 0.0);
-G(std::math::fmin(r, 2.0) <= 2.0);
-G(std::math::fmax(r, 2.0) >= 2.0);
+# The same three names as above, resolved to their number overloads by the
+# argument types. C needs `fabs` for want of overloading; this does not.
+G(std::math::abs(r) >= 0.0);
+G(std::math::abs(0.0 - r) == std::math::abs(r));
+G(std::math::min(r, 2.0) <= 2.0);
+G(std::math::max(r, 2.0) >= 2.0);
+
+# And the integer overload really returns an integer -- integer arithmetic on
+# the result would not typecheck against a number.
+G(std::math::abs(i) * 2 >= 0);
+G(std::math::min(i, 10) + 1 > std::math::min(i, 10));
 G(std::math::sqrt(4.0) == 2.0);
 G(std::math::sqrt(r) * std::math::sqrt(r) > 0.0);
 G(std::math::pow(2.0, 10.0) == 1024.0);

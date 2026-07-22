@@ -59,9 +59,12 @@ inline std::vector<Builtin> const&  builtins()
         { "std::math::min",   Builtin::Kind::IMin,  2, false, false },
         { "std::math::max",   Builtin::Kind::IMax,  2, false, false },
 
-        { "std::math::fabs",  Builtin::Kind::FAbs,  1, true,  true  },
-        { "std::math::fmin",  Builtin::Kind::FMin,  2, true,  true  },
-        { "std::math::fmax",  Builtin::Kind::FMax,  2, true,  true  },
+        //  Overloads of the three above, on numbers. Resolution is by
+        //  argument type, so `abs` serves both and C's `fabs` workaround --
+        //  a second name for the want of overloading -- is not needed.
+        { "std::math::abs",   Builtin::Kind::FAbs,  1, true,  true  },
+        { "std::math::min",   Builtin::Kind::FMin,  2, true,  true  },
+        { "std::math::max",   Builtin::Kind::FMax,  2, true,  true  },
 
         { "std::math::sqrt",  Builtin::Kind::Sqrt,  1, true,  true  },
         { "std::math::exp",   Builtin::Kind::Exp,   1, true,  true  },
@@ -93,11 +96,35 @@ inline std::vector<Builtin> const&  builtins()
     return table;
 }
 
-inline Builtin const*   findBuiltin(std::string const& name)
+//  Every candidate of that name, in declaration order. More than one means
+//  the name is overloaded, and the caller picks by argument type.
+inline std::vector<Builtin const*>  findBuiltins(std::string const& name)
 {
+    std::vector<Builtin const*> out;
+
     for(auto const& b: builtins())
         if(name == b.name)
-            return &b;
+            out.push_back(&b);
 
-    return nullptr;
+    return out;
+}
+
+//  True when this candidate accepts a call of that shape. Argument types are
+//  matched exactly -- an integer does not become a number to reach an
+//  overload, because that would silently pick the wrong one whenever both
+//  exist, which is precisely when it matters.
+inline bool     builtinAccepts(Builtin const& b, unsigned arity, bool argsAreNumber)
+{
+    if(b.arity != arity)
+        return false;
+
+    return Builtin::isString(b.kind) ? true : b.takesNumber == argsAreNumber;
+}
+
+//  Any candidate at all, for diagnostics and for the string kinds, whose
+//  argument shapes are checked separately.
+inline Builtin const*   findBuiltin(std::string const& name)
+{
+    auto    all = findBuiltins(name);
+    return all.empty() ? nullptr : all.front();
 }

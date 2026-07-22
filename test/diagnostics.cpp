@@ -343,8 +343,9 @@ TEST(Diagnostics, RejectsBadBuiltinCalls)
         "data bi : integer;\nG(std::math::abs() == 0);\n",
         "data bj : integer;\nG(std::math::abs(bj, bj) == 0);\n",
         "data bk : integer;\nG(std::math::min(bk) == 0);\n",
-        //  integer forms take integers, number forms take numbers
-        "data bm : number;\nG(std::math::abs(bm) == 0);\n",
+        //  `abs` is overloaded and takes either, but a name with only one
+        //  overload still refuses the other kind
+        "data bm : integer;\nG(std::math::sqrt(bm) == 0.0);\n",
         "data bn : string;\nG(std::math::sqrt(bn) == 0.0);\n",
         //  no such built-in
         "data bo : integer;\nG(std::math::nosuch(bo) == 0);\n",
