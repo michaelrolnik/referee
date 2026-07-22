@@ -1553,8 +1553,24 @@ void    CompileExprImpl::visit( ExprCall*       expr)
         }
     }
 
-    auto const& decl    = m_refmod->getFunc(expr->name);
-    auto        symbol  = m_refmod->symbolFor(expr->name);
+    //  Resolve the overload from the call's own argument types, the same rule
+    //  type calculation used, so the two agree without either recording it.
+    std::vector<Type*>  actual;
+    for(auto* arg: expr->args)
+        actual.push_back(arg->type());
+
+    auto const* pick = m_refmod->resolveFunc(expr->name, actual);
+
+    if(pick == nullptr)
+        for(auto const& cand: m_refmod->funcsNamed(expr->name))
+            if(cand.args.size() == actual.size())
+            {
+                pick = &cand;       //  unsized array parameters, already checked
+                break;
+            }
+
+    auto const& decl    = *pick;
+    auto        symbol  = m_refmod->symbolFor(expr->name, decl);
 
     //  An array crosses as a descriptor -- { count, data } -- rather than as a
     //  bare pointer. In memory a REF array is flat and contiguous, so the

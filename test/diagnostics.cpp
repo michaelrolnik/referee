@@ -417,9 +417,13 @@ TEST(Diagnostics, RejectsBadCalls)
         //  layout is its element width
         "func cf_f : (byte[]) -> integer;\ndata cf : integer;\nG(cf_f(cf) == 0);\n",
         "func cg_f : (byte[]) -> integer;\ndata cg : integer[4];\nG(cg_f(cg) == 0);\n",
-        //  declared twice
-        "func ch_f : (integer) -> integer;\nfunc ch_f : (integer) -> integer;\n"
+        //  two declarations of one name are fine; two with the same argument
+        //  types are not, since no call could tell them apart
+        "func ch_f : (integer) -> integer;\nfunc ch_f : (integer) -> number;\n"
         "data ch : integer;\nG(ch_f(ch) == 0);\n",
+        //  no overload takes this shape
+        "func cj_f : (integer) -> integer;\nfunc cj_f : (number) -> number;\n"
+        "data cj : string;\nG(cj_f(cj) == 0);\n",
         //  the result is used as its declared type
         "func ci_f : (integer) -> boolean;\ndata ci : integer;\nG(ci_f(ci) + 1 == 2);\n",
     };

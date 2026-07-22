@@ -358,11 +358,28 @@ the point of including them: REF has no cast, so number-to-integer conversion
 was not expressible at all, and rounding is where a specification actually
 wants it -- to compare against an integer signal, or to index with.
 
-Separate integer and number spellings (`abs` / `fabs`) are C's workaround for
-having no overloading, and should not survive: structural-hash symbols already
-make overloading possible, since two signatures hash differently. What is left
-is to let `Module::addFunc` hold more than one signature per name and to
-resolve a call against them. Then `abs` serves both and `fabs` retires.
+Overloading is **built**, for built-ins and for declared `func`s alike, which
+is why there is no `fabs` here. Resolution is by the call's shape, matched
+exactly -- an integer does not widen to reach a number overload, since that
+would silently pick the wrong one precisely when both exist.
+
+```text
+func scale : (integer) -> integer;
+func scale : (number)  -> number;
+```
+
+emits two symbols, because the structural hash covers the parameter types:
+
+```c
+int64_t referee_scale__8d387612(int64_t arg0);
+double  referee_scale__934d662e(double arg0);
+```
+
+Two declarations of one name are fine; two with the same argument types are
+refused, since no call could tell them apart. The plain-name `#define` alias
+is emitted only for names with a single signature -- one macro cannot stand
+for two symbols -- so an overloaded name is written out in full, which
+`--stub` does for you.
 
 **Built:** `std::string` -- `len`, `nth`, `compare`, `starts`, `ends`, `find`.
 These are host functions linked into referee and registered with the JIT, the

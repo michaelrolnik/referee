@@ -49,7 +49,12 @@ public:
         Type*               ret;
     };
 
-    void            addFunc(std::string const& name, std::vector<Type*> args, Type* ret);
+    //  A name may carry several signatures. Resolution is by the call's
+    //  shape, matched exactly -- no widening to reach an overload, since that
+    //  would silently pick the wrong one precisely when both exist.
+    void                        addFunc(std::string const& name, std::vector<Type*> args, Type* ret);
+    std::vector<Func> const&    funcsNamed(std::string const& name);
+    Func const*                 resolveFunc(std::string const& name, std::vector<Type*> const& args);
 
     //  The C symbol a `func` binds to: `referee_`, the name with `::`
     //  replaced by `__`, then a structural hash of the signature.
@@ -64,9 +69,9 @@ public:
     //  though the signature text is unchanged, which is the case nothing else
     //  detects, and two overloads of one name get different symbols, which is
     //  what makes overloading possible without C++ linkage.
-    std::string     symbolFor(std::string const& name);
+    std::string     symbolFor(std::string const& name, Func const& decl);
     bool            hasFunc(std::string const& name);
-    Func const&     getFunc(std::string const& name);
+    Func const&     getFunc(std::string const& name);   //  the sole overload; throws if ambiguous
     std::vector<std::string> const&  getFuncNames()  {return m_funcNames;}
 
     Type*   getType(std::string const& name);
@@ -106,7 +111,7 @@ private:
     std::map<std::string, Type*>    m_name2data;  // ALL props (CSV + computed) for type lookup
     std::map<std::string, Expr*>    m_name2expr;  // only computed props
     std::map<std::string, Type*>    m_name2conf;
-    std::map<std::string, Func>     m_name2func;
+    std::map<std::string, std::vector<Func>>    m_name2func;
     std::vector<Expr*>              m_exprs;
     std::vector<Spec*>              m_specs;
     std::vector<std::string>        m_exprNames;    //  parallel to m_exprs

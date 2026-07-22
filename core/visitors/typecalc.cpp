@@ -704,49 +704,46 @@ void    TypeCalcImpl::visit(ExprCall*               expr)
         throw Exception(expr->where(), "no such function: '" + expr->name + "'");
     }
 
-    auto const& decl = m_module->getFunc(expr->name);
+    //  Resolve against the declared overloads by the call's shape. An unsized
+    //  array parameter accepts any extent of the right element type, so a
+    //  candidate is tried argument by argument rather than by comparing the
+    //  whole list.
+    std::vector<Type*>  actual;
+    for(auto* arg: expr->args)
+        actual.push_back(make(arg));
 
-    if(decl.args.size() != expr->args.size())
+    Module::Func const* found = nullptr;
+
+    for(auto const& cand: m_module->funcsNamed(expr->name))
     {
-        throw Exception(expr->where(),
-            "function '" + expr->name + "' takes " + std::to_string(decl.args.size())
-            + " argument(s), " + std::to_string(expr->args.size()) + " given");
-    }
-
-    for(std::size_t i = 0; i < decl.args.size(); i++)
-    {
-        auto    got = make(expr->args[i]);
-
-        //  `byte` is a storage width, not a value kind: an argument declared
-        //  `byte` is satisfied by any integer and truncated at the call, and a
-        //  `byte` result is widened. So match on the widened view, exactly as
-        //  every other rule in this file does.
-        //  An unsized array parameter accepts any extent, provided the
-        //  element type matches: the count travels in the descriptor.
-        auto*   want    = dynamic_cast<TypeArray*>(decl.args[i]);
-        auto*   have    = dynamic_cast<TypeArray*>(got);
-
-        if(want != nullptr && want->count == 0 && have != nullptr)
-        {
-            //  Element types must match *exactly*, not widened. `byte` reads
-            //  as an integer everywhere else, but an array's layout is its
-            //  element width: accepting `integer[4]` for a `byte[]` would
-            //  hand the callee eight-byte elements to read as octets.
-            if(have->type != want->type)
-                throw Exception(expr->args[i]->where(),
-                    "bad type: argument " + std::to_string(i + 1) + " of '" + expr->name
-                    + "' is an array of the wrong element type");
-
+        if(cand.args.size() != actual.size())
             continue;
+
+        auto    fits = true;
+
+        for(std::size_t i = 0; i < actual.size() && fits; i++)
+        {
+            auto*   want = dynamic_cast<TypeArray*>(cand.args[i]);
+            auto*   have = dynamic_cast<TypeArray*>(actual[i]);
+
+            fits = (want != nullptr && want->count == 0 && have != nullptr)
+                 ? have->type == want->type
+                 : widen(actual[i]) == widen(cand.args[i]);
         }
 
-        if(widen(got) != widen(decl.args[i]))
+        if(fits)
         {
-            throw Exception(expr->args[i]->where(),
-                "bad type: argument " + std::to_string(i + 1) + " of '" + expr->name
-                + "' does not match the declared type");
+            found = &cand;
+            break;
         }
     }
+
+    if(found == nullptr)
+        throw Exception(expr->where(),
+            "no overload of '" + expr->name + "' takes these "
+            + std::to_string(expr->args.size()) + " argument(s)");
+
+    auto const& decl = *found;
 
     m_type = widen(decl.ret);
 }

@@ -481,7 +481,9 @@ static void     bindExternalFunctions(llvm::orc::LLJIT&               jit,
         //  mangles to `__`. Three places have to agree on this -- the code
         //  generator, the header emitter and this lookup -- so it lives in
         //  one function rather than being written out three times.
-        auto    symbol = astModule.symbolFor(name);
+      for (auto const& decl : astModule.funcsNamed(name))
+      {
+        auto    symbol = astModule.symbolFor(name, decl);
 
         //  A duplicate is an error, not a race: two implementations may
         //  differ, and nothing in the report would show which one ran.
@@ -516,6 +518,7 @@ static void     bindExternalFunctions(llvm::orc::LLJIT&               jit,
             llvm::orc::ExecutorAddr::fromPtr(found),
             llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable,
         };
+      }
     }
 
     if (auto Err = jit.getMainJITDylib().define(llvm::orc::absoluteSymbols(std::move(symMap))))
@@ -1267,19 +1270,27 @@ void    Referee::emitHeader(std::string const& refPath,
 
     for (auto const& funcName : mod.getFuncNames())
     {
+        auto const& overloads = mod.funcsNamed(funcName);
+
+        //  An alias only makes sense for a name with a single signature: one
+        //  macro cannot stand for two symbols. An overloaded name is written
+        //  out in full, which `--stub` does for you.
+        if (overloads.size() != 1)
+            continue;
+
         auto    plain = "referee_" + funcName;
         for (auto at = plain.find("::"); at != std::string::npos; at = plain.find("::", at))
             plain.replace(at, 2, "__");
 
-        os << "#define " << plain << " " << mod.symbolFor(funcName) << "\n";
+        os << "#define " << plain << " " << mod.symbolFor(funcName, overloads.front()) << "\n";
     }
 
     os << "\n";
 
     for (auto const& funcName : mod.getFuncNames())
+      for (auto const& decl : mod.funcsNamed(funcName))
     {
-        auto const& decl = mod.getFunc(funcName);
-        auto        head = cTypeName(decl.ret, mod) + " " + mod.symbolFor(funcName) + "(";
+        auto        head = cTypeName(decl.ret, mod) + " " + mod.symbolFor(funcName, decl) + "(";
 
         os << head;
 
@@ -1344,9 +1355,9 @@ void    Referee::emitStub(std::string const& refPath,
     }
 
     for (auto const& funcName : mod.getFuncNames())
+      for (auto const& decl : mod.funcsNamed(funcName))
     {
-        auto const& decl = mod.getFunc(funcName);
-        auto        head = cTypeName(decl.ret, mod) + " " + mod.symbolFor(funcName) + "(";
+        auto        head = cTypeName(decl.ret, mod) + " " + mod.symbolFor(funcName, decl) + "(";
 
         os << head;
 
