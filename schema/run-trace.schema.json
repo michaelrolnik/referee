@@ -245,6 +245,12 @@
         "ref": {
           "description": "The id of a signal line, when this row is a signal the requirement reads. Carries no values of its own -- exactly one of ref or values is present.",
           "type": "string"
+        },
+        "encoding": {
+          "$ref": "#/$defs/encoding"
+        },
+        "at": {
+          "$ref": "#/$defs/at"
         }
       },
       "allOf": [
@@ -320,6 +326,31 @@
               }
             }
           ]
+        },
+        {
+          "description": "at is present exactly when the encoding is sparse.",
+          "if": {
+            "properties": {
+              "encoding": {
+                "const": "sparse"
+              }
+            },
+            "required": [
+              "encoding"
+            ]
+          },
+          "then": {
+            "required": [
+              "at"
+            ]
+          },
+          "else": {
+            "not": {
+              "required": [
+                "at"
+              ]
+            }
+          }
         }
       ]
     },
@@ -404,8 +435,41 @@
         },
         "values": {
           "$ref": "#/$defs/values"
+        },
+        "encoding": {
+          "$ref": "#/$defs/encoding"
+        },
+        "at": {
+          "$ref": "#/$defs/at"
         }
-      }
+      },
+      "allOf": [
+        {
+          "description": "at is present exactly when the encoding is sparse.",
+          "if": {
+            "properties": {
+              "encoding": {
+                "const": "sparse"
+              }
+            },
+            "required": [
+              "encoding"
+            ]
+          },
+          "then": {
+            "required": [
+              "at"
+            ]
+          },
+          "else": {
+            "not": {
+              "required": [
+                "at"
+              ]
+            }
+          }
+        }
+      ]
     },
     "valueType": {
       "enum": [
@@ -418,7 +482,7 @@
       ]
     },
     "values": {
-      "description": "Parallel to header.states.time. null means not evaluated here -- outside a scope, or short-circuited -- and is not the same as false. Conflating them is how a vacuous requirement comes to look satisfied.",
+      "description": "Dense: parallel to header.states.time, one entry per state. null means not evaluated here -- outside a scope, or short-circuited -- and is not the same as false. Conflating them is how a vacuous requirement comes to look satisfied.",
       "type": "array",
       "items": {
         "type": [
@@ -429,6 +493,21 @@
           "null"
         ]
       }
+    },
+    "at": {
+      "description": "Sparse: at[i] is the state index where values[i] takes effect, holding until the next entry. Strictly increasing, and at[0] is 0 -- a signal has a value from the first state. A change to null is an entry like any other, so 'unchanged' and 'not evaluated' stay distinguishable, which they would not be if absence meant both.",
+      "type": "array",
+      "items": {
+        "type": "integer",
+        "minimum": 0
+      }
+    },
+    "encoding": {
+      "description": "dense costs one entry per state; sparse costs one per *change*, plus its index. Which is cheaper depends entirely on the signal: a flag constant across a million states is one sparse entry and a million dense ones, while an octet that changes every state is cheaper dense than sparse, since sparse would carry an index alongside every value. The writer picks per signal by measuring; the reader handles both, which is a few lines. Forcing one encoding on data with these characteristics is what makes formats either bloated or slow.",
+      "enum": [
+        "dense",
+        "sparse"
+      ]
     }
   }
 }

@@ -61,6 +61,38 @@ itself, or a neighbouring signal nobody referenced. That is most of why a
 timing diagram is worth looking at: the correlation you did not predict is the
 one you needed to see.
 
+### Dense or sparse, per signal
+
+A signal is a value over time, and how best to write it down depends entirely
+on how often it changes.
+
+```json
+{"kind":"signal","id":"s1","name":"dir","type":"enum","encoding":"sparse",
+ "at":[0],"values":["M2S"]}
+
+{"kind":"signal","id":"s2","name":"b","type":"byte","encoding":"dense",
+ "values":[58,15,9,67]}
+```
+
+`at[i]` is the **state index** — not a timestamp — at which `values[i]` takes
+effect, holding until the next entry. Indices rather than times because they
+are small, exact, and save the reader searching `states.time` for a match.
+
+Neither encoding wins in general, which is why both exist. A direction flag
+constant across a million-octet capture is *one* sparse entry and a million
+dense ones. An octet that changes at every state is cheaper dense, since
+sparse would carry an index alongside every value. The writer picks per signal
+by measuring; the reader handles both, which is a few lines
+(`reindex().ffill()` in pandas). Forcing one encoding on data with these
+characteristics makes a format either bloated or slow, and this data has both
+kinds in the same file — that is what a trace *is*.
+
+One thing sparse must not lose: `null` means *not evaluated here*, and is not
+the same as *unchanged*. So a change **to** `null` is an entry like any other.
+If absence meant both, a signal outside a scope would be indistinguishable
+from one holding its last value, and that is precisely the confusion the
+format exists to prevent.
+
 `computed` marks a `data x = expr` signal, which is a property of the
 specification rather than of the recording — the same distinction that keeps
 computed signals out of a `.rdb`.

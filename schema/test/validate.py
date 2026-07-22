@@ -50,6 +50,10 @@ rejects("a row with neither ref nor values",
         lambda d: d["rows"][1].pop("values"))
 rejects("a row with both ref and values",
         lambda d: d["rows"][0].__setitem__("values", [True, True, True, True]))
+rejects("sparse without change indices",
+        lambda d: d["rows"][1].__setitem__("encoding", "sparse"))
+rejects("change indices without sparse",
+        lambda d: d["rows"][1].__setitem__("at", [0, 1, 2, 3]))
 
 print("ok" if not failed else f"{failed} problem(s)")
 sys.exit(1 if failed else 0)
