@@ -33,18 +33,67 @@ Per requirement, over the states of one trace:
 
 Source positions already exist and are already used as requirement labels (`[file:]row:col .. row:col`), so subexpressions can be keyed the same way with no new identity scheme.
 
-## The part that needs care: fast path and explain path must not disagree
+## How the values are produced
 
-Requirements compile to one boolean function per state, and the lowering deliberately does not materialise intermediate values — the O(N) recurrences for unbounded operators and the decisive-index walk for bounded ones exist precisely to avoid computing per-state tables.
+Requirements compile to one function per requirement, and the lowering
+deliberately does not materialise intermediate values — the O(N) recurrences
+for unbounded operators and the decisive-index walk for bounded ones exist
+precisely to avoid computing per-state tables.
 
-So an explain mode has to *add* instrumentation to that lowering, never reimplement it. A separately written "interpreter for explanations" would drift, and the failure mode is the worst kind: a picture that confidently contradicts the verdict.
+The obvious move is to instrument that lowering: thread stores of intermediate
+values through it, enabled in explain mode. **Do not.** It means editing the
+recurrences that were written to avoid exactly this, and it creates a second
+path that can drift from the first — and the failure mode is the worst kind, a
+picture that confidently contradicts the verdict.
 
-The shape that avoids it:
+There is a simpler route that makes drift impossible rather than unlikely.
 
-* compile the fast version as today, and run it;
-* for requirements the user asks about — or just the failing ones — re-run **the same lowering** with stores of intermediate values enabled.
+### Compile each subexpression as its own function
 
-That is affordable because of the measured cost split: compilation is ~700 ms fixed against ~0.12 ms per row. Re-running one instrumented requirement over one trace is noise. It also means normal runs pay nothing at all, which matters for the corpus use case where a run covers many traces.
+`CompileExprImpl::make(expr)` already compiles *any* `Expr` into code. So for
+each subexpression worth a row, compile a function evaluating **that node** at
+a given state, and call it once per state. The column falls out.
+
+Nothing about the requirement's own lowering changes. The no-drift property
+holds by construction rather than by discipline: it is the same compiler,
+applied to the same AST node the requirement itself uses. There is no second
+implementation to keep in step.
+
+What this needs from the code generator is an *addition* — an entry point that
+compiles an arbitrary `Expr` into a callable over `(frst, last, curr, conf)` —
+not a change to anything that currently works.
+
+### Witnesses and windows are derived, not compiled
+
+This is the part that looked hard and is not. Given a child's column, the
+witness is a pass over it in C++:
+
+| row | witness at state `s` |
+| --- | --- |
+| `F(p)` | the first index ≥ `s` where `p` holds |
+| `G(p)` | the first index ≥ `s` where `p` fails |
+| `Us(p, q)` | the first `q` at or after `s`, with `p` holding before it |
+| `Sum[lo:hi]` | the window, from the time column and the bounds |
+
+None of it needs code generation. Deriving it from columns the producer
+already has removes the messiest part of the job entirely.
+
+### The costs, stated plainly
+
+**Quadratic.** One function per node, called N times, and a bounded temporal
+node is itself O(N) per call — so O(N²) per row. Affordable for explain mode
+on one trace, given the measured split of ~700 ms fixed compilation against
+~0.12 ms per row, and the reason normal runs must not pay it.
+
+**Bound names cannot be compiled standalone.** A subexpression under a freeze
+variable or a quantifier binder refers to names that exist only in the
+enclosing context: `t@(...)` and `all x in xs:` cannot be lifted out. Those
+nodes are either skipped, or the producer supplies the binding and emits one
+row per binding.
+
+A first version should skip them **and say so in the output**. A missing row
+is precisely the wrong thing to be quiet about in a picture whose purpose is
+showing what was never evaluated.
 
 ## A subtlety the visualiser must not hide
 
