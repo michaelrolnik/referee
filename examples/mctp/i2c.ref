@@ -1,0 +1,84 @@
+# The layer below MCTP -- I2C/SMBus electrical and framing requirements.
+#
+#     referee execute examples/mctp/i2c.ref examples/mctp/byte-stream.csv
+#
+# This runs against the *same trace* as byte-stream.ref. That is the point: one
+# capture, two specifications, one layer each. The octet-per-record shape is
+# the only one of the three that retains sub-packet events, so it is the only
+# place these requirements can live -- once the capture cuts the stream into
+# packets (packet-records.ref) or messages (message-records.ref), inter-octet
+# timing no longer exists in the trace.
+#
+# ── Provenance ───────────────────────────────────────────────────────────────
+# ⚠ Unlike the MCTP requirements, nothing here is ported from a document. The
+# NXP I2C-bus specification (UM10204) and the SMBus specification were not
+# retrieved. The *shapes* below are right -- a transaction is bounded, a NACK
+# terminates it, clock stretching is limited -- but every numeric limit is a
+# placeholder to be set from the bus's own timing budget. They are gathered in
+# one block for exactly that reason.
+#
+# Timing values are in the trace's own time unit.
+
+data I2C_TRANSACTION_MAX  = 5000;       # ⚠ placeholder
+data I2C_SCL_LOW_MAX      = 25000;      # ⚠ placeholder -- SMBus names 25 ms
+data I2C_INTER_OCTET_MAX  = 100;        # ⚠ placeholder
+
+type Dir : enum { M2S, S2M };
+data dir     : Dir;
+data b       : byte;
+data off     : integer;         # octet index within the transaction
+data start   : boolean;         # START condition precedes this octet
+data stop    : boolean;         # STOP condition follows this octet
+data ack     : boolean;         # this octet was acknowledged
+data scl_low : integer;         # clock held low before this octet
+
+# ── Framing ──────────────────────────────────────────────────────────────────
+# Every transaction that begins must end. This is the response pattern with a
+# bound, and it is the requirement a hung bus violates.
+@transaction_terminates
+globally, if start has occurred, then in response stop eventually holds;
+
+# A START is exactly where the offset resets, and nowhere else. This ties the
+# electrical framing to the offset signal that every MCTP requirement in
+# byte-stream.ref depends on -- if it fails, those requirements are unsound.
+@start_marks_offset_zero
+globally, it is always the case that start <=> off == 0 holds;
+
+# A STOP is the last octet of a transaction, so the next octet starts a new one.
+@stop_precedes_a_start
+globally, it is always the case that t@(stop => Xw(off == 0)) holds;
+
+# ── Acknowledgement ──────────────────────────────────────────────────────────
+# MCTP over SMBus is carried by block write throughout, so every octet is
+# addressed to a device that must acknowledge it. An unacknowledged octet ends
+# the transaction -- the master may not simply continue.
+@nack_ends_the_transaction
+globally, it is always the case that !ack => (stop || Xw(off == 0)) holds;
+
+# ── Clock stretching ─────────────────────────────────────────────────────────
+# A slave may hold SCL low to delay the master, but not indefinitely; SMBus
+# bounds it so one misbehaving device cannot wedge the bus.
+@clock_stretch_is_bounded
+globally, it is never the case that scl_low > I2C_SCL_LOW_MAX holds;
+
+# ── Inter-octet timing ───────────────────────────────────────────────────────
+# The gap between successive octets of one transaction is bounded. Freeze binds
+# the current octet's timestamp so the next octet's can be compared against it;
+# `__time__` refers to the state being evaluated, `t.__time__` to the frozen
+# one. Guarded on !stop, because the gap between transactions is unconstrained.
+@inter_octet_gap_is_bounded
+globally, it is always the case that
+    t@(!stop => Xw(__time__ - t.__time__ <= I2C_INTER_OCTET_MAX)) holds;
+
+# ── Direction ────────────────────────────────────────────────────────────────
+# I2C has one bidirectional data line, so `dir` is a property of the
+# transaction rather than of the wire. MCTP over SMBus is block write in both
+# directions -- both endpoints originate writes -- so a transaction never
+# changes direction part-way through.
+#
+# Writing this requirement is what turned up two bugs in enum equality: `==`
+# had no enum case at all, and once added it compared the *pointers* to the
+# stored values rather than the values, because TypeEnum is a composite and so
+# is never loaded. Both are fixed; see test/logic/enums.ref.
+@direction_is_constant_within_a_transaction
+globally, it is always the case that t@(!stop => Xw(dir == t.dir)) holds;

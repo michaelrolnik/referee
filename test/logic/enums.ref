@@ -1,0 +1,45 @@
+# Equality on enum values.
+#
+# Regression, two bugs in one place:
+#
+# 1. `d == d` was rejected outright -- `==` accepted numbers, booleans and
+#    strings, but no enum case, so the only way to test an enum was the
+#    membership form `d.M2S`. Comparing a signal against its own frozen value,
+#    which is how "did it change?" is written, had to be spelled out one clause
+#    per member.
+#
+# 2. Once accepted, it compared the wrong thing. `TypeEnum` is a *composite*,
+#    so `visit(ExprData*)` -- which loads only primitives -- leaves an
+#    enum-valued expression as a pointer to its one-byte storage. Comparing
+#    those pointers answers "read at the same state?" rather than "the same
+#    value?". That is accidentally true whenever both operands are read at one
+#    state, which is why `d == d` looked correct, and false the moment they are
+#    not, which is why the frozen comparison below failed.
+#
+# Trace: d changes M2S -> S2M at t=2000; e changes A -> B -> A.
+
+type Dir : enum { M2S, S2M };
+type Two : enum { A, B };
+
+data d : Dir;
+data e : Two;
+
+# Same state, same value.
+G(d == d);
+G(e == e);
+G(!(d != d));
+
+# Against a frozen state -- the case that pointer comparison got wrong. The
+# value changes at t=2000, so this must NOT hold everywhere.
+F(t@(Xs(d != t.d)));
+G(t@(__time__ == 1000 => Xw(d != t.d)));
+G(t@(__time__ == 2000 => Xw(d == t.d)));
+G(t@(__time__ ==    0 => Xw(d == t.d)));
+
+# Two enums of the same type, different signals, are comparable only when the
+# types match -- `d` and `e` are distinct types, so nothing here compares them.
+G(d.M2S <=> d == d && (__time__ < 2000));
+
+# The membership form still works and agrees with equality.
+G(d.M2S <=> t@(d == t.d) && d.M2S);
+G(e.B <=> __time__ == 2000);

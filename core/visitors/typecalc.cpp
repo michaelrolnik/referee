@@ -189,6 +189,11 @@ struct TypeCalcImpl
     Type*   bool2Bool(  
                     Expr*       expr,
                     Expr*       arg);
+    Type*   eqlEql2Bool(
+                    Expr*       expr,
+                    Expr*       lhs,
+                    Expr*       rhs);
+
     Type*   nmbrNmbr2Bool(  
                     Expr*       expr,
                     Expr*       lhs,
@@ -289,7 +294,7 @@ void    TypeCalcImpl::visit(ExprDiv*                expr)
 
 void    TypeCalcImpl::visit(ExprEq*                 expr)
 {
-    m_type = nmbrNmbr2Bool(expr, expr->lhs, expr->rhs);
+    m_type = eqlEql2Bool(expr, expr->lhs, expr->rhs);
 }
 
 void    TypeCalcImpl::visit(ExprEqu*                expr)
@@ -519,7 +524,7 @@ void    TypeCalcImpl::visit(ExprMul*                expr)
 
 void    TypeCalcImpl::visit(ExprNe*                 expr)
 {
-    m_type = nmbrNmbr2Bool(expr, expr->lhs, expr->rhs);
+    m_type = eqlEql2Bool(expr, expr->lhs, expr->rhs);
 }
 
 void    TypeCalcImpl::visit(ExprNot*                expr)
@@ -866,6 +871,35 @@ Type*   TypeCalcImpl::nmbrNmbr2Bool(
     throw Exception(expr->where(), "bad type");
 //  GCOV_EXCL_STOP
 //  LCOV_EXCL_STOP
+}
+
+//  Equality accepts everything ordering does, plus enums. Two values of the
+//  same enum type compare; two of different enum types do not, because enums
+//  are nominal. Ordering deliberately does not accept them: `<` on a nominal
+//  enum would compare declaration positions, which is not a meaning the
+//  language gives them.
+Type*   TypeCalcImpl::eqlEql2Bool(
+                    Expr*       expr,
+                    Expr*       lhs,
+                    Expr*       rhs)
+{
+    auto    typeLhs = make(lhs);
+    auto    typeRhs = make(rhs);
+
+    if(     typeLhs == typeRhs
+        &&  dynamic_cast<TypeEnum*>(typeLhs) != nullptr)
+    {
+        return  typeBoolean;
+    }
+
+    if(     dynamic_cast<TypeEnum*>(typeLhs) != nullptr
+        ||  dynamic_cast<TypeEnum*>(typeRhs) != nullptr)
+    {
+        throw Exception(expr->where(),
+            "bad type: == and != compare two values of the same enum type");
+    }
+
+    return  nmbrNmbr2Bool(expr, lhs, rhs);
 }
 
 void    TypeCalcImpl::visit(SpecUniversality*         spec)

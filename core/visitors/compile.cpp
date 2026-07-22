@@ -756,13 +756,29 @@ void    CompileExprImpl::compare(
     {
         m_value = m_builder->CreateICmp(ipred, lhs, rhs);   //  TODO: check
     }
+    else if(lhsT == rhsT
+        &&  dynamic_cast<TypeEnum*>(lhsT) != nullptr)
+    {
+        //  An enum is modelled as a *composite*, so `visit(ExprData*)` does
+        //  not load it -- a bare enum-valued expression yields a pointer to
+        //  its one-byte storage. Load both sides here. Comparing the pointers
+        //  instead would answer "the same state?" rather than "the same
+        //  value?", which is accidentally true whenever both operands are read
+        //  at one state and false as soon as they are not.
+        //
+        //  The stored value is the member index, so equality on it is equality
+        //  on the value. Type calculation has already refused ordering and
+        //  mismatched enum types, so only == and != arrive here.
+        auto    slot = Compile::make(m_context, m_module, lhsT, "enum");
+
+        m_value = m_builder->CreateICmp(ipred,
+                    m_builder->CreateLoad(slot, lhs, false, "val_lhs"),
+                    m_builder->CreateLoad(slot, rhs, false, "val_rhs"));
+    }
     else
     {
-//  LCOV_EXCL_START 
-//  GCOV_EXCL_START 
-        throw std::runtime_error(__PRETTY_FUNCTION__);
-//  GCOV_EXCL_STOP
-//  LCOV_EXCL_STOP
+        throw Exception(expr->where(),
+            "bad type: these operands cannot be compared");
     }
 }
 

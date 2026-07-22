@@ -658,6 +658,21 @@ TEST(Rdb, AccumulateOverRecords)
     EXPECT_TRUE(Referee::executeAll(in, ref, {{csv, false}}, "", out)) << out.str();
 }
 
+// Equality on enum values. Two bugs: `==` had no enum case at all, and once
+// added it compared pointers rather than values, because TypeEnum is a
+// composite and so is never loaded by visit(ExprData*). Pointer comparison is
+// accidentally correct when both operands are read at one state, which is
+// exactly why it looked right.
+TEST(Rdb, EnumEquality)
+{
+    auto    ref = std::string(REFEREE_TEST_DATA_DIR) + "/enums.ref";
+    auto    csv = std::string(REFEREE_TEST_DATA_DIR) + "/enums.csv";
+
+    std::ifstream       in(ref);
+    std::ostringstream  out;
+    EXPECT_TRUE(Referee::executeAll(in, ref, {{csv, false}}, "", out)) << out.str();
+}
+
 // `byte` and the bitwise operators, which exist for each other: a wire
 // protocol packs fields into octets, and neither half is much use alone. A
 // byte is a storage width, not a value kind -- one byte per element in a row,

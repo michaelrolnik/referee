@@ -1,6 +1,6 @@
 # PROPOSAL C -- one record per MCTP *message*, packets as a struct array
 #
-#     type Pkt : struct { flags : byte; len : byte; raw : byte[4]; };
+#     type Pkt : struct { flags : byte; len : byte; raw : byte[64]; };
 #     data npkts : byte;
 #     data msg   : Pkt[4];
 #
@@ -10,131 +10,149 @@
 #     referee execute examples/mctp/message-records.ref examples/mctp/message-records.csv
 #
 # ── What the struct actually buys ────────────────────────────────────────────
-# Wrapping one packet in a struct buys grouping and nothing else -- the fields
-# travel together and read as `m.len` rather than `len`, which is worth having
-# but changes no requirement. The real gain is one level up: making the *array*
-# hold packets, so a whole message fits in one record.
+# Wrapping one packet in a struct buys grouping and nothing else. The gain is
+# one level up: making the *array* hold packets, so a whole message fits in one
+# record. That converts MCTP's assembly rules from relations between records
+# into relations between array elements, and three things follow:
 #
-# That converts MCTP's reassembly rules from relations between records into
-# relations between array elements, and the difference is large:
-#
-#   * cross-packet rules become quantifiers, not temporal formulas, so they can
-#     be stated as specification patterns and read as one sentence;
+#   * cross-packet rules become quantifiers rather than temporal formulas, so
+#     they can be stated as specification patterns and read as one sentence;
 #   * `msg[i-1]` works inside a quantifier -- expansion substitutes a literal
 #     index, so neighbour comparisons are ordinary expressions;
-#   * total payload across a fragmented message becomes expressible at last,
-#     because the extent is known at compile time and the fold can be written
-#     out. Neither proposal A nor B can say this at all.
+#   * DSP0236 8.4.2's "all packets the same size except the last" becomes
+#     expressible, which it is not in either other form, because it quantifies
+#     over the whole message at once.
 #
-# ── The two costs ────────────────────────────────────────────────────────────
-# 1. `byte[]` nested inside a struct does *not* take its extent from the trace.
-#    The inference is top-level only; `struct { raw : byte[] }` is rejected
-#    with "the size of '<array>' is not given here". So every nested extent is
-#    a number written in the specification: `raw : byte[4]` here, `byte[73]`
-#    for a real baseline-MTU packet. Both dimensions have to be padded to
-#    their maxima, and the trace carries `npkts` and per-packet `len` to say
-#    how much is real -- the Pascal-string shape again, now two levels deep.
+# ── What it gives up ─────────────────────────────────────────────────────────
+# The SMBus encapsulation is gone -- this record models the MCTP layer, and the
+# destination address, command code, byte count and PEC were consumed by the
+# capture tool. So none of the DSP0237 requirements in packet-records.ref can
+# be stated here. Packet-to-packet *timing* is gone for the same reason: both
+# ends of a message are inside one record, so there is no interval to bound and
+# no reassembly timeout to express.
 #
-# 2. The fold does not scale. Total payload is written out one term per packet
-#    slot; four slots is fine, sixty-four is not. REF has no numeric fold over
-#    an array -- the quantifiers `all` / `some` / `none` / `one` / `at least` /
-#    `at most` are all boolean. A `sum x in xs:` form would remove the only
-#    genuinely ugly line in this file.
-#
-# ── Wire layout ──────────────────────────────────────────────────────────────
-#   flags = SOM<<7 | EOM<<6 | seq<<4 | TO<<3 | tag        (MCTP transport header)
-#   len   = octets of `raw` that are real
+# ── Layout ───────────────────────────────────────────────────────────────────
+#   flags = SOM | EOM | Pkt Seq # | TO | Msg tag      DSP0236 8.2 Table 1
+#   len   = this packet's transmission unit           DSP0236 8.4.1
 #   raw   = message body; on the SOM packet raw[0] is IC | message type
 
-type Pkt : struct { flags : byte; len : byte; raw : byte[4]; };
+import "spec.ref";
+
+type Pkt : struct { flags : byte; len : byte; raw : byte[64]; };
 
 data npkts : byte;              # packets in this message
 data msg   : Pkt[4];            # padded to the maximum
 
-# ── Framing: quantifiers say this directly, and no temporal operator is used ──
+data msgtype = msg[0].raw[0] & 0x7F;
+data ic      = (msg[0].raw[0] & 0x80) != 0;
+
+# ── DSP0236 8.8 -- framing ───────────────────────────────────────────────────
+# "Multiple-packet message assembly begins when the endpoint ... receives a
+#  valid 'start' packet (packet with SOM = 1b and EOM = 0b). A packet with both
+#  SOM = 1b and EOM = 1b is considered to be a single-packet message."
+#
 # "Exactly one" is a quantifier REF already has, and it is precisely the
-# requirement -- a message has one start and one end, not at least one.
-@mctp_exactly_one_som
-globally, it is always the case that (one q, i in msg: i < npkts && (q.flags & 0x80) != 0) holds;
-
-@mctp_exactly_one_eom
-globally, it is always the case that (one q, i in msg: i < npkts && (q.flags & 0x40) != 0) holds;
-
-@mctp_som_is_first
+# requirement: a message has one start and one end, not at least one.
+@exactly_one_som
 globally, it is always the case that
-    (all q, i in msg: i < npkts => ((q.flags & 0x80) != 0 <=> i == 0)) holds;
+    (one q, i in msg: i < npkts && (q.flags & FLAG_SOM) != 0) holds;
 
-@mctp_eom_is_last
+@exactly_one_eom
 globally, it is always the case that
-    (all q, i in msg: i < npkts => ((q.flags & 0x40) != 0 <=> i == npkts - 1)) holds;
+    (one q, i in msg: i < npkts && (q.flags & FLAG_EOM) != 0) holds;
 
-# ── Neighbour rules: `msg[i-1]` inside the quantifier ────────────────────────
-# In proposal A these needed freeze and a lookahead, and could not be stated
-# without reaching past the pattern vocabulary. Here they are plain arithmetic
-# on two array elements.
-@mctp_sequence_increments
+@som_is_the_first_packet
+globally, it is always the case that
+    (all q, i in msg: i < npkts => ((q.flags & FLAG_SOM) != 0 <=> i == 0)) holds;
+
+@eom_is_the_last_packet
+globally, it is always the case that
+    (all q, i in msg: i < npkts => ((q.flags & FLAG_EOM) != 0 <=> i == npkts - 1)) holds;
+
+# ── DSP0236 8.2 Table 1 -- sequence numbering ────────────────────────────────
+# "After the SOM packet, the packet sequence number shall increment modulo 4
+#  for each subsequent packet belonging to a given message up through the
+#  packet containing the EOM flag."
+#
+# The SOM packet's own sequence number is deliberately unconstrained: "the
+# packet sequence number can be any value (0-3) if the SOM bit is set".
+@sequence_increments_modulo_4
 globally, it is always the case that
     (all q, i in msg: i > 0 && i < npkts
-        => ((q.flags & 0x30) >> 4) == ((((msg[i-1].flags & 0x30) >> 4) + 1) % 4)) holds;
+        => ((q.flags & FLAG_SEQ) >> 4)
+           == ((((msg[i-1].flags & FLAG_SEQ) >> 4) + 1) % MCTP_SEQ_MODULUS)) holds;
 
-@mctp_message_fields_constant
+# ── DSP0236 8.2 Table 1 and 8.6 -- message identity ──────────────────────────
+# "For messages that are split up into multiple packets, the Tag Owner (TO) and
+#  Message Tag bits remain the same for all packets from the SOM through the
+#  EOM." 8.6 lists Msg Tag, TO and Source EID as the identifying fields.
+@tag_and_owner_are_constant
 globally, it is always the case that
     (all q, i in msg: i > 0 && i < npkts
-        => (q.flags & 0x0F) == (msg[i-1].flags & 0x0F)) holds;
+        => (q.flags & (FLAG_TO | FLAG_TAG)) == (msg[i-1].flags & (FLAG_TO | FLAG_TAG))) holds;
 
-# ── Padding discipline, at both levels ───────────────────────────────────────
-@mctp_unused_slots_are_zero
+# ── DSP0236 8.4.2 -- transmission unit sizes ─────────────────────────────────
+# This is the clause that justifies the whole form. All three sentences are
+# about the message as a whole, and all three are one line each here.
+#
+# "The transmission unit of all packets in a given message shall be the same
+#  size, except for the transmission unit in the last packet."
+@non_final_packets_share_one_size
+globally, it is always the case that
+    (all q, i in msg: i + 1 < npkts => q.len == msg[0].len) holds;
+
+# "Except for the last packet, this size shall be at least the baseline
+#  transmission unit size."
+@non_final_packets_are_at_least_baseline
+globally, it is always the case that
+    (all q, i in msg: i + 1 < npkts => q.len >= MCTP_BASELINE_MTU) holds;
+
+# "The size of the transmission unit in the last packet shall be less than or
+#  equal to the transmission unit size used for the other packets (if any)."
+@final_packet_is_no_larger
+globally, it is always the case that
+    (all q, i in msg: i == npkts - 1 && npkts > 1 => q.len <= msg[0].len) holds;
+
+# No packet may exceed the array it is stored in.
+@packet_fits_its_slot
+globally, it is always the case that (all q in msg: q.len <= 64) holds;
+
+# ── DSP0236 8.12 Table 3 -- message type ─────────────────────────────────────
+@known_message_type
+globally, it is always the case that msgtype == MSGTYPE_CONTROL
+                                  || msgtype == MSGTYPE_PLDM
+                                  || msgtype == MSGTYPE_NCSI
+                                  || msgtype == MSGTYPE_ETHERNET
+                                  || msgtype == MSGTYPE_NVME_MI
+                                  || msgtype == MSGTYPE_VENDOR_PCI
+                                  || msgtype == MSGTYPE_VENDOR_IANA holds;
+
+# ── Padding discipline ───────────────────────────────────────────────────────
+@unused_slots_are_zero
 globally, it is always the case that
     (all q, i in msg: i >= npkts => q.len == 0 && q.flags == 0) holds;
 
-@mctp_packet_length_fits
-globally, it is always the case that (all q in msg: q.len <= 4) holds;
+@a_message_has_at_least_one_packet
+globally, it is never the case that npkts == 0 holds;
 
-# ── Total payload: expressible here and nowhere else ─────────────────────────
-# The one line this form should be judged on. In proposals A and B a message
-# spans several records, so totalling it needs accumulation bounded by a
-# terminator, which the accumulators cannot do. Here the message is one record
-# and the extent is a compile-time constant, so the fold is just addition.
+# ── Total message body size ──────────────────────────────────────────────────
+# DSP0236 8.5 leaves the limit to each message type, but a platform has one.
+# In proposals A and B a message spans several records, so totalling it needs
+# accumulation bounded by a terminator, which the accumulators cannot do. Here
+# the message is one record and the extent is a compile-time constant, so the
+# fold is just addition.
 #
-# It is also the one line that does not scale: one term per packet slot.
-@mctp_message_size_bounded
+# It is also the one line that does not scale: one term per packet slot. REF
+# has no numeric fold over an array -- every quantifier is boolean -- and a
+# `sum x in xs:` form would replace this with a single clause.
+@message_body_is_bounded
 globally, it is always the case that
     (0 < npkts ? msg[0].len : 0) + (1 < npkts ? msg[1].len : 0)
-  + (2 < npkts ? msg[2].len : 0) + (3 < npkts ? msg[3].len : 0) <= 64 holds;
+  + (2 < npkts ? msg[2].len : 0) + (3 < npkts ? msg[3].len : 0) <= 256 holds;
 
-# ── What this form still cannot say ──────────────────────────────────────────
-#
-# 1. PEC, for the same reason as before: no fold over an array, no functions.
-#    Emit `pec_ok` from the capture tool.
-#
-# 2. Anything below the message. Packet-to-packet *timing* is gone -- a
-#    reassembly timeout was `if som has occurred, then in response eom
-#    eventually holds within 100 milliseconds` in proposal A, and here both
-#    ends are inside one record, so there is no interval to bound. This is the
-#    trade: the tighter the records, the more relations become local, and the
-#    more timing is lost. If the reassembly timeout matters, keep proposal A.
-#
-# 3. Messages related to each other -- request/response pairing across two
-#    messages -- still needs the temporal layer, which is intact and now
-#    operates on whole messages rather than packets. That is the right level
-#    for it, and is the strongest argument for this form.
-#
-# ── Verified ─────────────────────────────────────────────────────────────────
-# All nine requirements hold against message-records.csv (a single-packet
-# control message, then a three-packet PLDM message). Each was checked to
-# discriminate by injecting one defect at a time:
-#
-#   defect                        caught
-#   sequence 3 instead of 2       mctp_sequence_increments
-#   a second SOM                  mctp_exactly_one_som, mctp_som_is_first
-#   tag changed mid-message       mctp_message_fields_constant
-#   unused slot not zeroed        mctp_unused_slots_are_zero, mctp_packet_length_fits
-#   payload total over budget     mctp_message_size_bounded, mctp_packet_length_fits
-#   EOM cleared on last packet    mctp_exactly_one_eom, mctp_eom_is_last
-#   SOM cleared on first packet   mctp_exactly_one_som, mctp_som_is_first
-#
-# One caution worth repeating, because it cost real time while writing this:
-# a *bare* requirement is evaluated only at the first state. Every rule above
-# is wrapped in a global scope deliberately. Written bare, the whole file
-# passes against every broken trace here, because the first record is the
-# single-packet message where each multi-packet guard is vacuously true.
+# ── A trap worth knowing ─────────────────────────────────────────────────────
+# A *bare* requirement is evaluated only at the first state. Every rule above
+# is scoped `globally` deliberately. Written bare, this whole file passes
+# against every broken trace in the discrimination set below, because the first
+# record is a single-packet message where each multi-packet guard is vacuously
+# true. That cost real time while writing this file.

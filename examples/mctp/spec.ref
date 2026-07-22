@@ -1,0 +1,57 @@
+# MCTP constants, in one reviewable place.
+#
+# Source: DSP0236 v1.3.3, MCTP Base Specification (the actual document -- see
+# README for how it was obtained). Clause references are to that version.
+# DSP0237, the SMBus/I2C transport binding, could not be retrieved, so the
+# encapsulation constants below are marked and remain unverified.
+#
+# REF has no `const`, so these are computed signals with constant defining
+# expressions. They cost one byte of state each and fold away in the IR.
+
+# ── Transport header (DSP0236 8.2, Table 1) ──────────────────────────────────
+data MCTP_HDR_VERSION   = 0x01;     # "For this version of MCTP, this field
+                                    #  shall be set to 0001b."
+data MCTP_SEQ_MODULUS   = 4;        # the Pkt Seq # field is 2 bits
+
+# ── Special endpoint IDs (DSP0236 8.3, Table 2) ──────────────────────────────
+data EID_NULL           = 0x00;     # null source / null destination
+data EID_RESERVED_LO    = 0x01;     # "Endpoint IDs 1 through 7 -- Reserved
+data EID_RESERVED_HI    = 0x07;     #  for future definition."
+data EID_BROADCAST      = 0xFF;     # broadcast, destination only
+
+# ── Transmission unit sizes (DSP0236 8.4.2) ──────────────────────────────────
+data MCTP_BASELINE_MTU  = 64;       # "The baseline transmission unit (minimum
+                                    #  transmission unit) size for MCTP is 64
+                                    #  bytes."
+
+# ── Message types (DSP0236 8.12, Table 3) ────────────────────────────────────
+# Table 3 defines only these three; every other type is specified in DSP0239,
+# which was not consulted. The commonly-cited values for PLDM (0x01), NC-SI
+# (0x02), Ethernet (0x03), NVMe-MI (0x04) and SPDM (0x05) are therefore listed
+# separately and marked as unverified rather than mixed in with Table 3.
+data MSGTYPE_CONTROL      = 0x00;   # DSP0236 Table 3
+data MSGTYPE_VENDOR_PCI   = 0x7E;   # DSP0236 Table 3
+data MSGTYPE_VENDOR_IANA  = 0x7F;   # DSP0236 Table 3
+
+data MSGTYPE_PLDM         = 0x01;   # ⚠ DSP0239, unverified
+data MSGTYPE_NCSI         = 0x02;   # ⚠ DSP0239, unverified
+data MSGTYPE_ETHERNET     = 0x03;   # ⚠ DSP0239, unverified
+data MSGTYPE_NVME_MI      = 0x04;   # ⚠ DSP0239, unverified
+
+# ── SMBus/I2C encapsulation ──────────────────────────────────────────────────
+# ⚠ DSP0237 could not be retrieved. These are from familiarity, not from the
+# document, and are the most likely things in this file to be wrong.
+data MCTP_CMD_CODE       = 0x0F;    # ⚠ SMBus command code for MCTP
+data MCTP_HDR_BYTES      = 4;       # ⚠ version, dst EID, src EID, flags
+data MCTP_MIN_BYTECOUNT  = 5;       # ⚠ source slave address + the 4 header bytes
+data MCTP_FRAME_OVERHEAD = 4;       # ⚠ dst addr + cmd + byte count + PEC
+
+# ── Bit masks for the flags octet ────────────────────────────────────────────
+# Field order per DSP0236 8.2 Table 1: SOM, EOM, Pkt Seq #, TO, Msg tag.
+# The bit *positions* within the octet are set by the medium binding, so these
+# masks follow the SMBus layout and share DSP0237's uncertainty.
+data FLAG_SOM   = 0x80;
+data FLAG_EOM   = 0x40;
+data FLAG_SEQ   = 0x30;
+data FLAG_TO    = 0x08;
+data FLAG_TAG   = 0x07;

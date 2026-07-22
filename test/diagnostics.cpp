@@ -334,6 +334,30 @@ TEST(Diagnostics, WriterRejectsMisuse)
 // Both are behavioural changes rather than test fixes, so they are left for a
 // separate pass.
 
+// Enums are nominal, so equality is only defined between two values of the
+// same enum type, and ordering is not defined at all -- `<` would compare
+// declaration positions, which is not a meaning the language gives them.
+TEST(Diagnostics, RejectsBadEnumComparison)
+{
+    char const* cases[] = {
+        //  ordering on enums
+        "type E : enum { A, B };\ndata e : E;\nG(e < e);\n",
+        "type E : enum { A, B };\ndata e : E;\nG(e >= e);\n",
+        //  two different enum types
+        "type E : enum { A, B };\ntype F : enum { C, D };\n"
+        "data e : E;\ndata f : F;\nG(e == f);\n",
+        //  an enum against a number
+        "type E : enum { A, B };\ndata e : E;\nG(e == 0);\n",
+        "type E : enum { A, B };\ndata e : E;\nG(e != 1);\n",
+    };
+
+    int     n = 0;
+    for (auto const* src : cases)
+    {
+        EXPECT_THROW(parseSnippet(src, "enumcmp" + std::to_string(n++)), std::exception) << src;
+    }
+}
+
 // Bitwise operators read the bit pattern of an integer. A number has no such
 // reading, and booleans already have `&&` / `||`, so both are refused rather
 // than silently converted -- and `^` alone is polymorphic, because there is no
