@@ -4,3 +4,6 @@ build*/
 .vscode
 node_modules/
 *.vsix
+
+# python virtualenv for the run-trace viewers
+.venv/
