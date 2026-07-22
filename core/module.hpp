@@ -50,6 +50,21 @@ public:
     };
 
     void            addFunc(std::string const& name, std::vector<Type*> args, Type* ret);
+
+    //  The C symbol a `func` binds to: `referee_`, the name with `::`
+    //  replaced by `__`, then a structural hash of the signature.
+    //
+    //      func std::math::sqrt : (number) -> number;
+    //          -> referee_std__math__sqrt__a3f19c02
+    //
+    //  The hash covers the *layout* each parameter and the return reaches --
+    //  a struct's fields and their offsets, an enum's member order and
+    //  values, an array's element type and extent -- not the spelling of the
+    //  type's name. So adding a field to a struct changes the symbol even
+    //  though the signature text is unchanged, which is the case nothing else
+    //  detects, and two overloads of one name get different symbols, which is
+    //  what makes overloading possible without C++ linkage.
+    std::string     symbolFor(std::string const& name);
     bool            hasFunc(std::string const& name);
     Func const&     getFunc(std::string const& name);
     std::vector<std::string> const&  getFuncNames()  {return m_funcNames;}

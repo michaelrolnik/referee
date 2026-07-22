@@ -25,6 +25,9 @@
 
 #include "module.hpp"
 #include "factory.hpp"
+#include <cstdio>
+#include <cstdint>
+#include "factory.hpp"
 
 #include <algorithm>
 
@@ -97,6 +100,95 @@ void    Module::addFunc(std::string const& name, std::vector<Type*> args, Type* 
 
     m_name2func[name] = Func{std::move(args), ret};
     m_funcNames.push_back(name);
+}
+
+namespace {
+
+//  A canonical spelling of everything a caller and a callee must agree on.
+//  Names of *types* are deliberately absent: renaming a struct changes
+//  nothing about how it is passed, while adding a field changes everything.
+void    describe(Type* type, std::string& out)
+{
+    if(type == Factory<TypeBoolean>::create()) { out += "b;";  return; }
+    if(type == Factory<TypeByte>::create())    { out += "h;";  return; }
+    if(type == Factory<TypeInteger>::create()) { out += "i;";  return; }
+    if(type == Factory<TypeNumber>::create())  { out += "n;";  return; }
+    if(type == Factory<TypeString>::create())  { out += "s;";  return; }
+
+    if(auto* e = dynamic_cast<TypeEnum*>(type))
+    {
+        //  Member order *is* the value: TypeEnum::index() is the declaration
+        //  position plus one. Inserting a member renumbers every later one,
+        //  which is exactly the drift a stale object would not notice.
+        out += "e(";
+        for(auto const& item: e->items)
+            out += item + ",";
+        out += ");";
+        return;
+    }
+
+    if(auto* a = dynamic_cast<TypeArray*>(type))
+    {
+        out += "a" + std::to_string(a->count) + "(";
+        describe(a->type, out);
+        out += ");";
+        return;
+    }
+
+    if(auto* st = dynamic_cast<TypeStruct*>(type))
+    {
+        //  Field names as well as layout: the generated header names them, so
+        //  a rename breaks source compatibility even when the bytes agree.
+        out += "t" + std::to_string(st->size()) + ":" + std::to_string(st->alignment()) + "(";
+        for(auto const& m: st->members)
+        {
+            out += m.name + ":";
+            describe(m.data, out);
+        }
+        out += ");";
+        return;
+    }
+
+    out += "?;";
+}
+
+//  FNV-1a, 64-bit, truncated to eight hex digits. Not cryptographic: this
+//  detects drift, it does not defend against anyone crafting a collision.
+//  Fixed width matters -- `__` already separates namespace components, so a
+//  variable-length suffix would make the boundary ambiguous.
+std::string     digest(std::string const& text)
+{
+    std::uint64_t   h = 1469598103934665603ull;
+
+    for(unsigned char c: text)
+    {
+        h ^= c;
+        h *= 1099511628211ull;
+    }
+
+    char    buf[9];
+    std::snprintf(buf, sizeof(buf), "%08x", static_cast<unsigned>(h ^ (h >> 32)));
+
+    return buf;
+}
+
+} // namespace
+
+std::string     Module::symbolFor(std::string const& name)
+{
+    auto const& decl = getFunc(name);
+
+    std::string mangled = name;
+    for(auto at = mangled.find("::"); at != std::string::npos; at = mangled.find("::", at))
+        mangled.replace(at, 2, "__");
+
+    std::string shape = name + "(";
+    for(auto* arg: decl.args)
+        describe(arg, shape);
+    shape += ")->";
+    describe(decl.ret, shape);
+
+    return "referee_" + mangled + "__" + digest(shape);
 }
 
 bool    Module::hasFunc(std::string const& name)

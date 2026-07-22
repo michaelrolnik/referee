@@ -32,6 +32,7 @@
 #include <fstream>
 #include <vector>
 #include <unistd.h>
+#include <sys/stat.h>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -150,6 +151,58 @@ TEST(Cli, SuggestsMistypedOptions)
     auto    r = run(quote(REFEREE_BIN) + " execute " + quote(ref) + " " + quote(csv)
                     + " --zzzzzzzzzz 2>&1");
     EXPECT_EQ(r.output.find("did you mean"), std::string::npos) << r.output;
+}
+
+// Layout drift. A .so built against one version of a type keeps working
+// against a changed specification, silently, unless the symbol says which
+// layout it was built for. Before the structural hash this test's second run
+// reported a confident wrong verdict; now it refuses to run.
+TEST(Cli, StaleObjectIsRefusedRatherThanCalled)
+{
+    auto    dir = tmpPath("drift", "");
+    ASSERT_EQ(::mkdir(dir.c_str(), 0755), 0);
+
+    auto    ref = dir + "/a.ref";
+    auto    hdr = dir + "/a.h";
+    auto    src = dir + "/a.c";
+    auto    csv = dir + "/a.csv";
+
+    auto    write = [](std::string const& path, std::string const& text) {
+        std::ofstream   f(path);
+        f << text;
+    };
+
+    //  Built against Dir { M2S, S2M }, where M2S is 1.
+    write(ref, "type Dir : enum { M2S, S2M };\n"
+               "func classify : (integer) -> Dir;\n"
+               "data i : integer;\ndata d = classify(i);\nG(d.M2S);\n");
+    write(csv, "__time__,i\n0,5\n");
+
+    ASSERT_EQ(run(quote(REFEREE_BIN) + " header " + quote(ref) + " -o " + quote(hdr)).status, 0);
+    write(src, "#include \"" + hdr + "\"\n"
+               "referee_Dir referee_classify(int64_t x) { return x > 0 ? 1 : 2; }\n");
+
+    auto    so = dir + "/liba.so";
+    ASSERT_EQ(run("cc -shared -fPIC " + quote(src) + " -o " + quote(so) + " 2>&1").status, 0);
+
+    auto    ok = run(quote(REFEREE_BIN) + " execute " + quote(ref) + " " + quote(csv)
+                     + " -L " + quote(dir) + " 2>&1");
+    EXPECT_EQ(ok.status, 0) << ok.output;
+
+    //  A member is inserted, so 1 now means UNKNOWN. Same .so, untouched.
+    write(ref, "type Dir : enum { UNKNOWN, M2S, S2M };\n"
+               "func classify : (integer) -> Dir;\n"
+               "data i : integer;\ndata d = classify(i);\nG(d.M2S);\n");
+
+    auto    bad = run(quote(REFEREE_BIN) + " execute " + quote(ref) + " " + quote(csv)
+                      + " -L " + quote(dir) + " 2>&1");
+    EXPECT_NE(bad.status, 0) << bad.output;
+    EXPECT_NE(bad.output.find("was not found"), std::string::npos) << bad.output;
+    EXPECT_NE(bad.output.find("structural hash"), std::string::npos) << bad.output;
+
+    for (auto const* f : {"a.ref", "a.h", "a.c", "a.csv", "liba.so"})
+        std::remove((dir + "/" + f).c_str());
+    ::rmdir(dir.c_str());
 }
 
 // `--stub` emits a C skeleton implementing the declared functions. The point

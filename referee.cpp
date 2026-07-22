@@ -355,18 +355,6 @@ struct JitWithSpecs
     ::Module*                               astModule = nullptr;
 };
 
-namespace {
-//  `::` is not a C identifier character. A namespaced function name mangles
-//  to `__`, so `math::sqrt` is declared and defined as `referee_math__sqrt`.
-std::string     cSymbol(std::string name)
-{
-    for (auto at = name.find("::"); at != std::string::npos; at = name.find("::", at))
-        name.replace(at, 2, "__");
-
-    return "referee_" + name;
-}
-} // namespace
-
 //  Bind every `func` the specification declared to a symbol in one of the
 //  objects on the -L path. The symbol carries a `referee_` prefix, so only
 //  declared entry points are ever looked at -- two plugins that each happen to
@@ -428,7 +416,7 @@ static void     bindExternalFunctions(llvm::orc::LLJIT&               jit,
         //  mangles to `__`. Three places have to agree on this -- the code
         //  generator, the header emitter and this lookup -- so it lives in
         //  one function rather than being written out three times.
-        auto    symbol = cSymbol(name);
+        auto    symbol = astModule.symbolFor(name);
 
         //  A duplicate is an error, not a race: two implementations may
         //  differ, and nothing in the report would show which one ran.
@@ -446,7 +434,12 @@ static void     bindExternalFunctions(llvm::orc::LLJIT&               jit,
 
         if (definedBy.empty())
             throw std::runtime_error(fmt::format(
-                "external function '{}' is declared but '{}' was not found in: {}",
+                "external function '{}' is declared but '{}' was not found in: {}\n"
+                "  the symbol carries a structural hash of the signature, so if the"
+                " object was built against an earlier version of this specification"
+                " -- a field added to a struct, a member inserted into an enum, a"
+                " parameter type changed -- the hash has moved."
+                " Regenerate the header and rebuild.",
                 name, symbol, fmt::join(objects, ", ")));
 
         if (definedBy.size() > 1)
@@ -1176,12 +1169,37 @@ void    Referee::emitHeader(std::string const& refPath,
     //  the parameters are numbered; the point of the header is that the shape
     //  is right, and a reader can rename them when implementing.
     if (!mod.getFuncNames().empty())
-        os << "/*  Implement these. The `referee_` prefix is part of the symbol name.  */\n\n";
+        os << "/*\n"
+           << " *  Implement these.\n"
+           << " *\n"
+           << " *  The symbol carries a structural hash of the signature, so a change to\n"
+           << " *  any type it reaches -- a field added to a struct, a member inserted\n"
+           << " *  into an enum -- changes the symbol and a stale object fails to\n"
+           << " *  resolve instead of being called with the wrong layout. Two overloads\n"
+           << " *  of one name likewise get different symbols, which is what makes\n"
+           << " *  overloading work without C++ linkage.\n"
+           << " *\n"
+           << " *  Each alias below lets an implementation be written against the plain\n"
+           << " *  name and still define the hashed symbol, so the hash need never be\n"
+           << " *  typed. Regenerate this header when the specification changes and the\n"
+           << " *  aliases follow; nothing in your source has to.\n"
+           << " */\n";
+
+    for (auto const& funcName : mod.getFuncNames())
+    {
+        auto    plain = "referee_" + funcName;
+        for (auto at = plain.find("::"); at != std::string::npos; at = plain.find("::", at))
+            plain.replace(at, 2, "__");
+
+        os << "#define " << plain << " " << mod.symbolFor(funcName) << "\n";
+    }
+
+    os << "\n";
 
     for (auto const& funcName : mod.getFuncNames())
     {
         auto const& decl = mod.getFunc(funcName);
-        auto        head = cTypeName(decl.ret, mod) + " " + cSymbol(funcName) + "(";
+        auto        head = cTypeName(decl.ret, mod) + " " + mod.symbolFor(funcName) + "(";
 
         os << head;
 
@@ -1248,7 +1266,7 @@ void    Referee::emitStub(std::string const& refPath,
     for (auto const& funcName : mod.getFuncNames())
     {
         auto const& decl = mod.getFunc(funcName);
-        auto        head = cTypeName(decl.ret, mod) + " " + cSymbol(funcName) + "(";
+        auto        head = cTypeName(decl.ret, mod) + " " + mod.symbolFor(funcName) + "(";
 
         os << head;
 
