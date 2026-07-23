@@ -24,6 +24,7 @@
 
 
 #include "module.hpp"
+#include "rdb/database.hpp"
 #include "factory.hpp"
 #include <cstdio>
 #include <cstdint>
@@ -126,9 +127,24 @@ std::vector<Module::Func> const&    Module::funcsNamed(std::string const& name)
 
 Module::Func const*     Module::resolveFunc(std::string const& name, std::vector<Type*> const& args)
 {
+    //  Structs compare structurally, mirroring type calculation's candidate
+    //  check exactly -- the two resolutions must agree or a call type-checks
+    //  and then fails to bind.
     for(auto const& cand: funcsNamed(name))
-        if(cand.args == args)
+    {
+        if(cand.args.size() != args.size())
+            continue;
+
+        bool    fits = true;
+        for(std::size_t i = 0; fits && i < args.size(); i++)
+            fits = cand.args[i] == args[i]
+                || (dynamic_cast<TypeStruct*>(cand.args[i]) != nullptr
+                 && dynamic_cast<TypeStruct*>(args[i])      != nullptr
+                 && referee::db::typesEqual(args[i], cand.args[i]));
+
+        if(fits)
             return &cand;
+    }
 
     return nullptr;
 }

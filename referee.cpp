@@ -1776,51 +1776,17 @@ namespace {
 //  Every one returns a number or a boolean. None returns a string: with no
 //  allocator and no ownership model, a function building a new string would
 //  have nobody to free it.
-extern "C" {
-
-std::int64_t    __ref_str_len(char const* s)
+extern "C"
 {
-    return s ? static_cast<std::int64_t>(std::strlen(s)) : 0;
-}
-
-//  Out of range yields -1 rather than reading past the end. There is no
-//  bounds checking elsewhere in the language, but here the alternative is a
-//  segfault in the checker rather than a wrong answer about the trace.
-std::int64_t    __ref_str_at(char const* s, std::int64_t i)
-{
-    if (s == nullptr || i < 0 || static_cast<std::size_t>(i) >= std::strlen(s))
-        return -1;
-
-    return static_cast<unsigned char>(s[i]);
-}
-
-std::int64_t    __ref_str_cmp(char const* a, char const* b)
-{
-    return std::strcmp(a ? a : "", b ? b : "");
-}
-
-bool            __ref_str_starts(char const* s, char const* p)
-{
-    if (s == nullptr || p == nullptr) return false;
-    auto n = std::strlen(p);
-    return std::strlen(s) >= n && std::strncmp(s, p, n) == 0;
-}
-
-bool            __ref_str_ends(char const* s, char const* p)
-{
-    if (s == nullptr || p == nullptr) return false;
-    auto ls = std::strlen(s), lp = std::strlen(p);
-    return ls >= lp && std::strcmp(s + ls - lp, p) == 0;
-}
-
-//  -1 when absent, so a caller can test for it without a second call.
-std::int64_t    __ref_str_find(char const* s, char const* p)
-{
-    if (s == nullptr || p == nullptr) return -1;
-    auto at = std::strstr(s, p);
-    return at ? static_cast<std::int64_t>(at - s) : -1;
-}
-
+//  Implemented in runtime/strfns.cpp, which is compiled into both the main
+//  build and libreferee_rt -- so an ahead-of-time checker using the
+//  std::string builtins links the same implementations the JIT registers.
+std::int64_t    __ref_str_len(char const* s);
+std::int64_t    __ref_str_at(char const* s, std::int64_t i);
+std::int64_t    __ref_str_cmp(char const* a, char const* b);
+bool            __ref_str_starts(char const* s, char const* p);
+bool            __ref_str_ends(char const* s, char const* p);
+std::int64_t    __ref_str_find(char const* s, char const* p);
 } // extern "C"
 
 // JIT setup shared by execute() / executeRdb(): create LLJIT, compile the
@@ -3231,6 +3197,9 @@ void    Referee::emitObject(std::string const&               refPath,
     os.flush();
 }
 
+//  Defined below emitExecutable; forward-declared for emitShared's use.
+static std::string  runtimeLibDir();
+
 void    Referee::emitShared(std::string const&               refPath,
                             std::string const&               outPath,
                             std::string const&               triple,
@@ -3255,9 +3224,19 @@ void    Referee::emitShared(std::string const&               refPath,
         return out + "'";
     };
 
+    //  The archive supplies the std::string builtins (runtime/strfns.cpp): a
+    //  spec calling std::string::len compiles to an undefined __ref_str_len,
+    //  which the JIT resolves as a host symbol and a dlopen'd .so cannot. A
+    //  static archive contributes only the objects actually referenced, so a
+    //  spec using no builtins links nothing extra -- and if the archive is
+    //  absent, such a spec still links fine.
+    std::string rtFlags;
+    try         { rtFlags = " -L" + sh(runtimeLibDir()) + " -lreferee_rt"; }
+    catch (...) { }
+
     auto const* cc  = std::getenv("CC");
     std::string cmd = std::string(cc && *cc ? cc : "cc")
-                    + " -shared -fPIC " + sh(objPath) + " -o " + sh(outPath);
+                    + " -shared -fPIC " + sh(objPath) + rtFlags + " -o " + sh(outPath);
 
     int     rc = std::system(cmd.c_str());
     std::remove(objPath.c_str());

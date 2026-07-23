@@ -263,6 +263,17 @@ struct LoaderImpl
         for (unsigned i = 0; i < type->items.size(); i++) {
             if (type->items[i] == name) { v = static_cast<uint8_t>(i + 1); break; }
         }
+
+        //  A cell that names no member is a typo, not a value. It used to load
+        //  silently as 0 ("no member"), so a misspelled SOM made `k.SOM` false
+        //  forever and every requirement gated on it went vacuous -- exactly
+        //  the quiet non-checking this tool exists to prevent. An empty cell
+        //  keeps its documented reads-as-zero meaning, and `-` is the ragged
+        //  absent marker.
+        if (v == 0 && !name.empty() && name != "-")
+            throw std::runtime_error(
+                "enum '" + m_prefix + "': '" + name + "' names no member");
+
         m_buf.push_back(v);
     }
 

@@ -30,6 +30,9 @@
 #include "../factory.hpp"
 #include "../builtins.hpp"
 
+#include <algorithm>
+#include <cstdio>
+#include <tuple>
 #include <functional>
 #include <vector>
 #include <map>
@@ -4112,6 +4115,38 @@ void Compile::make(llvm::LLVMContext* context, llvm::Module* module, Module* ref
 //  LCOV_EXCL_STOP
         }
     }
+
+    //  The table is walked in order by every checker driver, so it is sorted
+    //  here exactly as the JIT driver sorts its report -- by file, then row,
+    //  then column, stable so named requirements (which have no position to
+    //  parse) keep declaration order. Without this a file mixing bare
+    //  expressions and Dwyer patterns reported in compilation order (all
+    //  expressions first) and a checker's report could not be diffed against
+    //  execute's.
+    std::stable_sort(requirements.begin(), requirements.end(),
+        [](auto const& a, auto const& b)
+        {
+            auto parse = [](std::string const& label)
+            {
+                auto        head = label.substr(0, label.find(" .. "));
+                std::string file;
+                int         row = 0, col = 0;
+                auto        colonB = head.rfind(':');
+                if (colonB != std::string::npos)
+                {
+                    auto    colonA = head.rfind(':', colonB - 1);
+                    auto    rowTxt = colonA == std::string::npos
+                                   ? head.substr(0, colonB)
+                                   : head.substr(colonA + 1, colonB - colonA - 1);
+                    if (colonA != std::string::npos)
+                        file = head.substr(0, colonA);
+                    std::sscanf(rowTxt.c_str(), "%d", &row);
+                    std::sscanf(head.c_str() + colonB + 1, "%d", &col);
+                }
+                return std::tuple<std::string, int, int>(file, row, col);
+            };
+            return parse(a.first) < parse(b.first);
+        });
 
     //  The ahead-of-time checker table: label + function pointer per
     //  requirement, plus __prepare__, behind one exported `referee_module`.

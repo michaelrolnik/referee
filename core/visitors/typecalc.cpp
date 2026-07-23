@@ -23,6 +23,7 @@
  */
 
 #include "typecalc.hpp"
+#include "rdb/database.hpp"
 #include "../factory.hpp"
 #include "../module.hpp"
 #include "../builtins.hpp"
@@ -771,9 +772,18 @@ void    TypeCalcImpl::visit(ExprCall*               expr)
             auto*   want = dynamic_cast<TypeArray*>(cand.args[i]);
             auto*   have = dynamic_cast<TypeArray*>(actual[i]);
 
-            fits = (want != nullptr && want->count == 0 && have != nullptr)
-                 ? have->type == want->type
-                 : widen(actual[i]) == widen(cand.args[i]);
+            //  Structs match *structurally*: inline struct spellings are
+            //  deliberately distinct nodes (their pointer identity is what
+            //  tells DA.dv from DB.dv in the language server), so a pointer
+            //  compare here refused a call whose argument matched the
+            //  declaration to the letter.
+            if(dynamic_cast<TypeStruct*>(cand.args[i]) != nullptr
+            && dynamic_cast<TypeStruct*>(actual[i])    != nullptr)
+                fits = referee::db::typesEqual(actual[i], cand.args[i]);
+            else
+                fits = (want != nullptr && want->count == 0 && have != nullptr)
+                     ? have->type == want->type
+                     : widen(actual[i]) == widen(cand.args[i]);
         }
 
         if(fits)

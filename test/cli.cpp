@@ -489,6 +489,68 @@ TEST(Cli, CheckerDrainsOobEnforcesViolatesRefusesBadConf)
         std::remove(p->c_str());
 }
 
+// (test-first) A checker of a spec using the std::string builtins must load
+// and run: those builtins are host functions the JIT registers, so a .so that
+// referenced them failed to dlopen with an undefined __ref_str_* symbol.
+TEST(Cli, CheckerRunsStringBuiltins)
+{
+    auto    dir = tmpPath("strb", "");
+    auto    ref = dir + ".ref";
+    auto    csv = dir + ".csv";
+    auto    so  = dir + ".so";
+    auto    rdb = dir + ".rdb";
+
+    {
+        std::ofstream f(ref);
+        f << "data s : string;\n@len_pos\nG(std::string::len(s) > 0);\n"
+             "@starts\nG(std::string::starts(s, \"al\"));\n";
+    }
+    { std::ofstream f(csv); f << "__time__,s\n0,alpha\n1000,alps\n"; }
+    ASSERT_EQ(run(quote(REFEREE_BIN) + " build --shared " + quote(ref) + " -o " + quote(so)).status, 0);
+    ASSERT_EQ(run(quote(RDB_BIN) + " build " + quote(ref) + " " + quote(csv) + " -o " + quote(rdb)).status, 0);
+
+    auto    r = run(quote(REFEREE_BIN) + " execute --checker " + quote(so) + " " + quote(rdb));
+    EXPECT_EQ(r.status, 0) << r.output;
+    EXPECT_NE(r.output.find("len_pos"), std::string::npos) << r.output;
+    EXPECT_EQ(r.output.find("FAIL"), std::string::npos) << r.output;
+
+    for (auto* p : {&ref, &csv, &so, &rdb, &dir})
+        std::remove(p->c_str());
+}
+
+// (test-first) A checker's report order matches `execute`'s: sorted by source
+// position. The table used to be walked in compilation order -- bare
+// expressions before Dwyer patterns -- so a file mixing the two reported in a
+// different order than execute, and diffing the two reports needed a sort.
+TEST(Cli, CheckerReportOrderMatchesExecute)
+{
+    auto    dir = tmpPath("order", "");
+    auto    ref = dir + ".ref";
+    auto    csv = dir + ".csv";
+    auto    so  = dir + ".so";
+    auto    rdb = dir + ".rdb";
+
+    {
+        std::ofstream f(ref);
+        //  A Dwyer pattern ABOVE a bare expression: compilation emits the
+        //  expression first, source order says otherwise.
+        f << "data a : boolean;\n"
+             "globally, it is always the case that a holds;\n"
+             "G(a);\n";
+    }
+    { std::ofstream f(csv); f << "__time__,a\n0,true\n1000,true\n"; }
+    ASSERT_EQ(run(quote(REFEREE_BIN) + " build --shared " + quote(ref) + " -o " + quote(so)).status, 0);
+    ASSERT_EQ(run(quote(RDB_BIN) + " build " + quote(ref) + " " + quote(csv) + " -o " + quote(rdb)).status, 0);
+
+    auto    chk = run(quote(REFEREE_BIN) + " execute --checker " + quote(so) + " " + quote(rdb));
+    auto    exe = run(quote(REFEREE_BIN) + " execute " + quote(ref) + " " + quote(rdb));
+    EXPECT_EQ(chk.status, 0) << chk.output;
+    EXPECT_EQ(chk.output, exe.output) << "checker:\n" << chk.output << "execute:\n" << exe.output;
+
+    for (auto* p : {&ref, &csv, &so, &rdb, &dir})
+        std::remove(p->c_str());
+}
+
 // A string value containing a comma survives a merge: emission quotes it, the
 // reader parses the quotes, and the round trip is exact. Before csvQuote the
 // comma split the row silently and "a,b" came out as "a".

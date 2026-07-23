@@ -159,6 +159,7 @@ public:
     {
     }
 
+
     std::string name;
     T*          data;
 };

@@ -1334,7 +1334,13 @@ std::any Antlr2AST::visitTypeStruct(    referee::refereeParser::TypeStructContex
         members.push_back(Named<Type>(name, std::any_cast<Type*>(type)));
     }
 
-    return static_cast<Type*>(new TypeStruct(members)); //  TODO: use factory
+    //  Deliberately NOT interned, unlike other types. Two identical struct
+    //  spellings staying distinct nodes is what lets the language server tell
+    //  DA.dv from DB.dv when DA and DB happen to share a shape -- pointer
+    //  identity is their nominal identity. Overload resolution therefore
+    //  matches struct parameters *structurally* (typesEqual), not by pointer;
+    //  see typecalc's and Module::resolveFunc's candidate checks.
+    return static_cast<Type*>(new TypeStruct(members));
 }
 
 std::any Antlr2AST::visitUnits(                 referee::refereeParser::UnitsContext*                   ctx)

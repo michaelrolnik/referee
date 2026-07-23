@@ -376,6 +376,7 @@ core_sources        = [
     'rdb/ingest.cpp',
     'rdb/ingest_ref.cpp',
     'rdb/merge.cpp',
+    'runtime/strfns.cpp',
     'referee.cpp',
 ]
 
@@ -428,6 +429,7 @@ referee_rt_lib      = static_library(
         'core/loaders/row.cpp',
         'core/loaders/csv.cpp',
         'core/loaders/yml.cpp',
+        'runtime/strfns.cpp',
         'runtime/checker.cpp',
     ],
     include_directories : project_inc,

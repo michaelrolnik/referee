@@ -1127,6 +1127,48 @@ TEST(Rdb, ExplainCarriesScopeAndScopeVacuity)
     EXPECT_NE(byName["btw"].find("\"vacuous\":false"),  std::string::npos) << byName["btw"];
 }
 
+// (test-first) A trace cell that names no enum member is a typo, not a value:
+// it used to load silently as 0 ("no member"), so `k.SOM` was quietly false
+// forever and every requirement gated on it went vacuous. Empty cells and the
+// ragged `-` marker keep their documented meanings.
+TEST(Rdb, LoaderRejectsUnknownEnumSpelling)
+{
+    auto    ref = tmpFile("enumtypo") + ".ref";
+    auto    csv = tmpFile("enumtypo") + ".csv";
+    {
+        std::ofstream f(ref);
+        f << "type K : enum { SOM, MID, EOM };\ndata k : K;\nG(true);\n";
+    }
+    {
+        std::ofstream f(csv);
+        f << "__time__,k\n0,SOM\n1000,SUM\n";     //  SUM is a typo for SOM
+    }
+
+    std::ifstream       in(ref);
+    std::ostringstream  out;
+    EXPECT_THROW(Referee::executeAll(in, ref, {{csv, false}}, "", out),
+                 std::exception);
+
+    std::remove(ref.c_str());
+    std::remove(csv.c_str());
+}
+
+// (test-first) A func declared with an inline struct accepts a signal declared
+// with the identical spelling. The two spellings are deliberately *distinct*
+// nodes (pointer identity is what tells DA.dv from DB.dv in the language
+// server), so overload resolution matches structs structurally rather than by
+// pointer -- before, this call failed to resolve where a named alias worked.
+TEST(Rdb, InlineStructSpellingsResolveStructurally)
+{
+    std::istringstream  src(
+        "func f : (struct { x : integer; y : integer; }) -> integer;\n"
+        "data p : struct { x : integer; y : integer; };\n"
+        "data q = f(p);\n"
+        "G(q >= 0 || true);\n");
+
+    EXPECT_NO_THROW((void) Referee::parseSchema(src, "<inline-struct>"));
+}
+
 // A whole-state accessor and a function alias share one C namespace, and a
 // specification can put them in the same place: signal `len` generates
 // `referee_state_len`, and `func state_len` aliases to the same spelling. The
