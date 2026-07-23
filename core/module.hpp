@@ -33,6 +33,13 @@
 class Module
 {
 public:
+    //  Arena-scoped, like the Expr nodes it holds: a Module's m_exprs/m_specs
+    //  point at arena-owned nodes, so a Module outliving its arena is a bag of
+    //  dangling pointers. Interned globally it also meant two compilations
+    //  under one name shared a Module -- duplicate-declaration errors for an
+    //  embedder, and referee.cpp's process-unique name tags as a workaround.
+    using factory_scoped = void;
+
     Module(std::string name);
 
     void    addType(std::string const& name, Type* type);

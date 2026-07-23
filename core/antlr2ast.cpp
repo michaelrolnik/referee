@@ -72,10 +72,20 @@ struct Antlr2AST::ParsedFile
     std::unique_ptr<referee::refereeParser>         parser;
 };
 
+//  The Module interns under this compilation's own arena, so it must be
+//  created inside that arena's scope -- the ctor init list runs before the
+//  caller can take one, hence the helper. `arena` is declared before `module`,
+//  so it is constructed first and this is well-defined.
+static Module*  createScopedModule(Arena& arena, std::string const& name)
+{
+    Arena::Scope    scope(arena);
+    return Factory<Module>::create(name);
+}
+
 Antlr2AST::Antlr2AST(std::string name, std::string path,
                      std::vector<std::string> searchPaths, Sizes sizes,
                      bool allowUnsized)
-    : module(Factory<Module>::create(name))
+    : module(createScopedModule(arena, name))
     , m_searchPaths(std::move(searchPaths))
     , m_sizes(std::move(sizes))
     , m_allowUnsized(allowUnsized)

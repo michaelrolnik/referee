@@ -24,6 +24,8 @@
 
 #include "strings.hpp"
 
+#include <mutex>
+
 #include <memory>
 #include <string.h>
 
@@ -51,6 +53,11 @@ char const* Strings::getString(std::string const& data)
 
 char const* StringsImpl::getString(char const* data)
 {
+    //  Interning mutates the set; concurrent compilations (and a checker's
+    //  string fixup) go through here, so it takes a lock like the factory.
+    static std::mutex           m;
+    std::lock_guard<std::mutex> lock(m);
+
     auto iter = m_set.find(data);
 
     if(iter == m_set.end())

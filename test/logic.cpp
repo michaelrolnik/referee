@@ -63,6 +63,7 @@
 #include "llvm/IR/DataLayout.h"
 #include "llvm/ExecutionEngine/JITSymbol.h"
 #include <memory>
+#include <thread>
 
 #include "antlr2ast.hpp"
 #include "strings.hpp"
@@ -79,6 +80,60 @@ void    debug(int64_t value)
 }
 //  GCOV_EXCL_STOP
 //  LCOV_EXCL_STOP
+
+//  (test-first) Two compilations under the same module name are independent.
+//  `Factory<Module>::create(name)` interned globally and forever, so a second
+//  Antlr2AST with the same name received the FIRST parse's Module -- duplicate
+//  declaration errors at best, and, once the first arena died, dangling
+//  Expr*/Spec* at worst. referee.cpp works around it with process-unique name
+//  tags; an embedder using Antlr2AST directly has no such shield.
+static ::Module* parseOnce(std::string const& name, std::string const& src,
+                           std::unique_ptr<Antlr2AST>& keep)
+{
+    std::istringstream          is(src);
+    antlr4::ANTLRInputStream    in(is);
+    referee::refereeLexer       lex(&in);
+    antlr4::CommonTokenStream   tok(&lex);
+    referee::refereeParser      par(&tok);
+
+    keep = std::make_unique<Antlr2AST>(name, name, std::vector<std::string>{});
+    Arena::Scope    scope(keep->arena);
+    auto*           tree = par.program();
+    return std::any_cast<::Module*>(keep->visitProgram(tree));
+}
+
+TEST(Factory, ReparseUnderSameNameIsFresh)
+{
+    std::string src = "data a : integer;\nG(a >= 0);\n";
+
+    std::unique_ptr<Antlr2AST>  keep1, keep2;
+    ::Module*                   m1 = nullptr;
+    ::Module*                   m2 = nullptr;
+
+    ASSERT_NO_THROW(m1 = parseOnce("dup", src, keep1));
+    ASSERT_NO_THROW(m2 = parseOnce("dup", src, keep2));
+    EXPECT_NE(m1, m2) << "same-name compilations must not share a Module";
+}
+
+//  (test-first) Concurrent compilations must not race the factory's interning
+//  maps (or the string table). The maps were bare statics; two threads
+//  compiling simultaneously was undefined behaviour.
+TEST(Factory, ConcurrentParsesDoNotRace)
+{
+    auto    work = []
+    {
+        for (int i = 0; i < 40; i++)
+        {
+            std::istringstream  is("data x : integer;\ndata s : string;\nG(x >= 0 && s == \"ok\");\n");
+            (void) Referee::parseSchema(is, "<threaded>");
+        }
+    };
+
+    std::thread t1(work), t2(work);
+    t1.join();
+    t2.join();
+    SUCCEED();
+}
 
 class RefereeJIT
 {

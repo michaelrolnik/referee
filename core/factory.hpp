@@ -29,6 +29,7 @@
 #include <tuple>
 #include <type_traits>
 #include <map>
+#include <mutex>
 #include <vector>
 #include <utility>
 #include <iostream>
@@ -59,11 +60,8 @@ public:
     Arena(Arena const&)             = delete;
     Arena&  operator=(Arena const&) = delete;
 
-    ~Arena()
-    {
-        for(auto sweep: sweepers())
-            sweep(this);
-    }
+    ~Arena();       //  defined after factoryMutex(): the sweep mutates the
+                    //  factory maps, so it takes the same lock create() does
 
     //  Which arena new nodes belong to. Thread-local, so concurrent
     //  compilations do not fight over it -- the previous design would simply
@@ -112,6 +110,24 @@ template<typename T>
 struct  FactoryScoped<T, std::void_t<typename T::factory_scoped>> : std::true_type {};
 
 
+//  One lock for every factory map and the sweeper list. The maps are function-
+//  local statics mutated on every intern, so two threads compiling
+//  concurrently -- the language server's ordinary future -- raced them.
+//  Recursive, because constructing a node may itself intern (a nested type's
+//  members, a rewritten child), re-entering create() on the same thread.
+inline std::recursive_mutex&    factoryMutex()
+{
+    static std::recursive_mutex m;
+    return m;
+}
+
+inline Arena::~Arena()
+{
+    std::lock_guard<std::recursive_mutex>   lock(factoryMutex());
+    for(auto sweep: sweepers())
+        sweep(this);
+}
+
 template<typename T>
 class Factory
 {
@@ -119,6 +135,8 @@ public:
     template<typename ... Args>
     static T*  create(Args ... args)
     {
+        std::lock_guard<std::recursive_mutex>   lock(factoryMutex());
+
         auto    key = std::tuple<Args...>(args...);
         auto&   obj = get<decltype(key), T>(key);
 
