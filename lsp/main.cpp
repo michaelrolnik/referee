@@ -305,6 +305,45 @@ void handleReferences(const llvm::json::Value& id, llvm::json::Object* params)
     reply(id, std::move(out));
 }
 
+// ── Signature help: the parameters of the call the caret is inside. ──────────
+void handleSignatureHelp(const llvm::json::Value& id, llvm::json::Object* params)
+{
+    Referee::SignatureHelp help;
+    if (params)
+        if (auto* doc = params->getObject("textDocument"))
+            if (auto* pos = params->getObject("position"))
+            {
+                auto it = g_docs.find(doc->getString("uri").value_or("").str());
+                if (it != g_docs.end())
+                {
+                    unsigned line = static_cast<unsigned>(pos->getInteger("line").value_or(0));
+                    unsigned chr  = static_cast<unsigned>(pos->getInteger("character").value_or(0));
+                    try   { std::istringstream is(it->second);
+                            help = Referee::signatureHelp(is, uriToPath(doc->getString("uri").value_or("").str()),
+                                                          /*includePaths*/ {}, line, chr); }
+                    catch (...) { /* never let signature help crash the server */ }
+                }
+            }
+
+    if (!help.any) { reply(id, nullptr); return; }
+
+    llvm::json::Array signatures;
+    for (auto const& s : help.signatures)
+    {
+        llvm::json::Array parameters;
+        for (auto const& p : s.params)
+            parameters.push_back(llvm::json::Object{
+                {"label", llvm::json::Array{p.labelStart, p.labelEnd}}});   // [start,end] offsets
+        signatures.push_back(llvm::json::Object{
+            {"label", s.label},
+            {"parameters", std::move(parameters)}});
+    }
+    reply(id, llvm::json::Object{
+        {"signatures", std::move(signatures)},
+        {"activeSignature", help.activeSignature},
+        {"activeParameter", help.activeParameter}});
+}
+
 // ── Rename ───────────────────────────────────────────────────────────────────
 
 // The identifier range under a position, so prepareRename can pre-select it.
@@ -451,6 +490,9 @@ int main()
                     {"documentSymbolProvider", true},
                     {"referencesProvider", true},
                     {"renameProvider", llvm::json::Object{{"prepareProvider", true}}},
+                    {"signatureHelpProvider", llvm::json::Object{
+                        {"triggerCharacters", llvm::json::Array{"(", ","}},
+                    }},
                 }},
                 {"serverInfo", llvm::json::Object{{"name", "referee-lsp"}, {"version", "0.2.0"}}},
             });
@@ -517,6 +559,10 @@ int main()
         else if (method == "textDocument/rename")
         {
             handleRename(*id, msg->getObject("params"));
+        }
+        else if (method == "textDocument/signatureHelp")
+        {
+            handleSignatureHelp(*id, msg->getObject("params"));
         }
         else if (method == "textDocument/didClose")
         {

@@ -61,8 +61,10 @@ jumps to its field in the owning `type`, and `import`s are followed, so a name f
 an imported file opens that file), **document symbols** — the outline view and
 breadcrumbs list every declaration, with struct fields / enum cases nested under
 their type — **find-references** (Shift+F12 lists every use of a name, across
-imported files, comments excluded), and **rename** (F2 rewrites a name and all its
-uses, across imported files; an invalid new identifier is rejected).
+imported files, comments excluded), **rename** (F2 rewrites a name and all its
+uses, across imported files; an invalid new identifier is rejected), and
+**signature help** (inside a call, the parameters of the `func` or `std::…`
+built-in are shown, with the active one highlighted and overloads listed).
 
 ## Install
 

@@ -1105,3 +1105,66 @@ TEST(Rename, EditsDeclarationAndAllUses)
     EXPECT_TRUE(r.valid);
     EXPECT_EQ(r.edits.size(), 3u);          // decl + two uses
 }
+
+// ── Signature help ───────────────────────────────────────────────────────────
+
+Referee::SignatureHelp  sigHelpAt(std::vector<std::string> const& L, unsigned line, unsigned col, std::string const& tag)
+{
+    std::istringstream  is(joinLines(L));
+    return Referee::signatureHelp(is, "<" + tag + ">", {}, line, col);
+}
+
+// A user `func`'s parameters are rendered, and the active parameter starts at 0.
+TEST(SignatureHelp, UserFunctionSignature)
+{
+    std::vector<std::string>    L = {
+        "func sh_dist : (integer, integer) -> number;",
+        "data sh_a : integer;",
+        "G(sh_dist(sh_a, sh_a) > 0.0);",
+    };
+    unsigned    col = static_cast<unsigned>(L[2].find("sh_dist(") + std::string("sh_dist(").size());
+    auto        h = sigHelpAt(L, 2, col, "sh1");
+
+    ASSERT_TRUE(h.any);
+    ASSERT_EQ(h.signatures.size(), 1u);
+    EXPECT_EQ(h.signatures[0].label, "sh_dist(integer, integer) -> number");
+    EXPECT_EQ(h.signatures[0].params.size(), 2u);
+    EXPECT_EQ(h.activeParameter, 0u);
+}
+
+// A comma before the caret advances the active parameter.
+TEST(SignatureHelp, ActiveParameterAdvancesPastComma)
+{
+    std::vector<std::string>    L = {
+        "func sh_dist : (integer, integer) -> number;",
+        "data sh_a : integer;",
+        "G(sh_dist(sh_a, sh_a) > 0.0);",
+    };
+    unsigned    col = static_cast<unsigned>(L[2].find("sh_a, ") + std::string("sh_a, ").size());
+    auto        h = sigHelpAt(L, 2, col, "sh2");
+
+    ASSERT_TRUE(h.any);
+    EXPECT_EQ(h.activeParameter, 1u);
+}
+
+// A built-in resolves too, and an overloaded one reports every candidate.
+TEST(SignatureHelp, BuiltinOverloads)
+{
+    std::vector<std::string>    L = {
+        "data sh_x : number;",
+        "G(std::math::abs(sh_x) > 0.0);",
+    };
+    unsigned    col = static_cast<unsigned>(L[1].find("abs(") + std::string("abs(").size());
+    auto        h = sigHelpAt(L, 1, col, "sh3");
+
+    ASSERT_TRUE(h.any);
+    EXPECT_EQ(h.signatures.size(), 2u);     // integer and number overloads
+}
+
+// Off any call there is no signature help.
+TEST(SignatureHelp, NoneOutsideCall)
+{
+    std::vector<std::string>    L = { "data sh_q : integer;", "G(sh_q > 0);" };
+    unsigned    col = static_cast<unsigned>(L[0].find("sh_q")) + 1;   // in the declaration
+    EXPECT_FALSE(sigHelpAt(L, 0, col, "sh4").any);
+}

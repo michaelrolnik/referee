@@ -158,6 +158,7 @@ void lowerMinMaxIntrinsics(llvm::Module& M)
 
 #include "antlr2ast.hpp"
 #include "strings.hpp"
+#include "builtins.hpp"
 
 using referee::db::typesEqual;
 #include "visitors/compile.hpp"
@@ -1280,6 +1281,175 @@ Referee::RenameResult Referee::rename(
     result.valid = true;
     result.edits = references(is, name, includePaths, line, character, /*includeDeclaration*/ true);
     return result;
+}
+
+// ── Language-server signature help: the parameters of the enclosing call. ─────
+std::vector<Referee::Signature>     builtinSignatures(std::string const& funcName)
+{
+    std::vector<Referee::Signature> out;
+    for (Builtin const* b : findBuiltins(funcName))
+    {
+        std::vector<std::string>    ptypes;
+        if (Builtin::isString(b->kind))
+        {
+            if (b->kind == Builtin::Kind::StrAt) ptypes = {"string", "integer"};
+            else                                 ptypes.assign(b->arity, "string");
+        }
+        else
+            ptypes.assign(b->arity, b->takesNumber ? "number" : "integer");
+
+        std::string     ret =
+            (b->kind == Builtin::Kind::StrStarts || b->kind == Builtin::Kind::StrEnds) ? "boolean"
+            : (b->returnsNumber ? "number" : "integer");
+
+        Referee::Signature  sig;
+        std::string         label = funcName + "(";
+        for (std::size_t i = 0; i < ptypes.size(); ++i)
+        {
+            if (i) label += ", ";
+            unsigned s = static_cast<unsigned>(label.size());
+            label += ptypes[i];
+            sig.params.push_back({s, static_cast<unsigned>(label.size())});
+        }
+        label += ") -> " + ret;
+        sig.label = std::move(label);
+        out.push_back(std::move(sig));
+    }
+    return out;
+}
+
+Referee::SignatureHelp Referee::signatureHelp(
+    std::istream& is, std::string name, std::vector<std::string> const& includePaths,
+    unsigned line, unsigned character)
+{
+    SignatureHelp   help;
+
+    std::string text((std::istreambuf_iterator<char>(is)), std::istreambuf_iterator<char>());
+    std::vector<std::string>    lines;
+    {
+        std::string cur;
+        for (char c : text)
+        {
+            if      (c == '\n') { lines.push_back(cur); cur.clear(); }
+            else if (c != '\r') { cur.push_back(c); }
+        }
+        lines.push_back(cur);
+    }
+    if (line >= lines.size())
+        return help;
+
+    //  Everything up to the caret, as one string, so a call can span lines.
+    std::string prefix;
+    for (std::size_t r = 0; r < line; ++r) { prefix += lines[r]; prefix += '\n'; }
+    prefix += lines[line].substr(0, std::min<std::size_t>(character, lines[line].size()));
+
+    //  Walk back to the `(` of the call that encloses the caret; count the
+    //  top-level commas before it (the active parameter). A grouping `(` is
+    //  stepped over, resetting the comma count to that outer level.
+    std::size_t     depth    = 0;
+    unsigned        commas   = 0;
+    std::string     funcName;
+    bool            found    = false;
+    std::size_t     i        = prefix.size();
+    while (i > 0)
+    {
+        char c = prefix[i - 1];
+        if (c == ')' || c == ']') { ++depth; --i; continue; }
+        if (c == '(' || c == '[')
+        {
+            if (depth > 0) { --depth; --i; continue; }
+            if (c == '[')  return help;              // inside an index/slice, not a call
+
+            std::size_t j = i - 1;                    // the '('
+            while (j > 0 && std::isspace(static_cast<unsigned char>(prefix[j - 1]))) --j;
+            std::size_t nend = j;
+            while (j > 0 && (isWordChar(prefix[j - 1]) || prefix[j - 1] == ':')) --j;
+            std::string cand = prefix.substr(j, nend - j);
+            if (!cand.empty() && (std::isalpha(static_cast<unsigned char>(cand[0])) || cand[0] == '_'))
+            {
+                funcName = cand; found = true; break;
+            }
+            commas = 0;                               // a grouping paren; step outward
+            --i;
+            continue;
+        }
+        if (c == ',' && depth == 0) ++commas;
+        --i;
+    }
+    if (!found)
+        return help;
+
+    //  Parse (caret line blanked) so the declaration of a user `func` resolves
+    //  even while its call is being typed.
+    lines[line].clear();
+    std::string probe;
+    for (std::size_t r = 0; r < lines.size(); ++r) { probe += lines[r]; if (r + 1 < lines.size()) probe += '\n'; }
+
+    std::istringstream          pis(probe);
+    antlr4::ANTLRInputStream     input(pis);
+    referee::refereeLexer        lexer(&input);
+    antlr4::CommonTokenStream    tokens(&lexer);
+    referee::refereeParser       parser(&tokens);
+    ParseErrors                  errors;
+    errors.attach(lexer, parser);
+
+    static std::atomic<unsigned>    s_uniq{0};
+    auto    uniqName = name + "#sighelp:" + std::to_string(s_uniq.fetch_add(1));
+    auto    astOwner = std::make_unique<Antlr2AST>(uniqName, name, includePaths, Sizes{}, /*allowUnsized*/ true);
+    Arena::Scope    arenaScope(astOwner->arena);
+
+    auto*       tree   = parser.program();
+    ::Module*   module = nullptr;
+    try         { module = std::any_cast<::Module*>(astOwner->visitProgram(tree)); }
+    catch (...) { module = nullptr; }
+
+    std::map<Type*, std::string>    named;
+    if (module)
+        for (auto const& tn : module->getTypeNames())
+        {
+            Type* tt = nullptr;
+            try { tt = module->getType(tn); } catch (...) { tt = nullptr; }
+            if (tt) named[tt] = tn;
+        }
+
+    //  User-declared `func`s first (by name; may be overloaded), else built-ins.
+    if (module)
+    {
+        std::vector<Module::Func> const*    fns = nullptr;
+        try { fns = &module->funcsNamed(funcName); } catch (...) { fns = nullptr; }
+        if (fns)
+            for (auto const& f : *fns)
+            {
+                Signature   sig;
+                std::string label = funcName + "(";
+                if (f.state)
+                    label += "__state__";
+                else
+                    for (std::size_t k = 0; k < f.args.size(); ++k)
+                    {
+                        if (k) label += ", ";
+                        unsigned s = static_cast<unsigned>(label.size());
+                        label += renderType(f.args[k], named, false);
+                        sig.params.push_back({s, static_cast<unsigned>(label.size())});
+                    }
+                label += ") -> " + renderType(f.ret, named, false);
+                sig.label = std::move(label);
+                help.signatures.push_back(std::move(sig));
+            }
+    }
+    if (help.signatures.empty())
+        help.signatures = builtinSignatures(funcName);
+
+    if (help.signatures.empty())
+        return help;                                  // the name is not callable
+
+    help.any             = true;
+    help.activeParameter = commas;
+    help.activeSignature = 0;
+    for (std::size_t k = 0; k < help.signatures.size(); ++k)
+        if (help.signatures[k].params.size() > commas) { help.activeSignature = static_cast<unsigned>(k); break; }
+
+    return help;
 }
 
 // ── Schema lifetime helpers (out-of-line for the same forward-decl reasons

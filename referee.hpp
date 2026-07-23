@@ -211,6 +211,41 @@ public:
                                std::vector<std::string> const& includePaths,
                                unsigned line, unsigned character, std::string const& newName);
 
+    /// One parameter of a signature: the half-open [start, end) range within the
+    /// signature's `label` string that spells this parameter (LSP offset form).
+    struct SignatureParam
+    {
+        unsigned    labelStart = 0;
+        unsigned    labelEnd   = 0;
+    };
+
+    /// A callable's rendered signature, e.g. `abs(number) -> number`.
+    struct Signature
+    {
+        std::string                  label;
+        std::vector<SignatureParam>  params;
+    };
+
+    /// Signature help for a call site: the overloads of the function whose
+    /// argument list the caret sits in, which one best fits, and which parameter
+    /// the caret is on.
+    struct SignatureHelp
+    {
+        bool                    any = false;
+        std::vector<Signature>  signatures;
+        unsigned                activeSignature = 0;
+        unsigned                activeParameter = 0;
+    };
+
+    /// Signature help at (line, character), both 0-based (LSP). Finds the call
+    /// whose argument list encloses the caret, resolves its name to a declared
+    /// `func` (or a `std::…` built-in), and reports the signatures with the active
+    /// parameter set from the commas before the caret. `any=false` off a call.
+    /// Never throws.
+    static SignatureHelp signatureHelp(std::istream& is, std::string name,
+                                       std::vector<std::string> const& includePaths,
+                                       unsigned line, unsigned character);
+
     /// Compile `refPath` and emit a native object file to `outPath`, ready to
     /// be linked into an ahead-of-time checker. The object exports one symbol,
     /// `referee_module` (see `runtime/referee_checker.h`), and carries the
