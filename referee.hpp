@@ -105,6 +105,24 @@ public:
     static std::vector<Diagnostic> diagnose(std::istream& is, std::string name,
                                             std::vector<std::string> const& includePaths = {});
 
+    /// One member-completion candidate. `kind` is an LSP CompletionItemKind
+    /// (5 = Field for a struct member, 20 = EnumMember for an enum case).
+    struct Completion
+    {
+        std::string label;
+        int         kind = 0;
+    };
+
+    /// Member completion for the `.` after a signal at (line, character), both
+    /// 0-based (LSP). Parses the document — with the caret's own line blanked, so
+    /// a half-typed `sig.` does not break the parse — resolves the dotted chain
+    /// before the caret to a type, and returns that type's members: struct fields
+    /// or enum cases. Empty if the head is not a signal or the type has no members.
+    /// Never throws.
+    static std::vector<Completion> complete(std::istream& is, std::string name,
+                                            std::vector<std::string> const& includePaths,
+                                            unsigned line, unsigned character);
+
     /// Compile `refPath` and emit a native object file to `outPath`, ready to
     /// be linked into an ahead-of-time checker. The object exports one symbol,
     /// `referee_module` (see `runtime/referee_checker.h`), and carries the

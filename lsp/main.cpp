@@ -18,6 +18,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <iostream>
+#include <map>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -130,6 +131,41 @@ void publishDiagnostics(llvm::StringRef uri, llvm::StringRef text)
            llvm::json::Object{{"uri", uri}, {"diagnostics", std::move(items)}});
 }
 
+// ── Open documents ───────────────────────────────────────────────────────────
+// Completion needs the current buffer text at an arbitrary caret, so unlike
+// diagnostics (which run off the text handed to the notification) it is kept here.
+std::map<std::string, std::string> g_docs;
+
+// ── Completion: the `.` after a signal → its struct fields / enum cases. ──────
+void handleCompletion(const llvm::json::Value& id, llvm::json::Object* params)
+{
+    llvm::json::Array items;
+    auto emit = [&]() {
+        reply(id, llvm::json::Object{{"isIncomplete", false}, {"items", std::move(items)}});
+    };
+
+    if (!params) { emit(); return; }
+    auto* doc = params->getObject("textDocument");
+    auto* pos = params->getObject("position");
+    if (!doc || !pos) { emit(); return; }
+
+    std::string uri = doc->getString("uri").value_or("").str();
+    auto it = g_docs.find(uri);
+    if (it == g_docs.end()) { emit(); return; }
+
+    unsigned line = static_cast<unsigned>(pos->getInteger("line").value_or(0));
+    unsigned chr  = static_cast<unsigned>(pos->getInteger("character").value_or(0));
+
+    std::vector<Referee::Completion> cands;
+    try   { std::istringstream is(it->second);
+            cands = Referee::complete(is, uriToPath(uri), /*includePaths*/ {}, line, chr); }
+    catch (...) { /* never let completion crash the server */ }
+
+    for (auto const& c : cands)
+        items.push_back(llvm::json::Object{{"label", c.label}, {"kind", c.kind}});
+    emit();
+}
+
 } // namespace
 
 int main()
@@ -151,8 +187,12 @@ int main()
             reply(*id, llvm::json::Object{
                 {"capabilities", llvm::json::Object{
                     {"textDocumentSync", 1},   // 1 = Full (ANTLR re-parses the whole doc anyway)
+                    {"completionProvider", llvm::json::Object{
+                        {"triggerCharacters", llvm::json::Array{"."}},
+                        {"resolveProvider", false},
+                    }},
                 }},
-                {"serverInfo", llvm::json::Object{{"name", "referee-lsp"}, {"version", "0.1.0"}}},
+                {"serverInfo", llvm::json::Object{{"name", "referee-lsp"}, {"version", "0.2.0"}}},
             });
         }
         else if (method == "shutdown")
@@ -167,29 +207,44 @@ int main()
         {
             if (auto* p = msg->getObject("params"))
                 if (auto* doc = p->getObject("textDocument"))
-                    publishDiagnostics(doc->getString("uri").value_or(""),
-                                       doc->getString("text").value_or(""));
+                {
+                    std::string uri  = doc->getString("uri").value_or("").str();
+                    std::string text = doc->getString("text").value_or("").str();
+                    g_docs[uri] = text;                 // keep for completion
+                    publishDiagnostics(uri, text);
+                }
         }
         else if (method == "textDocument/didChange")
         {
             // Full sync: the last content change carries the whole new text.
             if (auto* p = msg->getObject("params"))
             {
-                llvm::StringRef uri;
-                if (auto* doc = p->getObject("textDocument")) uri = doc->getString("uri").value_or("");
+                std::string uri;
+                if (auto* doc = p->getObject("textDocument")) uri = doc->getString("uri").value_or("").str();
                 if (auto* changes = p->getArray("contentChanges"); changes && !changes->empty())
                     if (auto* last = changes->back().getAsObject())
-                        publishDiagnostics(uri, last->getString("text").value_or(""));
+                    {
+                        std::string text = last->getString("text").value_or("").str();
+                        g_docs[uri] = text;             // keep for completion
+                        publishDiagnostics(uri, text);
+                    }
             }
+        }
+        else if (method == "textDocument/completion")
+        {
+            handleCompletion(*id, msg->getObject("params"));
         }
         else if (method == "textDocument/didClose")
         {
-            // Clear the diagnostics for a closed document.
+            // Clear the diagnostics for a closed document, and forget its text.
             if (auto* p = msg->getObject("params"))
                 if (auto* doc = p->getObject("textDocument"))
+                {
+                    std::string uri = doc->getString("uri").value_or("").str();
+                    g_docs.erase(uri);
                     notify("textDocument/publishDiagnostics",
-                           llvm::json::Object{{"uri", doc->getString("uri").value_or("")},
-                                              {"diagnostics", llvm::json::Array{}}});
+                           llvm::json::Object{{"uri", uri}, {"diagnostics", llvm::json::Array{}}});
+                }
         }
         // Any request we don't handle but that carries an id must still get a reply,
         // or a strict client blocks. Unknown notifications are ignored.

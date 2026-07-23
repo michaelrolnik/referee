@@ -369,6 +369,113 @@ std::vector<Referee::Diagnostic> Referee::diagnose(
     return out;
 }
 
+// ── Language-server member completion: the `.` after a signal → its members. ──
+std::vector<Referee::Completion> Referee::complete(
+    std::istream& is, std::string name, std::vector<std::string> const& includePaths,
+    unsigned line, unsigned character)
+{
+    std::vector<Completion> out;
+
+    //  Whole document, split into lines (LF, CR dropped).
+    std::string text((std::istreambuf_iterator<char>(is)), std::istreambuf_iterator<char>());
+    std::vector<std::string>    lines;
+    {
+        std::string cur;
+        for (char c : text)
+        {
+            if      (c == '\n') { lines.push_back(cur); cur.clear(); }
+            else if (c != '\r') { cur.push_back(c); }
+        }
+        lines.push_back(cur);
+    }
+    if (line >= lines.size())
+        return out;
+
+    //  The dotted chain that ends at the access `.` just before the caret.
+    std::string const&  lineText = lines[line];
+    std::size_t         col      = std::min<std::size_t>(character, lineText.size());
+    std::string         prefix   = lineText.substr(0, col);
+
+    std::size_t end = prefix.size();
+    if (end > 0 && prefix[end - 1] == '.')      // the access dot the user just typed
+        --end;
+    std::size_t beg = end;
+    auto isChainChar = [](char c) {
+        return std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '.';
+    };
+    while (beg > 0 && isChainChar(prefix[beg - 1]))
+        --beg;
+
+    std::vector<std::string>    parts;
+    {
+        std::string p;
+        for (std::size_t i = beg; i < end; ++i)
+        {
+            char c = prefix[i];
+            if (c == '.') { if (!p.empty()) { parts.push_back(p); p.clear(); } }
+            else            p.push_back(c);
+        }
+        if (!p.empty()) parts.push_back(p);
+    }
+    if (parts.empty())
+        return out;
+
+    //  Blank the caret's line so a half-typed `sig.` does not break the parse;
+    //  the declarations we need to resolve `sig` live on the other lines.
+    lines[line].clear();
+    std::string probe;
+    for (std::size_t i = 0; i < lines.size(); ++i)
+    {
+        probe += lines[i];
+        if (i + 1 < lines.size()) probe += '\n';
+    }
+
+    std::istringstream          pis(probe);
+    antlr4::ANTLRInputStream     input(pis);
+    referee::refereeLexer        lexer(&input);
+    antlr4::CommonTokenStream    tokens(&lexer);
+    referee::refereeParser       parser(&tokens);
+
+    ParseErrors                  errors;
+    errors.attach(lexer, parser);
+
+    static std::atomic<unsigned>    s_uniq{0};
+    auto    uniqName = name + "#complete:" + std::to_string(s_uniq.fetch_add(1));
+    auto    astOwner = std::make_unique<Antlr2AST>(uniqName, name, includePaths, Sizes{}, /*allowUnsized*/ true);
+    Arena::Scope    arenaScope(astOwner->arena);
+
+    auto*       tree   = parser.program();
+    ::Module*   module = nullptr;
+    try         { module = std::any_cast<::Module*>(astOwner->visitProgram(tree)); }
+    catch (...) { return out; }      // a still-broken probe yields no completions
+    if (module == nullptr)
+        return out;
+
+    //  Head resolves as a signal (data or conf); walk the rest through members.
+    Type*   type = nullptr;
+    try         { type = module->getProp(parts[0]); }
+    catch (...) { type = nullptr; }
+    if (type == nullptr)
+    {
+        try         { type = module->getConf(parts[0]); }
+        catch (...) { type = nullptr; }
+    }
+    for (std::size_t i = 1; i < parts.size() && type != nullptr; ++i)
+    {
+        auto* comp = dynamic_cast<TypeComposite*>(type);
+        type = comp ? comp->member(parts[i]) : nullptr;
+    }
+    if (type == nullptr)
+        return out;
+
+    if (auto* st = dynamic_cast<TypeStruct*>(type))
+        for (auto const& m : st->members) out.push_back({m.name, 5 /*Field*/});
+    else if (auto* en = dynamic_cast<TypeEnum*>(type))
+        for (auto const& it : en->items)  out.push_back({it,     20 /*EnumMember*/});
+
+    return out;
+}
+
 // ── Schema lifetime helpers (out-of-line for the same forward-decl reasons
 //    as Compiled). ────────────────────────────────────────────────────────────
 Referee::Schema::Schema()                                       = default;
