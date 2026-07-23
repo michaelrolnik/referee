@@ -26,8 +26,6 @@
 
 #include "visitors/typecalc.hpp"
 #include "visitors/printer.hpp"     //  TODO: remove
-#include "visitors/rewrite.hpp"     //  TODO: remove
-#include "visitors/canonic.hpp"     //  TODO: remove
 #include "module.hpp"
 #include "utils.hpp"
 #include "strings.hpp"
