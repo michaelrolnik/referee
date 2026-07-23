@@ -775,6 +775,50 @@ TEST(Cli, RdbMergeAcceptsRdbSource)
         std::remove(p->c_str());
 }
 
+// A ragged .rdb round-trips through merge. Decoding a .rdb to CSV walks each
+// array's {count, pointer} descriptor and pads narrower records with `-` up to
+// the widest, which the loader reads back as "not an element" -- so every
+// record keeps its own count. Before the descriptor walk existed, a ragged
+// array decoded to zero columns and its values were silently lost.
+TEST(Cli, RdbMergePreservesRaggedArrays)
+{
+    auto    dir   = tmpPath("ragged", "");
+    auto    ref   = std::string(REFEREE_TEST_DATA_DIR) + "/ragged.ref";
+    auto    csv   = std::string(REFEREE_TEST_DATA_DIR) + "/ragged.csv";
+    auto    src   = dir + ".src.rdb";
+    auto    plus  = dir + ".plus.ref";
+    auto    extra = dir + ".extra.csv";
+    auto    out   = dir + ".out.rdb";
+
+    //  Pack the ragged fixture, then merge the packed form with a disjoint
+    //  CSV and check the *entire* ragged fixture still holds -- per-record
+    //  counts, strings inside ragged structs, both dimensions of rows[][].
+    ASSERT_EQ(run(quote(RDB_BIN) + " build " + quote(ref) + " " + quote(csv)
+                + " -o " + quote(src)).status, 0);
+
+    {
+        std::ifstream       in(ref);
+        std::stringstream   buf;    buf << in.rdbuf();
+        auto                text = buf.str();
+        auto                at   = text.find("data pkt  : byte[];");
+        ASSERT_NE(at, std::string::npos);
+        text.insert(at, "data extra2 : integer;\n");
+        std::ofstream(plus) << text;
+    }
+    { std::ofstream f(extra); f << "__time__,extra2\n0,1\n"; }
+
+    auto    m = run(quote(RDB_BIN) + " merge " + quote(plus) + " "
+                  + quote(src) + " " + quote(extra) + " --leading backfill -o " + quote(out));
+    ASSERT_EQ(m.status, 0) << m.output;
+
+    auto    exec = run(quote(REFEREE_BIN) + " execute " + quote(plus) + " " + quote(out));
+    EXPECT_EQ(exec.status, 0) << exec.output;
+    EXPECT_EQ(exec.output.find("FAIL"), std::string::npos) << exec.output;
+
+    for (auto* p : {&src, &plus, &extra, &out, &dir})
+        std::remove(p->c_str());
+}
+
 // The same column in two sources is ambiguous, and the default refuses it
 // rather than pick a winner.
 TEST(Cli, RdbMergeRejectsOverlapByDefault)

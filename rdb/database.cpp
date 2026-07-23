@@ -999,6 +999,25 @@ struct DataYamlPrinter
     {
         auto elemSize = a->type->size();
 
+        //  An array that carries its own length is a {count, pointer}
+        //  descriptor; the elements live where the pointer says. Looping
+        //  `a->count` -- which is 0 for these -- printed nothing, so a ragged
+        //  .rdb dumped with every array empty and looked like data loss.
+        if (a->count == 0)
+        {
+            std::int64_t    n = 0;
+            uint8_t const*  p = nullptr;
+            std::memcpy(&n, data,     sizeof(n));
+            std::memcpy(&p, data + 8, sizeof(p));
+
+            for (std::int64_t i = 0; i < n; i++)
+            {
+                os << "\n" << ind(indent + 2) << "- ";
+                render(os, a->type, p + i * elemSize, indent + 4);
+            }
+            return;
+        }
+
         for (size_t i = 0; i < a->count; i++)
         {
             os << "\n" << ind(indent + 2) << "- ";
@@ -1084,41 +1103,123 @@ struct TypeYamlPrinter
 //  meaning "no member", a string is the fixed-up pointer. (DataYamlPrinter's
 //  own leaves read a 32-bit int and a 0-based enum, which is a latent dump bug,
 //  not something to reproduce here.)
+//  The capacity table a ragged trace needs to flatten: how many elements the
+//  widest record carries, per array path and dimension, keyed the way the
+//  loader keys its own capacities -- the dotted path with subscripts elided,
+//  dimension counted since the last dot. `pkt` is ("pkt", 0); the inner array
+//  of `rows[1]` is ("rows", 1); `msg[0].raw` is ("msg.raw", 0).
+using FlatCaps = std::map<std::string, std::vector<unsigned>>;
+
+static std::pair<std::string, unsigned> flatPathOf(std::string const& prefix)
+{
+    std::string path;
+    bool        skip = false;
+    for (char c : prefix)
+    {
+        if      (c == '[') skip = true;
+        else if (c == ']') skip = false;
+        else if (!skip)    path += c;
+    }
+
+    unsigned    dim = 0;
+    auto        dot = prefix.rfind('.');
+    for (std::size_t i = (dot == std::string::npos ? 0 : dot + 1); i < prefix.size(); i++)
+        if (prefix[i] == '[')
+            dim++;
+
+    return {path, dim};
+}
+
+//  One recorded blob's contribution to the capacity table: every descriptor's
+//  count, at every nesting depth.
+static void flatScanCaps(Type* type, uint8_t const* data,
+                         std::string const& prefix, FlatCaps& caps)
+{
+    if (auto* st = dynamic_cast<TypeStruct*>(type))
+    {
+        std::size_t cur = 0;
+        for (auto const& m : st->members)
+        {
+            auto align = m.data->alignment();
+            if (cur % align) cur += align - (cur % align);
+            flatScanCaps(m.data, data + cur, prefix + "." + m.name, caps);
+            cur += m.data->size();
+        }
+        return;
+    }
+
+    if (auto* a = dynamic_cast<TypeArray*>(type))
+    {
+        if (a->count == 0)
+        {
+            std::int64_t    n = 0;
+            uint8_t const*  p = nullptr;
+            std::memcpy(&n, data,     sizeof(n));
+            std::memcpy(&p, data + 8, sizeof(p));
+
+            auto [path, dim] = flatPathOf(prefix);
+            auto& dims = caps[path];
+            if (dims.size() <= dim) dims.resize(dim + 1, 0);
+            dims[dim] = std::max<unsigned>(dims[dim], unsigned(n));
+
+            auto stride = a->type->size();
+            for (std::int64_t i = 0; i < n; i++)
+                flatScanCaps(a->type, p + i * stride,
+                             prefix + "[" + std::to_string(i) + "]", caps);
+            return;
+        }
+
+        auto stride = a->type->size();
+        for (unsigned i = 0; i < a->count; i++)
+            flatScanCaps(a->type, data + i * stride,
+                         prefix + "[" + std::to_string(i) + "]", caps);
+        return;
+    }
+    //  leaves carry no capacity
+}
+
 struct FlatRow
     : Visitor<TypeBoolean, TypeByte, TypeInteger, TypeNumber, TypeString, TypeEnum, TypeStruct, TypeArray>
 {
     std::vector<std::pair<std::string, std::string>>&   out;
     std::string                                         prefix;
-    uint8_t const*                                      data;
+    uint8_t const*                                      data;   //  null: absent -- emit `-`
+    FlatCaps const*                                     caps;
 
     FlatRow(std::vector<std::pair<std::string, std::string>>& out,
-            std::string prefix, uint8_t const* data)
-        : out(out), prefix(std::move(prefix)), data(data)
+            std::string prefix, uint8_t const* data, FlatCaps const* caps)
+        : out(out), prefix(std::move(prefix)), data(data), caps(caps)
     {
     }
 
     static void walk(std::vector<std::pair<std::string, std::string>>& out,
-                     std::string const& prefix, Type* type, uint8_t const* data)
+                     std::string const& prefix, Type* type, uint8_t const* data,
+                     FlatCaps const* caps = nullptr)
     {
-        FlatRow v(out, prefix, data);
+        FlatRow v(out, prefix, data, caps);
         type->accept(v);
     }
 
     void    leaf(std::string s) { out.emplace_back(prefix, std::move(s)); }
 
-    void visit(TypeBoolean*) override { leaf(*reinterpret_cast<bool const*>(data) ? "true" : "false"); }
-    void visit(TypeByte*)    override { leaf(std::to_string(unsigned(*data))); }
-    void visit(TypeInteger*) override { leaf(std::to_string(*reinterpret_cast<std::int64_t const*>(data))); }
-    void visit(TypeNumber*)  override { leaf(fmt::format("{}", *reinterpret_cast<double const*>(data))); }
+    //  Null data is an absent ragged element (or a header walk, which ignores
+    //  values): every leaf under it is `-`, the marker the loader reads as
+    //  "not an element".
+    void visit(TypeBoolean*) override { leaf(data ? (*reinterpret_cast<bool const*>(data) ? "true" : "false") : "-"); }
+    void visit(TypeByte*)    override { leaf(data ? std::to_string(unsigned(*data)) : "-"); }
+    void visit(TypeInteger*) override { leaf(data ? std::to_string(*reinterpret_cast<std::int64_t const*>(data)) : "-"); }
+    void visit(TypeNumber*)  override { leaf(data ? fmt::format("{}", *reinterpret_cast<double const*>(data)) : "-"); }
 
     void visit(TypeString*)  override
     {
+        if (data == nullptr) { leaf("-"); return; }
         auto*   s = *reinterpret_cast<char const* const*>(data);
         leaf(s != nullptr ? std::string(s) : std::string());
     }
 
     void visit(TypeEnum* e)  override
     {
+        if (data == nullptr) { leaf("-"); return; }
         auto    idx = std::size_t(*data);       //  1-based; 0 means no member matched
         leaf(idx == 0 || idx > e->items.size() ? std::string() : e->items[idx - 1]);
     }
@@ -1131,7 +1232,7 @@ struct FlatRow
             auto    align = m.data->alignment();
             if (cur % align) cur += align - (cur % align);
 
-            walk(out, prefix + "." + m.name, m.data, data + cur);
+            walk(out, prefix + "." + m.name, m.data, data ? data + cur : nullptr, caps);
             cur += m.data->size();
         }
     }
@@ -1139,8 +1240,40 @@ struct FlatRow
     void visit(TypeArray* a) override
     {
         auto    stride = a->type->size();
+
+        //  An array that carries its own length: real elements from the
+        //  descriptor's pointer, then `-` padding up to the widest record so
+        //  every row has the header's width -- exactly the ragged-CSV
+        //  convention the loader parses back.
+        if (a->count == 0)
+        {
+            std::int64_t    n = 0;
+            uint8_t const*  p = nullptr;
+            if (data != nullptr)
+            {
+                std::memcpy(&n, data,     sizeof(n));
+                std::memcpy(&p, data + 8, sizeof(p));
+            }
+
+            unsigned    cap = unsigned(n);
+            if (caps != nullptr)
+            {
+                auto [path, dim] = flatPathOf(prefix);
+                auto it = caps->find(path);
+                if (it != caps->end() && dim < it->second.size())
+                    cap = std::max<unsigned>(cap, it->second[dim]);
+            }
+
+            for (unsigned i = 0; i < cap; i++)
+                walk(out, prefix + "[" + std::to_string(i) + "]", a->type,
+                     (data != nullptr && std::int64_t(i) < n) ? p + i * stride : nullptr,
+                     caps);
+            return;
+        }
+
         for (unsigned i = 0; i < a->count; i++)
-            walk(out, prefix + "[" + std::to_string(i) + "]", a->type, data + i * stride);
+            walk(out, prefix + "[" + std::to_string(i) + "]", a->type,
+                 data ? data + i * stride : nullptr, caps);
     }
 };
 
@@ -1176,29 +1309,31 @@ bool    typesEqual(Type* a, Type* b)
 
 void    toCsv(Reader const& rdb, std::ostream& os)
 {
-    //  Header: the column names, taken from a walk of the types. A null blob
-    //  cannot supply them, so the first non-null blob per prop is used, and a
-    //  prop that is null in every real state falls back to a type-only walk
-    //  with a zero buffer -- which still yields the right column names.
     auto const& props = rdb.props();
     std::size_t real  = rdb.numStates() >= 2 ? rdb.numStates() - 2 : 0;
 
+    //  Pass 1: the capacity of every ragged array -- the widest record decides
+    //  the header, exactly as a hand-written ragged CSV does. Records narrower
+    //  than the header pad with `-`, which the loader reads back as "not an
+    //  element", so the round trip preserves each record's own count. Without
+    //  this pass a ragged array emitted zero columns and its values were
+    //  silently lost.
+    FlatCaps    caps;
+    for (std::size_t r = 0; r < real; r++)
+        for (std::size_t pi = 0; pi < props.size(); pi++)
+            if (auto* blob = static_cast<uint8_t const*>(rdb.propBlob(r + 1, pi)))
+                flatScanCaps(props[pi].type, blob, props[pi].name, caps);
+
+    //  Header: a null-data walk emits every column name, ragged ones padded to
+    //  their capacity. The per-prop widths are kept for null-slot rows.
     std::vector<std::string>    columns{"__time__"};
+    std::vector<std::size_t>    width(props.size(), 0);
     for (std::size_t pi = 0; pi < props.size(); pi++)
     {
-        uint8_t const*  sample = nullptr;
-        for (std::size_t r = 0; r < real && sample == nullptr; r++)
-            sample = static_cast<uint8_t const*>(rdb.propBlob(r + 1, pi));
-
-        std::vector<std::pair<std::string, std::string>>    leaves;
-        if (sample != nullptr)
-            FlatRow::walk(leaves, props[pi].name, props[pi].type, sample);
-        else
-        {
-            std::vector<uint8_t>    zero(props[pi].type->size(), 0);
-            FlatRow::walk(leaves, props[pi].name, props[pi].type, zero.data());
-        }
-        for (auto const& [name, _] : leaves)
+        std::vector<std::pair<std::string, std::string>>    names;
+        FlatRow::walk(names, props[pi].name, props[pi].type, nullptr, &caps);
+        width[pi] = names.size();
+        for (auto const& [name, _] : names)
             columns.push_back(name);
     }
 
@@ -1216,27 +1351,20 @@ void    toCsv(Reader const& rdb, std::ostream& os)
         {
             auto*   blob = static_cast<uint8_t const*>(rdb.propBlob(si, pi));
 
-            std::vector<std::pair<std::string, std::string>>    leaves;
             if (blob != nullptr)
-                FlatRow::walk(leaves, props[pi].name, props[pi].type, blob);
-
-            //  A null slot has no leaves to emit; a value read as its type's
-            //  zero would be an invention, so the cells are left empty, which
-            //  is what the reader treats as zero on the way back in.
-            std::size_t widthOfProp = 0;
             {
-                std::vector<uint8_t>    zero(props[pi].type->size(), 0);
-                std::vector<std::pair<std::string, std::string>>    names;
-                FlatRow::walk(names, props[pi].name, props[pi].type, zero.data());
-                widthOfProp = names.size();
-            }
-
-            if (blob != nullptr)
+                std::vector<std::pair<std::string, std::string>>    leaves;
+                FlatRow::walk(leaves, props[pi].name, props[pi].type, blob, &caps);
                 for (auto const& [_, value] : leaves)
                     os << "," << csvQuote(value);
+            }
             else
-                for (std::size_t k = 0; k < widthOfProp; k++)
+            {
+                //  A null slot's cells stay empty: a value read as the type's
+                //  zero would be an invention.
+                for (std::size_t k = 0; k < width[pi]; k++)
                     os << ",";
+            }
         }
         os << "\n";
     }
