@@ -1014,3 +1014,70 @@ TEST(Symbols, DetailShowsTypeAndComputed)
     EXPECT_EQ(pt->detail, "SymPoint");
     EXPECT_TRUE(contains(avg->detail, "computed")) << avg->detail;
 }
+
+// ── Find references ──────────────────────────────────────────────────────────
+
+// The declaration and every use are found; a `#` comment mention is not.
+TEST(References, IncludesUsesAndDeclarationButNotComments)
+{
+    std::vector<std::string>    L = {
+        "data ref_pt : integer;",           // 0: declaration
+        "# ref_pt in a comment",            // 1: comment — must be skipped
+        "G(ref_pt > 0 && ref_pt < 9);",     // 2: two uses
+    };
+    unsigned            col = static_cast<unsigned>(L[0].find("ref_pt")) + 1;
+    std::istringstream  is(joinLines(L));
+    auto                r = Referee::references(is, "<refs1>", {}, 0, col, /*includeDeclaration*/ true);
+
+    EXPECT_EQ(r.size(), 3u);                                     // decl + 2 uses
+    for (auto const& x : r) EXPECT_NE(x.line, 1u) << "comment line must be skipped";
+}
+
+// includeDeclaration=false drops the declaration occurrence.
+TEST(References, ExcludesDeclarationWhenNotRequested)
+{
+    std::vector<std::string>    L = {
+        "data ref_q : integer;",
+        "G(ref_q > 0 && ref_q < 9);",
+    };
+    unsigned            col = static_cast<unsigned>(L[0].find("ref_q")) + 1;
+    std::istringstream  is(joinLines(L));
+    auto                r = Referee::references(is, "<refs2>", {}, 0, col, /*includeDeclaration*/ false);
+
+    EXPECT_EQ(r.size(), 2u);                                     // both uses, no decl
+    for (auto const& x : r) EXPECT_EQ(x.line, 1u);
+}
+
+// References span imported files: a type used here, declared there.
+TEST(References, CrossFileImport)
+{
+    char    dir[] = "/tmp/referee-refs-XXXXXX";
+    ASSERT_NE(::mkdtemp(dir), nullptr);
+    std::string typesPath = std::string(dir) + "/rtypes.ref";
+    std::string mainPath  = std::string(dir) + "/rmain.ref";
+
+    { std::ofstream f(typesPath); f << "type RPoint : struct { rx : integer; };\n"; }
+    std::string mainSrc =
+        "import \"rtypes.ref\";\n"
+        "data r_pt : RPoint;\n"
+        "G(r_pt.rx > 0);\n";
+    { std::ofstream f(mainPath); f << mainSrc; }
+
+    unsigned            col = static_cast<unsigned>(std::string("data r_pt : RPoint;").find("RPoint")) + 1;
+    std::istringstream  is(mainSrc);
+    auto                r = Referee::references(is, mainPath, {}, 1, col, /*includeDeclaration*/ true);
+
+    ASSERT_EQ(r.size(), 2u);                                     // use in main + decl in types
+    bool inTypes = false, inMain = false;
+    for (auto const& x : r)
+    {
+        if (x.file.find("rtypes.ref") != std::string::npos) inTypes = true;
+        if (x.file.find("rmain.ref")  != std::string::npos) inMain  = true;
+    }
+    EXPECT_TRUE(inTypes);
+    EXPECT_TRUE(inMain);
+
+    std::remove(typesPath.c_str());
+    std::remove(mainPath.c_str());
+    ::rmdir(dir);
+}

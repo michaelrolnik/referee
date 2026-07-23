@@ -261,6 +261,41 @@ llvm::json::Value symbolToJson(Referee::Symbol const& s)
     return o;
 }
 
+// ── Find references: every use of the name under the caret. ──────────────────
+void handleReferences(const llvm::json::Value& id, llvm::json::Object* params)
+{
+    llvm::json::Array out;
+    if (params)
+        if (auto* doc = params->getObject("textDocument"))
+            if (auto* pos = params->getObject("position"))
+            {
+                std::string uri = doc->getString("uri").value_or("").str();
+                auto it = g_docs.find(uri);
+                if (it != g_docs.end())
+                {
+                    unsigned line = static_cast<unsigned>(pos->getInteger("line").value_or(0));
+                    unsigned chr  = static_cast<unsigned>(pos->getInteger("character").value_or(0));
+                    bool     incl = true;
+                    if (auto* ctx = params->getObject("context"))
+                        incl = ctx->getBoolean("includeDeclaration").value_or(true);
+
+                    std::vector<Referee::Reference> refs;
+                    try   { std::istringstream is(it->second);
+                            refs = Referee::references(is, uriToPath(uri), /*includePaths*/ {}, line, chr, incl); }
+                    catch (...) { /* never let find-references crash the server */ }
+
+                    for (auto const& rf : refs)
+                        out.push_back(llvm::json::Object{
+                            {"uri", rf.file.empty() ? uri : pathToUri(rf.file)},
+                            {"range", llvm::json::Object{
+                                {"start", llvm::json::Object{{"line", rf.line}, {"character", rf.startCol}}},
+                                {"end",   llvm::json::Object{{"line", rf.line}, {"character", rf.endCol}}},
+                            }}});
+                }
+            }
+    reply(id, std::move(out));
+}
+
 void handleDocumentSymbol(const llvm::json::Value& id, llvm::json::Object* params)
 {
     llvm::json::Array out;
@@ -310,6 +345,7 @@ int main()
                     {"hoverProvider", true},
                     {"definitionProvider", true},
                     {"documentSymbolProvider", true},
+                    {"referencesProvider", true},
                 }},
                 {"serverInfo", llvm::json::Object{{"name", "referee-lsp"}, {"version", "0.2.0"}}},
             });
@@ -364,6 +400,10 @@ int main()
         else if (method == "textDocument/documentSymbol")
         {
             handleDocumentSymbol(*id, msg->getObject("params"));
+        }
+        else if (method == "textDocument/references")
+        {
+            handleReferences(*id, msg->getObject("params"));
         }
         else if (method == "textDocument/didClose")
         {

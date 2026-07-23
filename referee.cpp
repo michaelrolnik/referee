@@ -751,6 +751,19 @@ bool    startsDecl(std::string const& line)
     return false;
 }
 
+//  Column of the `#` that starts a line comment, or the line length if none.
+//  A `#` inside a double-quoted string does not begin a comment.
+std::size_t commentStart(std::string const& line)
+{
+    bool inStr = false;
+    for (std::size_t i = 0; i < line.size(); ++i)
+    {
+        if      (line[i] == '"') inStr = !inStr;
+        else if (line[i] == '#' && !inStr) return i;
+    }
+    return line.size();
+}
+
 //  A source file loaded for cross-file search: its path and split lines.
 struct SourceFile
 {
@@ -1190,6 +1203,59 @@ std::vector<Referee::Symbol> Referee::symbols(
         out.push_back(std::move(sym));
     }
 
+    return out;
+}
+
+// ── Language-server find-references: every use of the name under the caret. ───
+std::vector<Referee::Reference> Referee::references(
+    std::istream& is, std::string name, std::vector<std::string> const& includePaths,
+    unsigned line, unsigned character, bool includeDeclaration)
+{
+    std::vector<Reference>  out;
+
+    std::string text((std::istreambuf_iterator<char>(is)), std::istreambuf_iterator<char>());
+    std::vector<std::string>    lines;
+    {
+        std::string cur;
+        for (char c : text)
+        {
+            if      (c == '\n') { lines.push_back(cur); cur.clear(); }
+            else if (c != '\r') { cur.push_back(c); }
+        }
+        lines.push_back(cur);
+    }
+    if (line >= lines.size())
+        return out;
+
+    //  The bare identifier the caret sits on (expand both ways over word chars).
+    std::string const&  lineText = lines[line];
+    std::size_t         nchar    = lineText.size();
+    std::size_t         col      = std::min<std::size_t>(character, nchar);
+    std::size_t         wend     = col;
+    while (wend < nchar && isWordChar(lineText[wend])) ++wend;
+    std::size_t         wbeg     = col;
+    while (wbeg > 0 && isWordChar(lineText[wbeg - 1])) --wbeg;
+    if (wbeg == wend)
+        return out;                                     // not on an identifier
+    std::string word = lineText.substr(wbeg, wend - wbeg);
+
+    //  Whole-word matches across the document and everything it imports, minus
+    //  matches inside comments (and the declaration, when not requested).
+    std::vector<SourceFile> files = gatherFiles(name, text, includePaths);
+    for (auto const& f : files)
+        for (std::size_t r = 0; r < f.lines.size(); ++r)
+        {
+            std::size_t const   cs = commentStart(f.lines[r]);
+            for (std::size_t i = 0; i < f.lines[r].size(); ++i)
+            {
+                if (i >= cs) break;                     // the rest of the line is a comment
+                if (!wordAt(f.lines[r], i, word)) continue;
+                if (!includeDeclaration && declCol(f.lines[r], word, nullptr) == i)
+                    continue;                           // this occurrence is the declaration
+                out.push_back({f.path, static_cast<unsigned>(r),
+                               static_cast<unsigned>(i), static_cast<unsigned>(i + word.size())});
+            }
+        }
     return out;
 }
 

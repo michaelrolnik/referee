@@ -149,7 +149,8 @@ public:
     /// Locate the declaration of the name — or dotted member — under the caret at
     /// (line, character), both 0-based (LSP). A top-level name resolves to its
     /// `data` / `conf` / `type` / `func` declaration; a member resolves to its
-    /// field inside the owning `type`. Same-document only. Never throws.
+    /// field inside the owning `type`. Follows `import`s across files (see
+    /// `Definition::file`). Never throws.
     static Definition define(std::istream& is, std::string name,
                              std::vector<std::string> const& includePaths,
                              unsigned line, unsigned character);
@@ -174,6 +175,24 @@ public:
     /// (top-level names still list without it). Same-document. Never throws.
     static std::vector<Symbol> symbols(std::istream& is, std::string name,
                                        std::vector<std::string> const& includePaths);
+
+    /// One occurrence of a name, for find-references. `file` is the filesystem
+    /// path it was found in; the span is [line, startCol)–endCol, all 0-based.
+    struct Reference
+    {
+        std::string file;
+        unsigned    line = 0, startCol = 0, endCol = 0;
+    };
+
+    /// Every whole-word occurrence of the identifier under the caret at (line,
+    /// character), across the document and the files it imports — declaration
+    /// included unless `includeDeclaration` is false. Occurrences inside `#`
+    /// comments are skipped. Textual (so a name shared by unrelated declarations
+    /// matches both). Never throws.
+    static std::vector<Reference> references(std::istream& is, std::string name,
+                                             std::vector<std::string> const& includePaths,
+                                             unsigned line, unsigned character,
+                                             bool includeDeclaration);
 
     /// Compile `refPath` and emit a native object file to `outPath`, ready to
     /// be linked into an ahead-of-time checker. The object exports one symbol,

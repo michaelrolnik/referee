@@ -58,9 +58,10 @@ or enum cases), **hover** (point at a name to see its
 declaration — `data pt : Point`, a struct/enum body, a field's type),
 **go-to-definition** (F12 / Ctrl-click a name to jump to its declaration; a member
 jumps to its field in the owning `type`, and `import`s are followed, so a name from
-an imported file opens that file), and **document symbols** — the outline view and
+an imported file opens that file), **document symbols** — the outline view and
 breadcrumbs list every declaration, with struct fields / enum cases nested under
-their type.
+their type — and **find-references** (Shift+F12 lists every use of a name, across
+imported files, comments excluded).
 
 ## Install
 
