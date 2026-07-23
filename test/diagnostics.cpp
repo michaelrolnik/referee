@@ -1081,3 +1081,27 @@ TEST(References, CrossFileImport)
     std::remove(mainPath.c_str());
     ::rmdir(dir);
 }
+
+// ── Rename ───────────────────────────────────────────────────────────────────
+
+// An illegal identifier is rejected before any edit is produced.
+TEST(Rename, RejectsInvalidName)
+{
+    std::vector<std::string>    L = { "data rn_x : integer;", "G(rn_x > 0);" };
+    unsigned            col = static_cast<unsigned>(L[0].find("rn_x")) + 1;
+    std::istringstream  is(joinLines(L));
+    auto                r = Referee::rename(is, "<rn1>", {}, 0, col, "bad name");
+    EXPECT_FALSE(r.valid);
+    EXPECT_TRUE(r.edits.empty());
+}
+
+// A legal rename edits the declaration and every use.
+TEST(Rename, EditsDeclarationAndAllUses)
+{
+    std::vector<std::string>    L = { "data rn_y : integer;", "G(rn_y > 0 && rn_y < 9);" };
+    unsigned            col = static_cast<unsigned>(L[0].find("rn_y")) + 1;
+    std::istringstream  is(joinLines(L));
+    auto                r = Referee::rename(is, "<rn2>", {}, 0, col, "rn_z");
+    EXPECT_TRUE(r.valid);
+    EXPECT_EQ(r.edits.size(), 3u);          // decl + two uses
+}

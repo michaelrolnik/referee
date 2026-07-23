@@ -17,11 +17,13 @@
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <cctype>
 #include <iostream>
 #include <map>
 #include <optional>
 #include <sstream>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -64,6 +66,13 @@ void writeMessage(const llvm::json::Value& v)
 void reply(const llvm::json::Value& id, llvm::json::Value result)
 {
     writeMessage(llvm::json::Object{{"jsonrpc", "2.0"}, {"id", id}, {"result", std::move(result)}});
+}
+
+// A JSON-RPC error response to a request `id`.
+void replyError(const llvm::json::Value& id, int code, llvm::StringRef message)
+{
+    writeMessage(llvm::json::Object{{"jsonrpc", "2.0"}, {"id", id},
+        {"error", llvm::json::Object{{"code", code}, {"message", message}}}});
 }
 
 // A JSON-RPC notification (no id).
@@ -296,6 +305,101 @@ void handleReferences(const llvm::json::Value& id, llvm::json::Object* params)
     reply(id, std::move(out));
 }
 
+// ── Rename ───────────────────────────────────────────────────────────────────
+
+// The identifier range under a position, so prepareRename can pre-select it.
+struct WordRange { bool found = false; unsigned line = 0, startCol = 0, endCol = 0; };
+
+WordRange wordAtPosition(const std::string& text, unsigned line, unsigned character)
+{
+    std::vector<std::string> lines;
+    std::string cur;
+    for (char c : text) { if (c == '\n') { lines.push_back(cur); cur.clear(); } else if (c != '\r') cur.push_back(c); }
+    lines.push_back(cur);
+    if (line >= lines.size()) return {};
+
+    const std::string& L = lines[line];
+    auto isW = [](char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; };
+    std::size_t n = L.size(), col = std::min<std::size_t>(character, n);
+    std::size_t e = col; while (e < n && isW(L[e])) ++e;
+    std::size_t b = col; while (b > 0 && isW(L[b - 1])) --b;
+    if (b == e) return {};
+    return {true, line, static_cast<unsigned>(b), static_cast<unsigned>(e)};
+}
+
+// prepareRename: report the range being renamed, or null if the caret isn't on a name.
+void handlePrepareRename(const llvm::json::Value& id, llvm::json::Object* params)
+{
+    if (params)
+        if (auto* doc = params->getObject("textDocument"))
+            if (auto* pos = params->getObject("position"))
+            {
+                auto it = g_docs.find(doc->getString("uri").value_or("").str());
+                if (it != g_docs.end())
+                {
+                    unsigned line = static_cast<unsigned>(pos->getInteger("line").value_or(0));
+                    unsigned chr  = static_cast<unsigned>(pos->getInteger("character").value_or(0));
+                    WordRange w = wordAtPosition(it->second, line, chr);
+                    if (w.found)
+                    {
+                        reply(id, llvm::json::Object{{"range", llvm::json::Object{
+                            {"start", llvm::json::Object{{"line", w.line}, {"character", w.startCol}}},
+                            {"end",   llvm::json::Object{{"line", w.line}, {"character", w.endCol}}},
+                        }}});
+                        return;
+                    }
+                }
+            }
+    reply(id, nullptr);                     // nothing renameable here
+}
+
+// rename: a WorkspaceEdit replacing every occurrence (across imports) with newName.
+void handleRename(const llvm::json::Value& id, llvm::json::Object* params)
+{
+    if (!params) { reply(id, nullptr); return; }
+    auto* doc = params->getObject("textDocument");
+    auto* pos = params->getObject("position");
+    if (!doc || !pos) { reply(id, nullptr); return; }
+
+    std::string uri     = doc->getString("uri").value_or("").str();
+    std::string newName = params->getString("newName").value_or("").str();
+
+    auto it = g_docs.find(uri);
+    if (it == g_docs.end()) { reply(id, nullptr); return; }
+
+    unsigned line = static_cast<unsigned>(pos->getInteger("line").value_or(0));
+    unsigned chr  = static_cast<unsigned>(pos->getInteger("character").value_or(0));
+
+    Referee::RenameResult result;
+    try   { std::istringstream is(it->second);
+            result = Referee::rename(is, uriToPath(uri), /*includePaths*/ {}, line, chr, newName); }
+    catch (...) { /* never let rename crash the server */ }
+
+    if (!result.valid)
+    {
+        replyError(id, -32602, "'" + newName + "' is not a valid REF identifier");
+        return;
+    }
+    if (result.edits.empty()) { reply(id, nullptr); return; }
+
+    // Group edits by file URI into a WorkspaceEdit.changes map.
+    std::map<std::string, llvm::json::Array> byUri;
+    for (auto const& e : result.edits)
+    {
+        std::string u = e.file.empty() ? uri : pathToUri(e.file);
+        byUri[u].push_back(llvm::json::Object{
+            {"range", llvm::json::Object{
+                {"start", llvm::json::Object{{"line", e.line}, {"character", e.startCol}}},
+                {"end",   llvm::json::Object{{"line", e.line}, {"character", e.endCol}}},
+            }},
+            {"newText", newName}});
+    }
+    llvm::json::Object changes;
+    for (auto& [u, edits] : byUri)
+        changes[u] = std::move(edits);
+    reply(id, llvm::json::Object{{"changes", std::move(changes)}});
+}
+
 void handleDocumentSymbol(const llvm::json::Value& id, llvm::json::Object* params)
 {
     llvm::json::Array out;
@@ -346,6 +450,7 @@ int main()
                     {"definitionProvider", true},
                     {"documentSymbolProvider", true},
                     {"referencesProvider", true},
+                    {"renameProvider", llvm::json::Object{{"prepareProvider", true}}},
                 }},
                 {"serverInfo", llvm::json::Object{{"name", "referee-lsp"}, {"version", "0.2.0"}}},
             });
@@ -404,6 +509,14 @@ int main()
         else if (method == "textDocument/references")
         {
             handleReferences(*id, msg->getObject("params"));
+        }
+        else if (method == "textDocument/prepareRename")
+        {
+            handlePrepareRename(*id, msg->getObject("params"));
+        }
+        else if (method == "textDocument/rename")
+        {
+            handleRename(*id, msg->getObject("params"));
         }
         else if (method == "textDocument/didClose")
         {

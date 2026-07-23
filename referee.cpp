@@ -751,6 +751,15 @@ bool    startsDecl(std::string const& line)
     return false;
 }
 
+//  A legal REF identifier: an alpha/underscore start, then word characters.
+bool    validIdent(std::string const& s)
+{
+    if (s.empty()) return false;
+    if (!(std::isalpha(static_cast<unsigned char>(s[0])) || s[0] == '_')) return false;
+    for (char c : s) if (!isWordChar(c)) return false;
+    return true;
+}
+
 //  Column of the `#` that starts a line comment, or the line length if none.
 //  A `#` inside a double-quoted string does not begin a comment.
 std::size_t commentStart(std::string const& line)
@@ -1257,6 +1266,20 @@ std::vector<Referee::Reference> Referee::references(
             }
         }
     return out;
+}
+
+// ── Language-server rename: rewrite every use of the name under the caret. ────
+Referee::RenameResult Referee::rename(
+    std::istream& is, std::string name, std::vector<std::string> const& includePaths,
+    unsigned line, unsigned character, std::string const& newName)
+{
+    RenameResult    result;
+    if (!validIdent(newName))
+        return result;                      // valid stays false → the editor rejects it
+
+    result.valid = true;
+    result.edits = references(is, name, includePaths, line, character, /*includeDeclaration*/ true);
+    return result;
 }
 
 // ── Schema lifetime helpers (out-of-line for the same forward-decl reasons

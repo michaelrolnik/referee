@@ -60,8 +60,9 @@ declaration — `data pt : Point`, a struct/enum body, a field's type),
 jumps to its field in the owning `type`, and `import`s are followed, so a name from
 an imported file opens that file), **document symbols** — the outline view and
 breadcrumbs list every declaration, with struct fields / enum cases nested under
-their type — and **find-references** (Shift+F12 lists every use of a name, across
-imported files, comments excluded).
+their type — **find-references** (Shift+F12 lists every use of a name, across
+imported files, comments excluded), and **rename** (F2 rewrites a name and all its
+uses, across imported files; an invalid new identifier is rejected).
 
 ## Install
 

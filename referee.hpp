@@ -194,6 +194,23 @@ public:
                                              unsigned line, unsigned character,
                                              bool includeDeclaration);
 
+    /// The result of a rename. `valid` is false when the new name is not a legal
+    /// REF identifier; otherwise `edits` are every occurrence to replace (as in
+    /// find-references, declaration included), each to be rewritten to the new name.
+    struct RenameResult
+    {
+        bool                    valid = false;
+        std::vector<Reference>  edits;
+    };
+
+    /// Rename the identifier under the caret at (line, character) to `newName`
+    /// everywhere it is used, across the document and the files it imports.
+    /// Returns `valid=false` if `newName` is not a legal identifier. Textual, like
+    /// find-references (shared names rename together). Never throws.
+    static RenameResult rename(std::istream& is, std::string name,
+                               std::vector<std::string> const& includePaths,
+                               unsigned line, unsigned character, std::string const& newName);
+
     /// Compile `refPath` and emit a native object file to `outPath`, ready to
     /// be linked into an ahead-of-time checker. The object exports one symbol,
     /// `referee_module` (see `runtime/referee_checker.h`), and carries the
