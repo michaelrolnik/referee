@@ -30,6 +30,7 @@
 
 #include <atomic>
 #include <filesystem>
+#include <fstream>
 #include <cstring>
 #include <set>
 #include <iostream>
@@ -718,6 +719,103 @@ bool    startsDecl(std::string const& line)
     return false;
 }
 
+//  A source file loaded for cross-file search: its path and split lines.
+struct SourceFile
+{
+    std::string                 path;
+    std::vector<std::string>    lines;
+};
+
+std::vector<std::string>    splitLines(std::string const& text)
+{
+    std::vector<std::string>    lines;
+    std::string cur;
+    for (char c : text)
+    {
+        if      (c == '\n') { lines.push_back(cur); cur.clear(); }
+        else if (c != '\r') { cur.push_back(c); }
+    }
+    lines.push_back(cur);
+    return lines;
+}
+
+//  The `import "spec"` targets declared in `lines`, in order.
+std::vector<std::string>    importSpecs(std::vector<std::string> const& lines)
+{
+    std::vector<std::string>    specs;
+    for (auto const& line : lines)
+    {
+        std::size_t i = 0;
+        while (i < line.size() && std::isspace(static_cast<unsigned char>(line[i]))) ++i;
+        std::string kw("import");
+        if (line.compare(i, kw.size(), kw) != 0) continue;
+        std::size_t j = i + kw.size();
+        if (j >= line.size() || !std::isspace(static_cast<unsigned char>(line[j]))) continue;
+
+        std::size_t q1 = line.find('"', j);
+        if (q1 == std::string::npos) continue;
+        std::size_t q2 = line.find('"', q1 + 1);
+        if (q2 == std::string::npos) continue;
+        specs.push_back(line.substr(q1 + 1, q2 - q1 - 1));
+    }
+    return specs;
+}
+
+//  Resolve an import target: the importing file's directory first, then each
+//  include path — the same order Antlr2AST::resolveImport uses.
+std::string resolveImportPath(std::string const& spec, std::string const& fromDir,
+                              std::vector<std::string> const& includePaths)
+{
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    {
+        fs::path p = fs::path(fromDir) / spec;
+        if (fs::exists(p, ec)) return p.string();
+    }
+    for (auto const& ip : includePaths)
+    {
+        fs::path p = fs::path(ip) / spec;
+        if (fs::exists(p, ec)) return p.string();
+    }
+    return "";
+}
+
+//  The root file (given text) plus every file it transitively imports, read from
+//  disk, deduplicated by canonical path. The root stays first.
+std::vector<SourceFile>     gatherFiles(std::string const& rootPath, std::string const& rootText,
+                                        std::vector<std::string> const& includePaths)
+{
+    namespace fs = std::filesystem;
+    auto canon = [](std::string const& p) {
+        std::error_code ec; auto c = fs::weakly_canonical(p, ec); return ec ? p : c.string();
+    };
+
+    std::vector<SourceFile> files;
+    std::set<std::string>   seen;
+
+    files.push_back({rootPath, splitLines(rootText)});
+    seen.insert(canon(rootPath));
+
+    for (std::size_t idx = 0; idx < files.size(); ++idx)     // grows as imports are found
+    {
+        std::string dir;
+        { std::error_code ec; dir = fs::path(files[idx].path).parent_path().string(); (void) ec; }
+
+        for (auto const& spec : importSpecs(files[idx].lines))
+        {
+            std::string p = resolveImportPath(spec, dir, includePaths);
+            if (p.empty()) continue;
+            if (!seen.insert(canon(p)).second) continue;     // already gathered
+
+            std::ifstream   in(p, std::ios::binary);
+            if (!in) continue;
+            std::string     txt((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+            files.push_back({p, splitLines(txt)});
+        }
+    }
+    return files;
+}
+
 } // namespace
 
 // ── Language-server go-to-definition: the declaration of the name under caret. ─
@@ -766,19 +864,23 @@ Referee::Definition Referee::define(
     if (parts.empty())
         return none;
 
-    auto locate = [&](unsigned row, std::size_t col, std::string const& word) -> Definition {
-        return {true, row, static_cast<unsigned>(col), static_cast<unsigned>(col + word.size())};
+    //  The current document plus every file it transitively imports.
+    std::vector<SourceFile> files = gatherFiles(name, text, includePaths);
+
+    auto locate = [&](std::string const& path, unsigned row, std::size_t col, std::string const& word) -> Definition {
+        return {true, row, static_cast<unsigned>(col), static_cast<unsigned>(col + word.size()), path};
     };
 
-    //  A top-level name: scan for its `data` / `conf` / `type` / `func` decl.
+    //  A top-level name: scan each file for its `data`/`conf`/`type`/`func` decl.
     if (parts.size() == 1)
     {
-        for (std::size_t r = 0; r < lines.size(); ++r)
-        {
-            std::size_t col = declCol(lines[r], parts[0], nullptr);
-            if (col != std::string::npos)
-                return locate(static_cast<unsigned>(r), col, parts[0]);
-        }
+        for (auto const& f : files)
+            for (std::size_t r = 0; r < f.lines.size(); ++r)
+            {
+                std::size_t col = declCol(f.lines[r], parts[0], nullptr);
+                if (col != std::string::npos)
+                    return locate(f.path, static_cast<unsigned>(r), col, parts[0]);
+            }
         return none;
     }
 
@@ -830,24 +932,25 @@ Referee::Definition Referee::define(
     std::string const&  ownerName = it->second;
     std::string const&  field     = parts.back();
 
-    //  Find `type ownerName`, then the field inside its declaration body.
-    for (std::size_t r = 0; r < lines.size(); ++r)
-    {
-        std::size_t oc = declCol(lines[r], ownerName, "type");
-        if (oc == std::string::npos)
-            continue;
-
-        for (std::size_t rr = r; rr < lines.size(); ++rr)
+    //  Find `type ownerName` in any gathered file, then the field in its body.
+    for (auto const& f : files)
+        for (std::size_t r = 0; r < f.lines.size(); ++r)
         {
-            if (rr > r && startsDecl(lines[rr]))        // left the type's body
-                break;
-            std::size_t from = (rr == r) ? oc + ownerName.size() : 0;
-            for (std::size_t i = from; i < lines[rr].size(); ++i)
-                if (wordAt(lines[rr], i, field))
-                    return locate(static_cast<unsigned>(rr), i, field);
+            std::size_t oc = declCol(f.lines[r], ownerName, "type");
+            if (oc == std::string::npos)
+                continue;
+
+            for (std::size_t rr = r; rr < f.lines.size(); ++rr)
+            {
+                if (rr > r && startsDecl(f.lines[rr]))       // left the type's body
+                    break;
+                std::size_t from = (rr == r) ? oc + ownerName.size() : 0;
+                for (std::size_t i = from; i < f.lines[rr].size(); ++i)
+                    if (wordAt(f.lines[rr], i, field))
+                        return locate(f.path, static_cast<unsigned>(rr), i, field);
+            }
+            return none;                                     // found the type; field not in it
         }
-        break;
-    }
     return none;
 }
 

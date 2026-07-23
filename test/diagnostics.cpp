@@ -856,6 +856,55 @@ TEST(Definition, NotFoundOffToken)
     EXPECT_FALSE(defineAt(L, 1, col, "gotonone").found);
 }
 
+// A name declared in an imported file resolves into that file, following the
+// `import` relative to the importing file's directory.
+TEST(Definition, CrossFileImport)
+{
+    char    dir[] = "/tmp/referee-xfile-XXXXXX";
+    ASSERT_NE(::mkdtemp(dir), nullptr);
+    std::string typesPath = std::string(dir) + "/xtypes.ref";
+    std::string mainPath  = std::string(dir) + "/xmain.ref";
+
+    { std::ofstream f(typesPath); f << "type XPoint : struct { xfx : integer; xfy : integer; };\n"; }
+
+    std::string mainSrc =
+        "import \"xtypes.ref\";\n"       // line 0
+        "data x_pt : XPoint;\n"          // line 1
+        "G(x_pt.xfx > 0);\n";            // line 2
+    { std::ofstream f(mainPath); f << mainSrc; }
+
+    // The type reference `XPoint` on line 1 resolves into the imported file.
+    {
+        unsigned            col = static_cast<unsigned>(std::string("data x_pt : XPoint;").find("XPoint")) + 1;
+        std::istringstream  is(mainSrc);
+        auto                d = Referee::define(is, mainPath, {}, 1, col);
+        EXPECT_TRUE(d.found);
+        EXPECT_NE(d.file.find("xtypes.ref"), std::string::npos) << d.file;
+        EXPECT_EQ(d.line, 0u);
+    }
+    // The member `xfx` (owned by the imported struct) resolves to the field there.
+    {
+        unsigned            col = static_cast<unsigned>(std::string("G(x_pt.xfx > 0);").find("xfx")) + 1;
+        std::istringstream  is(mainSrc);
+        auto                d = Referee::define(is, mainPath, {}, 2, col);
+        EXPECT_TRUE(d.found);
+        EXPECT_NE(d.file.find("xtypes.ref"), std::string::npos) << d.file;
+    }
+    // A locally-declared name stays in the current file (empty `file`).
+    {
+        unsigned            col = static_cast<unsigned>(std::string("data x_pt : XPoint;").find("x_pt")) + 1;
+        std::istringstream  is(mainSrc);
+        auto                d = Referee::define(is, mainPath, {}, 1, col);
+        EXPECT_TRUE(d.found);
+        EXPECT_NE(d.file.find("xmain.ref"), std::string::npos) << d.file;
+        EXPECT_EQ(d.line, 1u);
+    }
+
+    std::remove(typesPath.c_str());
+    std::remove(mainPath.c_str());
+    ::rmdir(dir);
+}
+
 // ── Document symbols (outline) ───────────────────────────────────────────────
 
 namespace

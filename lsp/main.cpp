@@ -99,6 +99,19 @@ std::string uriToPath(llvm::StringRef uri)
     return out;
 }
 
+// Filesystem path -> file:// URI (percent-encode the few chars uriToPath decodes).
+std::string pathToUri(const std::string& path)
+{
+    std::string out = "file://";
+    for (char c : path)
+    {
+        if      (c == ' ') out += "%20";
+        else if (c == '%') out += "%25";
+        else               out.push_back(c);
+    }
+    return out;
+}
+
 // ── Diagnostics ──────────────────────────────────────────────────────────────
 
 void publishDiagnostics(llvm::StringRef uri, llvm::StringRef text)
@@ -213,8 +226,10 @@ void handleDefinition(const llvm::json::Value& id, llvm::json::Object* params)
             }
 
     if (!def.found) { reply(id, nullptr); return; }         // null = no definition
+    // The declaration may live in an imported file; use its path when given.
+    std::string targetUri = def.file.empty() ? uri : pathToUri(def.file);
     reply(id, llvm::json::Object{
-        {"uri", uri},
+        {"uri", targetUri},
         {"range", llvm::json::Object{
             {"start", llvm::json::Object{{"line", def.line}, {"character", def.startCol}}},
             {"end",   llvm::json::Object{{"line", def.line}, {"character", def.endCol}}},

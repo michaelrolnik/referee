@@ -56,10 +56,10 @@ It also does **member completion** (type `.` after a struct or enum signal and t
 editor lists its fields / enum cases), **hover** (point at a name to see its
 declaration — `data pt : Point`, a struct/enum body, a field's type),
 **go-to-definition** (F12 / Ctrl-click a name to jump to its declaration; a member
-jumps to its field in the owning `type`), and **document symbols** — the outline
-view and breadcrumbs list every declaration, with struct fields / enum cases nested
-under their type. Go-to-definition is same-document today — it does not follow
-`import`s.
+jumps to its field in the owning `type`, and `import`s are followed, so a name from
+an imported file opens that file), and **document symbols** — the outline view and
+breadcrumbs list every declaration, with struct fields / enum cases nested under
+their type.
 
 ## Install
 

@@ -35,7 +35,7 @@ In short: Referee connects human-readable requirement intent to executable verif
 
 - **Ahead-of-time compiled checkers.** An object file, a loadable `.so`, or a standalone executable, so a machine that validates logs needs neither LLVM nor the `.ref` sources. Designed in `docs/native-checkers.md`, which also records the measurements above — the motivation is deployment and embedding rather than speed, since most of the speed is available from the previous item.
 - **Streaming / online ingestion.** `referee execute` currently materialises the whole trace before invoking the JIT functions (CSV/YAML are parsed top-to-bottom into per-state blobs; `.rdb` is read into a single buffer). A streaming driver that feeds records to the JIT-compiled requirement functions as they arrive (and reports violation locations live) is not implemented yet — the on-disk `.rdb` layout is already mmap-friendly, so this is a Reader-side change rather than a format change.
-- **A fuller language server.** `referee-lsp` now provides live in-editor **diagnostics** (parse + type errors), **member completion** (`.` after a signal lists its struct fields / enum cases), **hover** (a name's declaration), **go-to-definition**, and **document symbols** (the outline view), wired into the VS Code extension — see *Language server (LSP)*. Bare-identifier completion (signal/keyword names away from a `.`) and cross-file go-to-definition (following imports) are the remaining gaps; the analysis to back them (the typed AST) already exists, so they are LSP plumbing on the same server.
+- **A fuller language server.** `referee-lsp` now provides live in-editor **diagnostics** (parse + type errors), **member completion** (`.` after a signal lists its struct fields / enum cases), **hover** (a name's declaration), **go-to-definition**, and **document symbols** (the outline view), wired into the VS Code extension — see *Language server (LSP)*. Go-to-definition follows `import`s across files. Bare-identifier completion (signal/keyword names away from a `.`) is the remaining gap; the analysis to back it (the typed AST) already exists, so it is LSP plumbing on the same server.
 - **Product-specific model exporters/importers** to adapt arbitrary system logs into the canonical trace format.
 
 ## Design rationale
@@ -334,6 +334,42 @@ Temporal operators come in both **future** and **past** flavours, and most come 
 | `Cnt(c)` | — | **count** of the records where `c` holds |
 
 All temporal operators optionally accept a **time bound** `[lo:hi]`, `[:hi]`, or `[lo:]`, giving MTL-style bounded versions such as `G[100:1000](a)` or `Us[1:3](alpha, beta)`.
+
+#### Semantics
+
+A temporal formula is true or false **at a state**, over the states from there onward (future operators) or up to there (past operators). A requirement is the formula evaluated at the **first** real state, so `G(p)` as a requirement means "`p` at every state", `F(p)` means "`p` at some state". The trace is **finite**; the strong/weak distinction is entirely about what happens when it ends before the operator has been decided.
+
+Writing the trace as states `s₀ … sₙ₋₁` and `p@j` for "`p` holds at state `j`", evaluated at state `i`:
+
+**Unary.**
+
+| | holds at `i` iff |
+| --- | --- |
+| `G(p)` / `H(p)` | `p@j` for every `j ≥ i` / every `j ≤ i` |
+| `F(p)` / `O(p)` | `p@j` for some `j ≥ i` / some `j ≤ i` |
+| `Xs(p)` / `Ys(p)` | a next / previous state exists **and** `p` holds there — **false** at the last / first state |
+| `Xw(p)` / `Yw(p)` | **if** a next / previous state exists, `p` holds there — **true** at the last / first state |
+
+Strong and weak next differ only at the edge of the trace: `Xs` demands a next state to hold in (there is none at the end, so it is false), `Xw` is vacuously true when there is none. That is the whole of the strong/weak distinction, and it recurs in every binary operator below.
+
+**Binary — until and since.**
+
+- `Us(p, q)` — **strong until**: some `j ≥ i` has `q@j`, and `p` holds at every state from `i` up to (not including) `j`. The `q` must actually occur within the trace.
+- `Uw(p, q)` — **weak until**: `Us(p, q)`, *or* `p` holds at every state from `i` onward (`q` may never come). `Us` requires the release; `Uw` forgives its absence.
+- `Ss(p, q)` / `Sw(p, q)` — **since**: the same, mirrored into the past. `Ss(p, q)` holds at `i` iff some `j ≤ i` has `q@j` with `p` at every state after `j` up to `i`.
+
+**Binary — release and trigger** are the duals, and this is exactly how they are defined:
+
+```text
+Rw(p, q) = ¬Us(¬p, ¬q)      Rs(p, q) = ¬Uw(¬p, ¬q)
+Tw(p, q) = ¬Ss(¬p, ¬q)      Ts(p, q) = ¬Sw(¬p, ¬q)
+```
+
+Read directly: `q` must hold at every state from `i` up to **and including** the first state where `p` holds — `p` *releases* the obligation on `q`. If `p` never holds, `q` must hold forever; **weak** release (`Rw`) accepts that, **strong** release (`Rs`) additionally requires `p` to occur. Trigger (`Tw`/`Ts`) is the same into the past. `G` and `H` are the degenerate case with no releaser: `G(p)` canonicalises to `Rw(false, p)` — `p` released by nothing, so `p` forever.
+
+**The strong/weak rule, once.** Every binary operator is a fixpoint over neighbouring states — `val[i]` in terms of `val[i±1]` (see *Temporal lowering*). The only freedom is the base case at the end of the finite trace: a **strong** operator seeds it `false` (an obligation not discharged within the trace is unmet), a **weak** operator seeds it `true` (an obligation the trace ended before testing is forgiven). Choosing strong or weak is choosing what an unfinished trace means.
+
+**Time bounds.** `op[lo:hi]` restricts the witnessing (or obligated) states to those whose timestamp lies in `[t + lo, t + hi]`, where `t` is the timestamp at the evaluation point — MTL over the trace's own clock. `[:hi]` and `[lo:]` leave the open end unbounded. Only the bounded forms consult timestamps at all; the unbounded operators step from sample to sample and never look at the clock (see *What a trace means between samples*).
 
 The three accumulators share one shape: a condition selects the states that contribute, states where it fails are skipped rather than ending the walk, and the extent is set by the `[lo:hi]` window. What differs is the weight a contributing state carries — `Itg` weights it by its duration, `Sum` by a value, `Cnt` by one. That is the difference between "how long was the valve open" and "how many bytes were in this message".
 
@@ -684,7 +720,7 @@ This tokenizes a sample against the same TextMate engine the editors use and ass
 
 ## Language server (LSP)
 
-`build/referee-lsp` is a Language Server for `.ref`. It speaks LSP — JSON-RPC over stdio, `Content-Length`-framed — and reuses the compiler front-end (`Referee::diagnose`) to publish **live parse and type diagnostics** as you edit: the same errors `referee compile` would report, surfaced inline with no build step. It parses and type-checks only (no LLVM lowering), so it is fast, and since REF specs are small it re-checks the whole document on each change (full-text sync — ANTLR has no incremental parse). It also offers **member completion** — type `.` after a signal and it lists that type's struct fields or enum cases (`pt.` → `x` `y`; `k.` → the enum's cases) — **hover** (point at a name to see its declaration: `data pt : Point`, a struct/enum body, a field's type), **go-to-definition** (a name jumps to its `data`/`conf`/`type`/`func` declaration, a member to its field inside the owning `type`; same-document, imports not followed), and **document symbols** — the outline / breadcrumbs list every declaration in source order, each struct/enum carrying its fields/cases as children. Cross-file go-to-definition (following imports) is a natural follow-up on the same AST.
+`build/referee-lsp` is a Language Server for `.ref`. It speaks LSP — JSON-RPC over stdio, `Content-Length`-framed — and reuses the compiler front-end (`Referee::diagnose`) to publish **live parse and type diagnostics** as you edit: the same errors `referee compile` would report, surfaced inline with no build step. It parses and type-checks only (no LLVM lowering), so it is fast, and since REF specs are small it re-checks the whole document on each change (full-text sync — ANTLR has no incremental parse). It also offers **member completion** — type `.` after a signal and it lists that type's struct fields or enum cases (`pt.` → `x` `y`; `k.` → the enum's cases) — **hover** (point at a name to see its declaration: `data pt : Point`, a struct/enum body, a field's type), **go-to-definition** (a name jumps to its `data`/`conf`/`type`/`func` declaration, a member to its field inside the owning `type`; **follows `import`s**, so a name declared in an imported file opens that file), and **document symbols** — the outline / breadcrumbs list every declaration in source order, each struct/enum carrying its fields/cases as children. Bare-identifier completion (names away from a `.`) is a natural follow-up on the same AST.
 
 `referee-lsp` is a *server*, not a REPL: an editor's LSP client launches it and talks to it over stdio (run bare in a terminal it just waits for a framed message). Point any LSP client at the binary. Neovim, for example:
 

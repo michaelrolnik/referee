@@ -133,14 +133,17 @@ public:
                              unsigned line, unsigned character);
 
     /// The source range of a name's declaration, for go-to-definition. `found`
-    /// is false when nothing was located; line/columns are 0-based (LSP) and name
-    /// a same-document span (import targets are not followed).
+    /// is false when nothing was located; line/columns are 0-based (LSP). `file`
+    /// is the filesystem path of the declaring file — the same document, or an
+    /// imported one (`import`s are followed, relative to the file then the include
+    /// paths).
     struct Definition
     {
         bool        found    = false;
         unsigned    line     = 0;
         unsigned    startCol = 0;
         unsigned    endCol   = 0;
+        std::string file;
     };
 
     /// Locate the declaration of the name — or dotted member — under the caret at
