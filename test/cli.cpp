@@ -439,6 +439,81 @@ TEST(Cli, ExecutableCheckerIsStandaloneAndNoLLVM)
         std::remove(p->c_str());
 }
 
+// The checker paths' review fixes, each of which shipped without a test the
+// first time: an out-of-bounds fault must FAIL through a checker exactly as it
+// does through execute; a suite's `violates` names must be enforced in
+// --checker mode; and a bad --conf path must refuse, not zero-fill.
+TEST(Cli, CheckerDrainsOobEnforcesViolatesRefusesBadConf)
+{
+    auto    dir = tmpPath("chk2", "");
+    auto    ref = dir + ".ref";
+    auto    csv = dir + ".csv";
+    auto    so  = dir + ".so";
+    auto    rdb = dir + ".rdb";
+
+    {
+        std::ofstream f(ref);
+        f << "data v : integer[];\n@oob\nG(v[5] > 0);\n@fine\nG(v.count >= 0);\n";
+    }
+    { std::ofstream f(csv); f << "__time__,v[0],v[1]\n0,1,2\n"; }
+    ASSERT_EQ(run(quote(REFEREE_BIN) + " build --shared " + quote(ref) + " -o " + quote(so)).status, 0);
+    ASSERT_EQ(run(quote(RDB_BIN) + " build " + quote(ref) + " " + quote(csv) + " -o " + quote(rdb)).status, 0);
+
+    //  1. The out-of-bounds fault becomes a FAIL with the index and count --
+    //  before the fault channel rode in the ABI, this passed silently.
+    auto    r = run(quote(REFEREE_BIN) + " execute --checker " + quote(so) + " " + quote(rdb));
+    EXPECT_NE(r.status, 0);
+    EXPECT_NE(r.output.find("index 5 is outside an array of 2"), std::string::npos) << r.output;
+
+    //  2. A suite trace naming a requirement it must violate: `fine` holds, so
+    //  declaring it violated must be reported as WRONG REQUIREMENT.
+    auto    suite = dir + ".suite.txt";
+    { std::ofstream f(suite); f << rdb << "  fails  fine\n"; }
+    auto    s2 = run(quote(REFEREE_BIN) + " execute --checker " + quote(so)
+                   + " --suite " + quote(suite));
+    EXPECT_NE(s2.status, 0);
+    EXPECT_NE(s2.output.find("expected to violate fine, but it held"), std::string::npos) << s2.output;
+
+    //  3. An unreadable --conf refuses instead of computing verdicts against
+    //  zero-filled thresholds.
+    auto    c = run(quote(REFEREE_BIN) + " execute --checker " + quote(so)
+                  + " " + quote(csv) + " --conf /no/such/conf.csv");
+    EXPECT_NE(c.status, 0);
+    //  CLI11's ExistingFile check refuses a missing path before executeChecker
+    //  runs; the in-code check covers the library API and unreadable-but-
+    //  present files. Either message is a refusal, which is the point.
+    EXPECT_TRUE(c.output.find("cannot open") != std::string::npos
+             || c.output.find("does not exist") != std::string::npos) << c.output;
+
+    for (auto* p : {&ref, &csv, &so, &rdb, &suite, &dir})
+        std::remove(p->c_str());
+}
+
+// A string value containing a comma survives a merge: emission quotes it, the
+// reader parses the quotes, and the round trip is exact. Before csvQuote the
+// comma split the row silently and "a,b" came out as "a".
+TEST(Cli, RdbMergeQuotesCommaStrings)
+{
+    auto    dir = tmpPath("comma", "");
+    auto    ref = dir + ".ref";
+    auto    a   = dir + ".a.csv";
+    auto    b   = dir + ".b.csv";
+    auto    out = dir + ".rdb";
+
+    { std::ofstream f(ref); f << "data s : string;\ndata n : integer;\nG(n >= 0);\n"; }
+    { std::ofstream f(a);   f << "__time__,s\n0,\"a,b\"\n"; }
+    { std::ofstream f(b);   f << "__time__,n\n0,5\n"; }
+
+    ASSERT_EQ(run(quote(RDB_BIN) + " merge " + quote(ref) + " " + quote(a) + " " + quote(b)
+                + " -o " + quote(out)).status, 0);
+
+    auto    d = run(quote(RDB_BIN) + " dump " + quote(out));
+    EXPECT_NE(d.output.find("s: a,b"), std::string::npos) << d.output;
+
+    for (auto* p : {&ref, &a, &b, &out, &dir})
+        std::remove(p->c_str());
+}
+
 // A specification with an unbounded array needs no trace to build -- `T[]` is a
 // runtime descriptor, so its extent is not resolved at compile time. This is
 // the doc's open question #3, which ragged arrays settled.
