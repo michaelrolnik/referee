@@ -123,6 +123,15 @@ public:
                                             std::vector<std::string> const& includePaths,
                                             unsigned line, unsigned character);
 
+    /// Hover text (Markdown) for the symbol at (line, character), both 0-based
+    /// (LSP): the identifier — or dotted member chain — under the caret, rendered
+    /// as its declaration (`data pt : Point`, a struct/enum body, a field's type).
+    /// Empty when the caret is not on a resolvable name, or the document does not
+    /// parse. Never throws.
+    static std::string hover(std::istream& is, std::string name,
+                             std::vector<std::string> const& includePaths,
+                             unsigned line, unsigned character);
+
     /// Compile `refPath` and emit a native object file to `outPath`, ready to
     /// be linked into an ahead-of-time checker. The object exports one symbol,
     /// `referee_module` (see `runtime/referee_checker.h`), and carries the

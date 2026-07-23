@@ -52,9 +52,10 @@ or `"docker"` with `referee.lsp.args` for a containerized server. The command
 **REF: Restart Language Server** reloads it after you rebuild. Build the server
 with `ninja -C build referee-lsp` in a referee checkout.
 
-It also does **member completion**: type `.` after a struct or enum signal and the
-editor lists its fields / enum cases. Hover and go-to-definition are not
-implemented yet.
+It also does **member completion** (type `.` after a struct or enum signal and the
+editor lists its fields / enum cases) and **hover** (point at a name to see its
+declaration — `data pt : Point`, a struct/enum body, a field's type).
+Go-to-definition is not implemented yet.
 
 ## Install
 

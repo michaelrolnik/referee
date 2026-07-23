@@ -476,6 +476,191 @@ std::vector<Referee::Completion> Referee::complete(
     return out;
 }
 
+// ── Render a Type as REF-ish text (for hover). `named` maps a Type* back to its
+//    declared name; unless `expand`, a named composite prints as its name. ──────
+static std::string  renderType(Type* t, std::map<Type*, std::string> const& named, bool expand)
+{
+    if (t == nullptr)
+        return "?";
+    if (!expand)
+    {
+        auto it = named.find(t);
+        if (it != named.end())
+            return it->second;
+    }
+
+    if (dynamic_cast<TypeBoolean*>(t)) return "boolean";
+    if (dynamic_cast<TypeByte*>(t))    return "byte";
+    if (dynamic_cast<TypeInteger*>(t)) return "integer";
+    if (dynamic_cast<TypeNumber*>(t))  return "number";
+    if (dynamic_cast<TypeString*>(t))  return "string";
+    if (dynamic_cast<TypeVoid*>(t))    return "void";
+
+    if (auto* a = dynamic_cast<TypeArray*>(t))
+    {
+        std::string base = renderType(a->type, named, false);
+        return a->count ? base + "[" + std::to_string(a->count) + "]" : base + "[]";
+    }
+    if (auto* s = dynamic_cast<TypeStruct*>(t))
+    {
+        std::string out = "struct { ";
+        for (std::size_t i = 0; i < s->members.size(); ++i)
+        {
+            if (i) out += "; ";
+            out += s->members[i].name + " : " + renderType(s->members[i].data, named, false);
+        }
+        return out + " }";
+    }
+    if (auto* e = dynamic_cast<TypeEnum*>(t))
+    {
+        std::string out = "enum { ";
+        for (std::size_t i = 0; i < e->items.size(); ++i)
+        {
+            if (i) out += ", ";
+            out += e->items[i];
+        }
+        return out + " }";
+    }
+    return "?";
+}
+
+// ── Language-server hover: the declaration of the name under the caret. ───────
+std::string Referee::hover(
+    std::istream& is, std::string name, std::vector<std::string> const& includePaths,
+    unsigned line, unsigned character)
+{
+    //  Whole document, split into lines (LF, CR dropped) -- as in complete().
+    std::string text((std::istreambuf_iterator<char>(is)), std::istreambuf_iterator<char>());
+    std::vector<std::string>    lines;
+    {
+        std::string cur;
+        for (char c : text)
+        {
+            if      (c == '\n') { lines.push_back(cur); cur.clear(); }
+            else if (c != '\r') { cur.push_back(c); }
+        }
+        lines.push_back(cur);
+    }
+    if (line >= lines.size())
+        return "";
+
+    //  The dotted chain that ends at the identifier under the caret: expand the
+    //  word right over identifier chars, then walk left over `[ident.]`.
+    std::string const&  lineText = lines[line];
+    std::size_t         nchar    = lineText.size();
+    std::size_t         c        = std::min<std::size_t>(character, nchar);
+    auto isIdent = [](char ch) { return std::isalnum(static_cast<unsigned char>(ch)) || ch == '_'; };
+    auto isChain = [](char ch) { return std::isalnum(static_cast<unsigned char>(ch)) || ch == '_' || ch == '.'; };
+
+    std::size_t wend = c;
+    while (wend < nchar && isIdent(lineText[wend])) ++wend;
+    std::size_t beg = wend;
+    while (beg > 0 && isChain(lineText[beg - 1])) --beg;
+
+    std::vector<std::string>    parts;
+    {
+        std::string p;
+        for (std::size_t i = beg; i < wend; ++i)
+        {
+            char ch = lineText[i];
+            if (ch == '.') { if (!p.empty()) { parts.push_back(p); p.clear(); } }
+            else             p.push_back(ch);
+        }
+        if (!p.empty()) parts.push_back(p);
+    }
+    if (parts.empty())
+        return "";
+
+    //  Parse the document as-is: on hover it is normally well-formed. If it does
+    //  not parse (a type error elsewhere), there is nothing to resolve against.
+    std::istringstream          pis(text);
+    antlr4::ANTLRInputStream     input(pis);
+    referee::refereeLexer        lexer(&input);
+    antlr4::CommonTokenStream    tokens(&lexer);
+    referee::refereeParser       parser(&tokens);
+
+    ParseErrors                  errors;
+    errors.attach(lexer, parser);
+
+    static std::atomic<unsigned>    s_uniq{0};
+    auto    uniqName = name + "#hover:" + std::to_string(s_uniq.fetch_add(1));
+    auto    astOwner = std::make_unique<Antlr2AST>(uniqName, name, includePaths, Sizes{}, /*allowUnsized*/ true);
+    Arena::Scope    arenaScope(astOwner->arena);
+
+    auto*       tree   = parser.program();
+    ::Module*   module = nullptr;
+    try         { module = std::any_cast<::Module*>(astOwner->visitProgram(tree)); }
+    catch (...) { return ""; }
+    if (module == nullptr)
+        return "";
+
+    //  Reverse map Type* -> declared name, so `pt : Point` shows `Point`.
+    std::map<Type*, std::string>    named;
+    for (auto const& tn : module->getTypeNames())
+    {
+        Type* tt = nullptr;
+        try { tt = module->getType(tn); } catch (...) { tt = nullptr; }
+        if (tt) named[tt] = tn;
+    }
+
+    auto    fence = [](std::string const& s) { return "```ref\n" + s + "\n```"; };
+
+    if (parts.size() == 1)
+    {
+        std::string const&  head = parts[0];
+
+        //  A signal: data (CSV or computed) or conf.
+        Type*       type = nullptr;
+        std::string kind;
+        try { type = module->getProp(head); } catch (...) { type = nullptr; }
+        if (type) kind = "data";
+        else
+        {
+            try { type = module->getConf(head); } catch (...) { type = nullptr; }
+            if (type) kind = "conf";
+        }
+        if (type)
+        {
+            bool computed = false;
+            if (kind == "data")
+                try { computed = module->getPropExpr(head) != nullptr; } catch (...) {}
+
+            std::string decl = kind + " " + head + " : " + renderType(type, named, false);
+            if (computed) decl += "    // computed";
+            std::string out = fence(decl);
+
+            //  If the type is a named struct/enum, also show its definition.
+            auto it = named.find(type);
+            if (it != named.end() && (dynamic_cast<TypeStruct*>(type) || dynamic_cast<TypeEnum*>(type)))
+                out += "\n" + fence("type " + it->second + " : " + renderType(type, named, true));
+            return out;
+        }
+
+        //  A type name.
+        Type* ty = nullptr;
+        try { ty = module->getType(head); } catch (...) { ty = nullptr; }
+        if (ty)
+            return fence("type " + head + " : " + renderType(ty, named, true));
+
+        return "";
+    }
+
+    //  A dotted chain: resolve to the member's type and show `field : type`.
+    Type*   type = nullptr;
+    try { type = module->getProp(parts[0]); } catch (...) { type = nullptr; }
+    if (!type)
+        try { type = module->getConf(parts[0]); } catch (...) { type = nullptr; }
+    for (std::size_t i = 1; i < parts.size() && type != nullptr; ++i)
+    {
+        auto* comp = dynamic_cast<TypeComposite*>(type);
+        type = comp ? comp->member(parts[i]) : nullptr;
+    }
+    if (type)
+        return fence(parts.back() + " : " + renderType(type, named, false));
+
+    return "";
+}
+
 // ── Schema lifetime helpers (out-of-line for the same forward-decl reasons
 //    as Compiled). ────────────────────────────────────────────────────────────
 Referee::Schema::Schema()                                       = default;

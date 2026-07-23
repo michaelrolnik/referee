@@ -166,6 +166,31 @@ void handleCompletion(const llvm::json::Value& id, llvm::json::Object* params)
     emit();
 }
 
+// ── Hover: the declaration of the symbol under the caret. ─────────────────────
+void handleHover(const llvm::json::Value& id, llvm::json::Object* params)
+{
+    std::string markdown;
+    if (params)
+        if (auto* doc = params->getObject("textDocument"))
+            if (auto* pos = params->getObject("position"))
+            {
+                std::string uri = doc->getString("uri").value_or("").str();
+                auto it = g_docs.find(uri);
+                if (it != g_docs.end())
+                {
+                    unsigned line = static_cast<unsigned>(pos->getInteger("line").value_or(0));
+                    unsigned chr  = static_cast<unsigned>(pos->getInteger("character").value_or(0));
+                    try   { std::istringstream is(it->second);
+                            markdown = Referee::hover(is, uriToPath(uri), /*includePaths*/ {}, line, chr); }
+                    catch (...) { /* never let hover crash the server */ }
+                }
+            }
+
+    if (markdown.empty()) { reply(id, nullptr); return; }   // null = no hover here
+    reply(id, llvm::json::Object{
+        {"contents", llvm::json::Object{{"kind", "markdown"}, {"value", markdown}}}});
+}
+
 } // namespace
 
 int main()
@@ -191,6 +216,7 @@ int main()
                         {"triggerCharacters", llvm::json::Array{"."}},
                         {"resolveProvider", false},
                     }},
+                    {"hoverProvider", true},
                 }},
                 {"serverInfo", llvm::json::Object{{"name", "referee-lsp"}, {"version", "0.2.0"}}},
             });
@@ -233,6 +259,10 @@ int main()
         else if (method == "textDocument/completion")
         {
             handleCompletion(*id, msg->getObject("params"));
+        }
+        else if (method == "textDocument/hover")
+        {
+            handleHover(*id, msg->getObject("params"));
         }
         else if (method == "textDocument/didClose")
         {

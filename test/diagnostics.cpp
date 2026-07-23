@@ -667,3 +667,90 @@ TEST(Completion, EmptyForUnknownSignal)
         "comp_unknown.\n");
     EXPECT_TRUE(completeLabels(src, 1, 13, "unknown").empty());
 }
+
+// ── Hover ────────────────────────────────────────────────────────────────────
+//
+// Hover shows the declaration of the name under the caret. Same resolution as
+// completion, so the same interning caveat: each case uses its own names.
+
+namespace
+{
+
+std::string     hoverAt(std::string const& src, unsigned line, unsigned character, std::string const& tag)
+{
+    std::istringstream  is(src);
+    return Referee::hover(is, "<" + tag + ">", {}, line, character);
+}
+
+bool    contains(std::string const& hay, std::string const& needle)
+{
+    return hay.find(needle) != std::string::npos;
+}
+
+} // namespace
+
+// A data signal shows `data name : Type`, and a named struct also shows its body.
+TEST(Hover, SignalOfNamedStruct)
+{
+    auto    src = std::string(
+        "type HovPoint : struct { hx : integer; hy : integer; };\n"
+        "data hov_pt : HovPoint;\n"
+        "G(hov_pt.hx > 0);\n");
+    auto    got = hoverAt(src, 1, 7, "hovstruct");           // caret on 'hov_pt'
+
+    EXPECT_TRUE(contains(got, "data hov_pt : HovPoint"))            << got;
+    EXPECT_TRUE(contains(got, "struct { hx : integer; hy : integer }")) << got;
+}
+
+// A computed signal is flagged as such.
+TEST(Hover, ComputedSignalIsMarked)
+{
+    auto    src = std::string(
+        "data hov_i : integer;\n"
+        "data hov_avg = hov_i + 1;\n"
+        "G(hov_avg > 0);\n");
+    auto    got = hoverAt(src, 1, 8, "hovcomputed");          // caret on 'hov_avg'
+
+    EXPECT_TRUE(contains(got, "hov_avg : integer")) << got;
+    EXPECT_TRUE(contains(got, "computed"))          << got;
+}
+
+// A conf shows the `conf` keyword.
+TEST(Hover, ConfSignal)
+{
+    auto    src = std::string(
+        "conf hov_lim : number;\n"
+        "data hov_x : number;\n"
+        "G(hov_x < hov_lim);\n");
+    EXPECT_TRUE(contains(hoverAt(src, 0, 7, "hovconf"), "conf hov_lim : number"));
+}
+
+// A type name shows its definition.
+TEST(Hover, TypeName)
+{
+    auto    src = std::string(
+        "type HovMode : enum { HA, HB };\n"
+        "data hov_m : HovMode;\n"
+        "G(hov_m.HA);\n");
+    EXPECT_TRUE(contains(hoverAt(src, 0, 6, "hovtype"), "type HovMode : enum { HA, HB }"));
+}
+
+// The caret on a member shows that field's type.
+TEST(Hover, MemberField)
+{
+    auto    src = std::string(
+        "type HovS : struct { fa : integer; fb : integer; };\n"
+        "data hov_s : HovS;\n"
+        "G(hov_s.fb > 0);\n");
+    EXPECT_TRUE(contains(hoverAt(src, 2, 8, "hovmember"), "fb : integer"));
+}
+
+// Off any name — on punctuation — there is nothing to show.
+TEST(Hover, EmptyOffToken)
+{
+    auto    src = std::string(
+        "data hov_q : integer;\n"
+        "G(hov_q > 0);\n");
+    // "G(hov_q > 0);" — column 8 is the '>' operator, not part of any name.
+    EXPECT_TRUE(hoverAt(src, 1, 8, "hovempty").empty());
+}
