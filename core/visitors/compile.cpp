@@ -3542,6 +3542,55 @@ void Compile::make(llvm::LLVMContext* context, llvm::Module* module, Module* ref
         compExpr.compileTemporalLoops(temp);
         builder->CreateRet(compExpr.make(temp));
 
+        //  A run trace names a requirement vacuous when its antecedent never
+        //  fires: `G(a => b)` proves nothing about `b` on a trace where `a` is
+        //  never true, and it passes regardless. To see that, the explain path
+        //  needs the antecedent's own column -- so where the requirement is an
+        //  implication (under any run of G/F/H/O), a `__ante__` companion
+        //  evaluates just its left side per state.
+        auto    antecedentOf = [](Expr* e) -> Expr*
+        {
+            //  Peel the temporal wrappers a scope is written with; the
+            //  implication under them is what an antecedent belongs to.
+            for(;;)
+            {
+                if(auto* g = dynamic_cast<ExprG*>(e)) { e = g->arg; continue; }
+                if(auto* f = dynamic_cast<ExprF*>(e)) { e = f->arg; continue; }
+                if(auto* h = dynamic_cast<ExprH*>(e)) { e = h->arg; continue; }
+                if(auto* o = dynamic_cast<ExprO*>(e)) { e = o->arg; continue; }
+                break;
+            }
+
+            auto* imp = dynamic_cast<ExprImp*>(e);
+            return imp != nullptr ? imp->lhs : nullptr;
+        };
+
+        //  Read the antecedent from the *raw* expr, not from `temp`:
+        //  `Rewrite::make` canonicalises `a => b` to `!a || b`, so by the time
+        //  the requirement is compiled the implication is gone and the
+        //  antecedent is buried in a disjunction. The parsed tree still has it.
+        if(auto* anteRaw = antecedentOf(expr))
+        {
+            auto    ante     = Rewrite::make(anteRaw);
+            TypeCalc::make(refmod, ante);
+
+            auto    anteType = llvm::FunctionType::get(builder->getInt1Ty(),
+                                {propPtrType, propPtrType, propPtrType, confPtrType}, false);
+            auto    anteBody = llvm::Function::Create(anteType, llvm::Function::ExternalLinkage,
+                                "__ante__" + funcName, module);
+            auto    anteArg  = anteBody->args().begin();
+            anteArg->setName("frst"); anteArg++;
+            anteArg->setName("last"); anteArg++;
+            anteArg->setName("curr"); anteArg++;
+            anteArg->setName("conf");
+
+            builder->SetInsertPoint(llvm::BasicBlock::Create(*context, "entry", anteBody));
+            CompileExprImpl a(context, module, builder.get(), anteBody, refmod, propType, confType);
+            a.compileTemporalLoops(ante);
+            builder->CreateRet(a.make(ante));
+            llvm::verifyFunction(*anteBody, &llvm::outs());
+        }
+
         //  A companion that evaluates the same node at a state the caller
         //  chooses, so calling it once per state gives the requirement's
         //  per-state column -- the baseline row a run trace draws, and the

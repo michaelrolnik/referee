@@ -192,6 +192,8 @@ protected:
                 //  arguments dereferences a garbage `curr`.
                 if(name.rfind("__col__", 0) == 0)
                     continue;
+                if(name.rfind("__ante__", 0) == 0)
+                    continue;
 
                 auto    symbol  = ExitOnErr(TheJIT->lookup(name));
                 auto    func    = symbol.toPtr<bool (*)(state_t*, state_t*, void*)>();

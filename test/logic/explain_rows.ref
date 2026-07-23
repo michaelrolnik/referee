@@ -18,3 +18,16 @@ G(a >= 0);
 # viewer rather than a waveform one.
 @a_is_one_here
 a == 1;
+
+
+# A vacuous requirement: it passes, and it proves nothing. `a` never exceeds
+# 100 in the trace, so the antecedent never fires and the implication holds no
+# matter what follows it. referee marks this rather than leaving a reader to
+# infer it from a row that is green at every state -- which is exactly what a
+# genuinely satisfied requirement also looks like.
+@vacuous_guard_never_fires
+G(a > 100 => a < 0);
+
+# The same shape with an antecedent that does fire is not vacuous.
+@real_guard_fires
+G(a >= 0 => a >= 0);

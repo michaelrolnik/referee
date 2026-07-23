@@ -1010,6 +1010,41 @@ TEST(Rdb, ExplainCarriesRequirementColumns)
     EXPECT_NE(stateLine.find("[true,false,false]"), std::string::npos) << stateLine;
 }
 
+// Vacuity: a requirement that passes and proves nothing. An implication whose
+// antecedent never fires is the case computable without scope analysis, and it
+// is the failure mode the MCTP work kept rediscovering -- a green row that
+// checked nothing. A failing requirement is never vacuous, and an implication
+// whose antecedent does fire is not either.
+TEST(Rdb, ExplainMarksAVacuousRequirement)
+{
+    auto    ref = std::string(REFEREE_TEST_DATA_DIR) + "/explain_rows.ref";
+    auto    csv = std::string(REFEREE_TEST_DATA_DIR) + "/explain_rows.csv";
+    auto    out = std::string(REFEREE_TEST_DATA_DIR) + "/explain_vac.ndjson.tmp";
+
+    {
+        std::ifstream       in(ref);
+        std::ostringstream  os;
+        Referee::executeAll(in, ref, {{csv, false}}, "", os,
+                            Referee::Detail::Requirements, {}, {}, out);
+    }
+
+    std::ifstream       f(out);
+    std::string         line, vacLine, realLine;
+    while (std::getline(f, line))
+    {
+        if (line.find("vacuous_guard_never_fires") != std::string::npos) vacLine  = line;
+        if (line.find("real_guard_fires")          != std::string::npos) realLine = line;
+    }
+    std::remove(out.c_str());
+
+    ASSERT_FALSE(vacLine.empty());
+    ASSERT_FALSE(realLine.empty());
+
+    EXPECT_NE(vacLine.find("\"vacuous\":true"), std::string::npos) << vacLine;
+    EXPECT_NE(vacLine.find("antecedent_never_true"), std::string::npos) << vacLine;
+    EXPECT_NE(realLine.find("\"vacuous\":false"), std::string::npos) << realLine;
+}
+
 // A whole-state accessor and a function alias share one C namespace, and a
 // specification can put them in the same place: signal `len` generates
 // `referee_state_len`, and `func state_len` aliases to the same spelling. The

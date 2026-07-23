@@ -666,6 +666,7 @@ JitWithSpecs    buildJitFromRef(std::istream& refStream, std::string const& refN
         //  three-argument requirement passes garbage for `curr` and
         //  dereferences it.
         if (name.rfind("__col__", 0) == 0) continue;
+        if (name.rfind("__ante__", 0) == 0) continue;
 
         auto        head = name.substr(0, name.find(" .. "));   // "[file:]row:col"
         std::string file;
@@ -821,13 +822,42 @@ bool    runAllSpecs(llvm::orc::LLJIT& jit,
                     llvm::consumeError(sym.takeError());
             }
 
+            //  Vacuity: a passing requirement that proved nothing. The one
+            //  case computable without scope analysis is an implication whose
+            //  antecedent never fires -- `G(a => b)` on a trace where `a` is
+            //  never true holds no matter what `b` does. The `__ante__`
+            //  companion is exactly the antecedent's column, so this is a scan
+            //  of it for a single true. A failing requirement is never
+            //  vacuous: it found a counterexample, so something fired.
+            bool    vacuous = false;
+            if (result && stride != 0)
+                if (auto sym = jit.lookup("__ante__" + name))
+                {
+                    auto    ante = sym->toPtr<ColFn>();
+                    auto*   base = static_cast<std::uint8_t*>(frst);
+                    bool    everFired = false;
+
+                    for (std::size_t si = firstReal; si < lastReal && !everFired; si++)
+                        everFired = ante(frst, last, base + si * stride, conf);
+
+                    vacuous = !everFired;
+                }
+                else
+                    llvm::consumeError(sym.takeError());
+
             json::Writer    w(*explain);
             {
                 auto    doc = w.object();
                 w.key("kind").value("requirement");
                 w.key("where").value(name);
                 w.key("verdict").value(result ? "pass" : "fail");
-                w.key("vacuous").value(false);
+                w.key("vacuous").value(vacuous);
+                if (vacuous)
+                {
+                    w.key("vacuity");
+                    auto    v = w.object();
+                    w.key("reason").value("antecedent_never_true");
+                }
 
                 if (haveColumn)
                 {
