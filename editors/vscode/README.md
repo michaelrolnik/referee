@@ -65,6 +65,9 @@ imported files, comments excluded), **rename** (F2 rewrites a name and all its
 uses, across imported files; an invalid new identifier is rejected), and
 **signature help** (inside a call, the parameters of the `func` or `std::…`
 built-in are shown, with the active one highlighted and overloads listed).
+Find-references and rename are **type-aware** — a struct field or enum case is not
+confused with a signal of the same name, and a field is matched only on values of
+its owning type.
 
 ## Install
 
