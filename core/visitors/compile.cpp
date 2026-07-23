@@ -3748,10 +3748,55 @@ void Compile::make(llvm::LLVMContext* context, llvm::Module* module, Module* ref
 
         builder->CreateRet(compExpr.make(spec));
 
+        //  A Dwyer pattern's scope decides where it is even checked, and a
+        //  scope that never opens is the vacuity a run trace exists to show.
+        //  The scope's boundary conditions are plain state predicates; compile
+        //  each to a column and let the host fold the intervals out of it.
+        {
+            auto    boundaryCol = [&](Expr* cond, std::string suffix) -> std::string
+            {
+                auto    c    = Rewrite::make(cond);
+                TypeCalc::make(refmod, c);
+
+                auto    name = "__scope" + suffix + "__" + funcName;
+                auto    ft   = llvm::FunctionType::get(builder->getInt1Ty(),
+                                {propPtrType, propPtrType, propPtrType, confPtrType}, false);
+                auto    fn   = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, name, module);
+                auto    ar   = fn->args().begin();
+                ar->setName("frst"); ar++;
+                ar->setName("last"); ar++;
+                ar->setName("curr"); ar++;
+                ar->setName("conf");
+
+                builder->SetInsertPoint(llvm::BasicBlock::Create(*context, "entry", fn));
+                CompileExprImpl b(context, module, builder.get(), fn, refmod, propType, confType);
+                b.compileTemporalLoops(c);
+                builder->CreateRet(b.make(c));
+                llvm::verifyFunction(*fn, &llvm::outs());
+                return name;
+            };
+
+            if(dynamic_cast<SpecGlobally*>(spec))
+                refmod->setScope(funcName, {"globally", "", ""});
+            else if(auto* sc = dynamic_cast<SpecBefore*>(spec))
+                refmod->setScope(funcName, {"before", boundaryCol(sc->arg, "A"), ""});
+            else if(auto* sc = dynamic_cast<SpecAfter*>(spec))
+                refmod->setScope(funcName, {"after", boundaryCol(sc->arg, "A"), ""});
+            else if(auto* sc = dynamic_cast<SpecWhile*>(spec))
+                //  `while` derives from `between`, so it is tried first.
+                refmod->setScope(funcName, {"while", boundaryCol(sc->lhs, "A"), ""});
+            else if(auto* sc = dynamic_cast<SpecBetweenAnd*>(spec))
+                refmod->setScope(funcName,
+                    {"between", boundaryCol(sc->lhs, "A"), boundaryCol(sc->rhs, "B")});
+            else if(auto* sc = dynamic_cast<SpecAfterUntil*>(spec))
+                refmod->setScope(funcName,
+                    {"after_until", boundaryCol(sc->lhs, "A"), boundaryCol(sc->rhs, "B")});
+        }
+
         if(!llvm::verifyFunction(*funcBody, &llvm::outs()))
         {
-//  LCOV_EXCL_START 
-//  GCOV_EXCL_START 
+//  LCOV_EXCL_START
+//  GCOV_EXCL_START
             //throw std::runtime_error(__PRETTY_FUNCTION__);
 //  GCOV_EXCL_STOP
 //  LCOV_EXCL_STOP

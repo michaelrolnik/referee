@@ -668,6 +668,7 @@ JitWithSpecs    buildJitFromRef(std::istream& refStream, std::string const& refN
         if (name.rfind("__col__", 0) == 0) continue;
         if (name.rfind("__ante__", 0) == 0) continue;
         if (name.rfind("__sub__", 0) == 0) continue;
+        if (name.rfind("__scope", 0) == 0) continue;
 
         auto        head = name.substr(0, name.find(" .. "));   // "[file:]row:col"
         std::string file;
@@ -832,18 +833,111 @@ bool    runAllSpecs(llvm::orc::LLJIT& jit,
             //  companion is exactly the antecedent's column, so this is a scan
             //  of it for a single true. A failing requirement is never
             //  vacuous: it found a counterexample, so something fired.
-            bool    vacuous = false;
-            if (result && stride != 0)
+            bool        vacuous = false;
+            char const* reason  = nullptr;
+            auto*       base    = static_cast<std::uint8_t*>(frst);
+
+            //  A boundary condition, evaluated at every real state.
+            auto    columnOf = [&](std::string const& fn) -> std::vector<bool>
+            {
+                std::vector<bool>   col;
+                if (auto sym = jit.lookup(fn))
+                {
+                    auto    f = sym->toPtr<ColFn>();
+                    for (std::size_t si = firstReal; si < lastReal; si++)
+                        col.push_back(f(frst, last, base + si * stride, conf));
+                }
+                else
+                    llvm::consumeError(sym.takeError());
+                return col;
+            };
+
+            //  Where a Dwyer pattern's scope was open, as half-open intervals.
+            //  An interval is a fold over the boundary columns, so it is
+            //  derived here rather than compiled -- the same reasoning that
+            //  keeps witnesses out of the code generator.
+            using Interval = std::pair<std::size_t, std::size_t>;
+            std::vector<Interval>   active;
+            ::Module::Scope const*  scope = astModule ? astModule->scopeFor(name) : nullptr;
+
+            if (scope && stride != 0)
+            {
+                std::size_t     n = lastReal > firstReal ? lastReal - firstReal : 0;
+                auto            A = scope->condA.empty() ? std::vector<bool>() : columnOf(scope->condA);
+                auto            B = scope->condB.empty() ? std::vector<bool>() : columnOf(scope->condB);
+
+                auto    firstTrue = [&](std::vector<bool> const& c) -> long
+                {
+                    for (std::size_t i = 0; i < c.size(); i++) if (c[i]) return long(i);
+                    return -1;
+                };
+
+                if (scope->kind == "globally")
+                {
+                    if (n) active.push_back({0, n});
+                }
+                else if (scope->kind == "before")
+                {
+                    long e = firstTrue(A);
+                    if (n) active.push_back({0, e < 0 ? n : std::size_t(e)});
+                }
+                else if (scope->kind == "after")
+                {
+                    long e = firstTrue(A);
+                    if (e >= 0) active.push_back({std::size_t(e), n});
+                }
+                else if (scope->kind == "while")
+                {
+                    //  Every maximal run of states where the condition holds.
+                    for (std::size_t i = 0; i < A.size(); )
+                    {
+                        if (!A[i]) { i++; continue; }
+                        std::size_t j = i;
+                        while (j < A.size() && A[j]) j++;
+                        active.push_back({i, j});
+                        i = j;
+                    }
+                }
+                else //  between / after_until
+                {
+                    bool        open = false;
+                    std::size_t start = 0;
+                    for (std::size_t i = 0; i < n; i++)
+                    {
+                        if (!open && i < A.size() && A[i]) { open = true; start = i; continue; }
+                        if (open && i < B.size() && B[i]) { active.push_back({start, i}); open = false; }
+                    }
+                    //  `after Q until R` with R absent keeps the scope open to
+                    //  the end; `between Q and R` needs the closing R, so an
+                    //  unclosed opening contributes nothing.
+                    if (open && scope->kind == "after_until") active.push_back({start, n});
+                }
+
+                //  A scope that never opened is the vacuity this half exists
+                //  for: the requirement passed because it was never checked. It
+                //  applies only where an opening is required -- `globally` and
+                //  `before` cover the trace even when their boundary is absent.
+                bool    needsOpening = scope->kind == "after" || scope->kind == "while"
+                                    || scope->kind == "between" || scope->kind == "after_until";
+                if (result && needsOpening && active.empty())
+                {
+                    vacuous = true;
+                    reason  = "scope_never_opened";
+                }
+            }
+
+            //  An implication whose antecedent never fires: passes and proves
+            //  nothing. Only if a scope did not already explain the vacuity.
+            if (!vacuous && result && stride != 0)
                 if (auto sym = jit.lookup("__ante__" + name))
                 {
                     auto    ante = sym->toPtr<ColFn>();
-                    auto*   base = static_cast<std::uint8_t*>(frst);
                     bool    everFired = false;
 
                     for (std::size_t si = firstReal; si < lastReal && !everFired; si++)
                         everFired = ante(frst, last, base + si * stride, conf);
 
-                    vacuous = !everFired;
+                    if (!everFired) { vacuous = true; reason = "antecedent_never_true"; }
                 }
                 else
                     llvm::consumeError(sym.takeError());
@@ -859,7 +953,22 @@ bool    runAllSpecs(llvm::orc::LLJIT& jit,
                 {
                     w.key("vacuity");
                     auto    v = w.object();
-                    w.key("reason").value("antecedent_never_true");
+                    w.key("reason").value(reason);
+                }
+
+                if (scope)
+                {
+                    w.key("scope");
+                    auto    so = w.object();
+                    w.key("kind").value(scope->kind);
+                    w.key("active");
+                    auto    ar = w.array();
+                    for (auto const& iv : active)
+                    {
+                        auto    pr = w.array();
+                        w.value(std::int64_t(iv.first));
+                        w.value(std::int64_t(iv.second));
+                    }
                 }
 
                 if (haveColumn)

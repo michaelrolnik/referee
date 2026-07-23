@@ -137,6 +137,23 @@ public:
     void                            addRunRow(std::string const& req, RunRow row);
     std::vector<RunRow> const&      runRowsFor(std::string const& req) const;
 
+    //  A Dwyer pattern's scope: where the pattern is even checked. `after Q`
+    //  is not evaluated until `Q` first holds, and a trace where it never does
+    //  leaves the requirement passing over an empty scope -- which is the
+    //  vacuity a run trace exists to make visible. The boundary conditions are
+    //  compiled to column functions; the host evaluates them and derives the
+    //  active intervals, since an interval is a fold over a column and needs
+    //  no code generation.
+    struct  Scope
+    {
+        std::string     kind;       //  globally|before|after|between|after_until|while
+        std::string     condA;      //  boundary column function, or "" for globally
+        std::string     condB;      //  second boundary, for between / after_until
+    };
+
+    void                    setScope(std::string const& req, Scope scope);
+    Scope const*            scopeFor(std::string const& req) const;
+
 private:
     std::map<std::string, Type*>    m_name2type;
     std::map<std::string, Type*>    m_name2data;  // ALL props (CSV + computed) for type lookup
@@ -149,6 +166,7 @@ private:
     std::vector<std::string>        m_specNames;    //  parallel to m_specs
     std::set<std::string>           m_reqNames;     //  for duplicate detection
     std::map<std::string, std::vector<RunRow>>  m_runRows;  //  by requirement
+    std::map<std::string, Scope>                m_scopes;   //  by requirement
 
     void    noteName(std::string const& name);
     std::vector<std::string>        m_context;

@@ -291,6 +291,17 @@ std::vector<Module::RunRow> const&  Module::runRowsFor(std::string const& req) c
     return  it == m_runRows.end() ? none : it->second;
 }
 
+void    Module::setScope(std::string const& req, Scope scope)
+{
+    m_scopes[req] = std::move(scope);
+}
+
+Module::Scope const*    Module::scopeFor(std::string const& req) const
+{
+    auto    it = m_scopes.find(req);
+    return  it == m_scopes.end() ? nullptr : &it->second;
+}
+
 namespace {
 
 //  A canonical spelling of everything a caller and a callee must agree on.

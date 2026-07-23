@@ -205,9 +205,26 @@ leaving a green row to be mistaken for a satisfied one. A `__ante__` companion
 is the antecedent's own column, read from the raw tree before `=>` is
 canonicalised to `!a || b`.
 
-**Still not built:** `scope.active` and `scope_never_opened` vacuity for Dwyer
-patterns -- these need each pattern's scope condition rather than an
-antecedent -- and `quantifier_empty`.
+**Built since:** `scope.active` and `scope_never_opened` vacuity for Dwyer
+patterns.
+
+Each pattern's scope decides where it is even checked. The scope's boundary
+conditions -- `after Q`, `between Q and R`, `while Q` -- are compiled to column
+functions, and the host folds the active intervals out of them: a fold over a
+column needs no code generation, the same reasoning that keeps witnesses out of
+the generator. `globally` is the whole trace; `after Q` opens at the first `Q`;
+`between Q and R` is each complete window; `after Q until R` stays open to the
+end when `R` never comes, which is the one place it differs from `between`.
+
+A scope that never opens is `scope_never_opened` vacuity: the requirement
+passed because nothing exercised it, which reads identically to a satisfied one
+and is the coverage gap this half of the feature exists to close. It applies
+where an opening is required -- `after`, `while`, `between`, `after_until` --
+and not to `globally`/`before`, which cover the trace even when their boundary
+is absent.
+
+**Still not built:** `quantifier_empty` vacuity, and the O(N^2)-to-linear
+bottom-up column evaluator.
 
 ## Format
 

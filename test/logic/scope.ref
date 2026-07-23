@@ -1,0 +1,27 @@
+# A Dwyer pattern's scope: where the requirement is even checked. A scope that
+# never opens leaves the requirement passing over nothing -- identical to a
+# satisfied one, and the coverage gap a run trace exists to close. referee
+# derives the active intervals from the boundary conditions and marks an empty
+# scope vacuous.
+
+type K : enum { IDLE, RUN, STOP, ERROR };
+data k : K;
+data v : integer;
+
+# Whole trace: active across every state, never scope-vacuous.
+@glob
+globally, it is always the case that v >= 0 holds;
+
+# Opens where the condition first holds. RUN is at state 1, so [1, 4).
+@after_run
+after k.RUN, it is always the case that v > 0 holds;
+
+# ERROR never occurs in the trace, so the scope never opens: the requirement
+# passes without ever being checked, which is exactly what vacuous must catch.
+# The body is trivially true, so this passes -- vacuously.
+@never_opens
+after k.ERROR, it is always the case that v >= -1 holds;
+
+# `between` needs both bounds; the complete RUN..STOP window is [1, 2).
+@btw
+between k.RUN and k.STOP, it is always the case that v > 0 holds;

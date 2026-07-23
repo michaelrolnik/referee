@@ -1080,6 +1080,53 @@ TEST(Rdb, ExplainCarriesSubexpressionRows)
     EXPECT_NE(conj.find("[true,true,false]"),    std::string::npos) << conj;
 }
 
+// A Dwyer pattern's scope is where it is even checked, and a scope that never
+// opens is the vacuity a run trace exists to make visible: the requirement
+// passes because nothing exercised it. referee derives the active intervals
+// from the boundary conditions -- an interval is a fold over a column, so it
+// is computed here rather than in the code generator.
+TEST(Rdb, ExplainCarriesScopeAndScopeVacuity)
+{
+    auto    ref = std::string(REFEREE_TEST_DATA_DIR) + "/scope.ref";
+    auto    csv = std::string(REFEREE_TEST_DATA_DIR) + "/scope.csv";
+    auto    out = std::string(REFEREE_TEST_DATA_DIR) + "/scope.ndjson.tmp";
+
+    {
+        std::ifstream       in(ref);
+        std::ostringstream  os;
+        Referee::executeAll(in, ref, {{csv, false}}, "", os,
+                            Referee::Detail::Requirements, {}, {}, out);
+    }
+
+    std::ifstream       f(out);
+    std::string         line;
+    std::map<std::string, std::string>  byName;
+    while (std::getline(f, line))
+    {
+        for (auto const* n : {"glob", "after_run", "never_opens", "btw"})
+            if (line.find(std::string("\"where\":\"") + n + "\"") != std::string::npos)
+                byName[n] = line;
+    }
+    std::remove(out.c_str());
+
+    //  Whole trace, four states, never scope-vacuous.
+    EXPECT_NE(byName["glob"].find("\"kind\":\"globally\""), std::string::npos) << byName["glob"];
+    EXPECT_NE(byName["glob"].find("\"active\":[[0,4]]"),    std::string::npos) << byName["glob"];
+
+    //  Opens at the first RUN (state 1).
+    EXPECT_NE(byName["after_run"].find("\"active\":[[1,4]]"), std::string::npos) << byName["after_run"];
+
+    //  The condition never holds, so the scope never opens: passes, and proves
+    //  nothing.
+    EXPECT_NE(byName["never_opens"].find("\"active\":[]"),       std::string::npos) << byName["never_opens"];
+    EXPECT_NE(byName["never_opens"].find("\"vacuous\":true"),    std::string::npos) << byName["never_opens"];
+    EXPECT_NE(byName["never_opens"].find("scope_never_opened"),  std::string::npos) << byName["never_opens"];
+
+    //  A complete RUN..STOP window.
+    EXPECT_NE(byName["btw"].find("\"active\":[[1,2]]"), std::string::npos) << byName["btw"];
+    EXPECT_NE(byName["btw"].find("\"vacuous\":false"),  std::string::npos) << byName["btw"];
+}
+
 // A whole-state accessor and a function alias share one C namespace, and a
 // specification can put them in the same place: signal `len` generates
 // `referee_state_len`, and `func state_len` aliases to the same spelling. The
