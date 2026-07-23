@@ -296,16 +296,16 @@ REF expressions combine the familiar C-family operator set with dedicated tempor
 | Shift       | `<<`, `>>`                                 | Integers only. `>>` is arithmetic — REF integers are signed. |
 | Relational  | `<`, `<=`, `>`, `>=`                       |                                                  |
 | Equality    | `==`, `!=`                                 | Works on booleans, numbers, strings, enums.      |
-| Bitwise AND | `&`                                        | Integers only.                                   |
-| XOR         | `^`                                        | Bitwise on integers, logical on booleans.        |
-| Bitwise OR  | `\|`                                       | Integers only.                                   |
-| Logical AND | `&&`                                       |                                                  |
-| Logical OR  | `\|\|`                                      |                                                  |
+| AND         | `&`                                        | Bitwise on integers, logical on booleans.        |
+| XOR         | `^`                                        | Bitwise on integers, logical on booleans; the only logical xor. |
+| OR          | `\|`                                       | Bitwise on integers, logical on booleans.        |
+| Logical AND | `&&`                                       | Booleans; short-circuits. `&` is the non-short-circuiting form. |
+| Logical OR  | `\|\|`                                      | Booleans; short-circuits. `\|` is the non-short-circuiting form. |
 | Implication | `=>`, `<=>`                                | Material implication and biconditional.          |
 | Ternary     | `cond ? then : else`                       | Selects between two values of the same type.     |
 | Grouping    | `(...)`                                    |                                                  |
 
-The precedence is C's, exactly — including the part everyone trips over: `&`, `^` and `\|` bind *looser* than `==`, so `flag & 0x80 != 0` reads as `flag & (0x80 != 0)`. C computes that silently; REF rejects it, because `!=` yields a boolean and the bitwise operators take integers. Write `(flag & 0x80) != 0`.
+The precedence is C's, exactly — including the part everyone trips over: `&`, `^` and `\|` bind *looser* than `==`, so `flag & 0x80 != 0` reads as `flag & (0x80 != 0)`. C computes that silently; REF rejects it, because `!=` yields a boolean while `flag` is an integer, and `&` takes two of a kind — two integers or two booleans, not one of each. Write `(flag & 0x80) != 0`.
 
 `^` is the one operator that does double duty — bitwise xor on integers, logical xor on booleans — because there is no `^^` to pair with `&&` and `\|\|`. `&` and `\|` stay integers-only for that reason: booleans already have the doubled spellings.
 

@@ -2150,16 +2150,16 @@ void    CompileExprImpl::visit( ExprCall*       expr)
     m_value = widenByte(m_builder->CreateCall(callee, args, expr->name + "()"), decl.ret);
 }
 
+//  `&`, `|`, `^` lower to the one LLVM instruction each whatever the operand
+//  width: i64 for integers (a `byte` is widened on load), i1 for booleans,
+//  where the same instruction is the logical operator. TypeCalc has already
+//  ruled out a mixed pair, so both operands share a width here and no juggling
+//  is needed. `>>` (below) is arithmetic, since REF integers are signed.
 void    CompileExprImpl::visit( ExprXor*        expr)
 {
-    auto    lhs = make(expr->lhs);
-    auto    rhs = make(expr->rhs);
-    m_value = m_builder->CreateXor(lhs, rhs);   //  TODO: fix
+    m_value = m_builder->CreateXor(make(expr->lhs), make(expr->rhs), "xor");
 }
 
-//  Bitwise. The operands are always i64 by the time they arrive -- a `byte` is
-//  widened on load -- so there is one instruction per operator and no width
-//  juggling. `>>` is arithmetic, since REF integers are signed.
 void    CompileExprImpl::visit( ExprBand*       expr)
 {
     m_value = m_builder->CreateAnd(make(expr->lhs), make(expr->rhs), "band");

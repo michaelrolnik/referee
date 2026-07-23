@@ -111,6 +111,7 @@ struct TypeCalcImpl
     bool    isNumeric(Type* type) const;
 
     Type*   bitwise(Expr* expr, Expr* lhs, Expr* rhs);
+    Type*   bitOrLogical(Expr* expr, Expr* lhs, Expr* rhs);
 
     //  `byte` is a storage width, not a value kind: reading one yields an
     //  integer. Applied wherever a value comes out of storage, so nothing
@@ -803,20 +804,29 @@ void    TypeCalcImpl::visit(ExprCall*               expr)
     m_type = widen(decl.ret);
 }
 
-void    TypeCalcImpl::visit(ExprXor*                expr)
+//  `&`, `|`, `^` are one operator each over two operand kinds: integers, where
+//  they read the bit pattern (a `byte` out of a trace is an integer), and
+//  booleans, where they are the non-short-circuiting logical operators --
+//  matching `&&` / `||` in result, differing only in that those two may stop
+//  at the first operand. A mixed pair is neither, and rejected. The three
+//  agree so a reader never has to remember which of them happens to take a
+//  boolean; `^` is also the only logical xor, there being no `^^`.
+Type*   TypeCalcImpl::bitOrLogical(Expr* expr, Expr* lhs, Expr* rhs)
 {
-    if(make(expr->lhs) == typeInteger && make(expr->rhs) == typeInteger)
-    {
-        m_type = typeInteger;
-        return;
-    }
+    if(make(lhs) == typeInteger && make(rhs) == typeInteger)
+        return typeInteger;
 
-    m_type = boolBool2Bool(expr, expr->lhs, expr->rhs);
+    return  boolBool2Bool(expr, lhs, rhs);
 }
 
-//  Bitwise operators work on the bit pattern of an integer, which is what a
-//  `byte` read out of a trace becomes. Both operands must be integral: there
-//  is no bitwise reading of a number, and `&&` / `||` already cover booleans.
+void    TypeCalcImpl::visit(ExprXor*                expr)
+{
+    m_type  = bitOrLogical(expr, expr->lhs, expr->rhs);
+}
+
+//  Shift is integer-only: there is no bitwise reading of a number, and
+//  shifting a boolean is meaningless -- unlike `&` / `|` / `^`, `<<` / `>>`
+//  do not generalise to booleans, so they keep the stricter check.
 Type*   TypeCalcImpl::bitwise(Expr* expr, Expr* lhs, Expr* rhs)
 {
     auto    lhsT    = make(lhs);
@@ -833,12 +843,12 @@ Type*   TypeCalcImpl::bitwise(Expr* expr, Expr* lhs, Expr* rhs)
 
 void    TypeCalcImpl::visit(ExprBand*               expr)
 {
-    m_type  = bitwise(expr, expr->lhs, expr->rhs);
+    m_type  = bitOrLogical(expr, expr->lhs, expr->rhs);
 }
 
 void    TypeCalcImpl::visit(ExprBor*                expr)
 {
-    m_type  = bitwise(expr, expr->lhs, expr->rhs);
+    m_type  = bitOrLogical(expr, expr->lhs, expr->rhs);
 }
 
 void    TypeCalcImpl::visit(ExprShl*                expr)

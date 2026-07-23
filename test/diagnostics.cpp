@@ -106,6 +106,9 @@ TEST(Diagnostics, RejectsMistypedOperands)
         "data i : integer;\ndata s : string;\ni + s;\n",         // add a string
         "data a : boolean;\ndata i : integer;\na && i;\n",       // conjoin an integer
         "data i : integer;\ni && i;\n",
+        "data a : boolean;\ndata i : integer;\na & i;\n",        // & mixes bool and int
+        "data a : boolean;\ndata i : integer;\ni | a;\n",        // | mixes int and bool
+        "data a : boolean;\ndata i : integer;\na ^ i;\n",        // ^ mixes bool and int
         "data i : integer;\ni => i;\n",
     };
 

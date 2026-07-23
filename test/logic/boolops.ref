@@ -1,0 +1,22 @@
+# `&`, `|`, `^` accept booleans and are the non-short-circuiting logical
+# operators, matching `&&` / `||` in result (they differ only in that `&&` /
+# `||` may stop at the first operand). `^` already did this; `&` and `|` used
+# to reject a boolean operand, which left the family inconsistent -- one of the
+# three worked on booleans and two did not. Every line here must hold.
+
+data a : boolean;
+data b : boolean;
+
+# ── the single-char forms match the double-char ones on booleans ─────────────
+G((a & b) == (a && b));
+G((a | b) == (a || b));
+
+# `^` is the only logical xor -- there is no `^^` -- and it agrees with the two
+# ways it would otherwise be written.
+G((a ^ b) == (a != b));
+G((a ^ b) == ((a || b) && !(a & b)));
+
+# ── integer bitwise is untouched: same operators, integer operands ───────────
+G((0xF0 & 0x0F) == 0x00);
+G((0xF0 | 0x0F) == 0xFF);
+G((0xFF ^ 0x0F) == 0xF0);

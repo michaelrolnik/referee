@@ -1419,6 +1419,25 @@ TEST(Rdb, OperatorPrecedenceMatchesDocumentation)
     std::remove(rdbPath.c_str());
 }
 
+// `&`, `|`, `^` on booleans are the non-short-circuiting logical operators,
+// matching `&&` / `||` in result. `^` already accepted booleans; `&` and `|`
+// used to reject them. boolops.ref pins all three, and that integer bitwise is
+// unchanged; every requirement in it must pass.
+TEST(Rdb, BooleanLogicalBitwiseMatchesShortCircuit)
+{
+    auto    refPath = std::string(REFEREE_TEST_DATA_DIR) + "/boolops.ref";
+    auto    csvPath = std::string(REFEREE_TEST_DATA_DIR) + "/boolops.csv";
+    auto    rdbPath = tmpFile("boolops");
+
+    referee::db::ingest(refPath, csvPath, /*confPath=*/"", rdbPath);
+
+    std::ifstream       refIn(refPath);
+    std::ostringstream  out;
+    EXPECT_TRUE(Referee::executeRdb(refIn, refPath, rdbPath, out)) << out.str();
+
+    std::remove(rdbPath.c_str());
+}
+
 // The README's worked examples have to keep compiling. These are the two that
 // carry real syntax rather than illustrative fragments.
 TEST(Rdb, ReadmeExamplesCompile)
