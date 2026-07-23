@@ -367,7 +367,25 @@ Tw(p, q) = ¬Ss(¬p, ¬q)      Ts(p, q) = ¬Sw(¬p, ¬q)
 
 Read directly: `q` must hold at every state from `i` up to **and including** the first state where `p` holds — `p` *releases* the obligation on `q`. If `p` never holds, `q` must hold forever; **weak** release (`Rw`) accepts that, **strong** release (`Rs`) additionally requires `p` to occur. Trigger (`Tw`/`Ts`) is the same into the past. `G` and `H` are the degenerate case with no releaser: `G(p)` canonicalises to `Rw(false, p)` — `p` released by nothing, so `p` forever.
 
-**The strong/weak rule, once.** Every binary operator is a fixpoint over neighbouring states — `val[i]` in terms of `val[i±1]` (see *Temporal lowering*). The only freedom is the base case at the end of the finite trace: a **strong** operator seeds it `false` (an obligation not discharged within the trace is unmet), a **weak** operator seeds it `true` (an obligation the trace ended before testing is forgiven). Choosing strong or weak is choosing what an unfinished trace means.
+**Recurrences.** Each operator is defined at a state in terms of its value at the neighbouring state — `i+1` for future operators, `i−1` for past ones — which is both the semantics and, verbatim, what the compiler emits (see *Temporal lowering*). Two families cover all eight binary operators; the unary ones are special cases:
+
+```text
+until / since   (disjunctive):   val[i] = q[i] ∨ (p[i] ∧ val[i±1])
+release / trigger (conjunctive):  val[i] = q[i] ∧ (p[i] ∨ val[i±1])
+
+  Us(p,q)[i] = q[i] ∨ (p[i] ∧ Us(p,q)[i+1])      Ss(p,q)[i] = q[i] ∨ (p[i] ∧ Ss(p,q)[i−1])
+  Uw(p,q)[i] = q[i] ∨ (p[i] ∧ Uw(p,q)[i+1])      Sw(p,q)[i] = q[i] ∨ (p[i] ∧ Sw(p,q)[i−1])
+  Rs(p,q)[i] = q[i] ∧ (p[i] ∨ Rs(p,q)[i+1])      Ts(p,q)[i] = q[i] ∧ (p[i] ∨ Ts(p,q)[i−1])
+  Rw(p,q)[i] = q[i] ∧ (p[i] ∨ Rw(p,q)[i+1])      Tw(p,q)[i] = q[i] ∧ (p[i] ∨ Tw(p,q)[i−1])
+
+  G(p)[i] = p[i] ∧ G(p)[i+1]      F(p)[i] = p[i] ∨ F(p)[i+1]        (future:  neighbour i+1)
+  H(p)[i] = p[i] ∧ H(p)[i−1]      O(p)[i] = p[i] ∨ O(p)[i−1]        (past:    neighbour i−1)
+  Xs(p)[i] = p[i+1]               Ys(p)[i] = p[i−1]
+```
+
+The recurrences for a strong and its weak twin are *identical* — `Us` and `Uw` read the same, `Rs` and `Rw` read the same. They differ only in one place:
+
+**The base case is the whole strong/weak distinction.** Past the end of the finite trace the recurrence has to stop, and what it returns there is the seed: a **strong** operator seeds `false` (an obligation not discharged within the trace is unmet — `Us` off the end is false, `Xs` at the last state is false), a **weak** operator seeds `true` (an obligation the trace ended before it could be tested is forgiven — `Uw` off the end is true, `Xw` at the last state is true). `G(p) = Rw(false, p)` unfolds to `p[i] ∧ val[i+1]` seeded `true`; `F(p) = Us(true, p)` unfolds to `p[i] ∨ val[i+1]` seeded `false`. Choosing strong or weak is choosing what an unfinished trace means.
 
 **Time bounds.** `op[lo:hi]` restricts the witnessing (or obligated) states to those whose timestamp lies in `[t + lo, t + hi]`, where `t` is the timestamp at the evaluation point — MTL over the trace's own clock. `[:hi]` and `[lo:]` leave the open end unbounded. Only the bounded forms consult timestamps at all; the unbounded operators step from sample to sample and never look at the clock (see *What a trace means between samples*).
 
