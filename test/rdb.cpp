@@ -967,6 +967,49 @@ TEST(Rdb, LoadSizedArrays)
     std::remove(rdb.c_str());
 }
 
+// A run trace carries each bare requirement's own per-state column, and the
+// column's first value must equal the verdict -- same compiler, same AST, so a
+// disagreement is a bug in referee rather than a drawing choice. A temporal
+// requirement is marked so a viewer draws its falsity as a claim about the
+// suffix rather than a fact about the instant.
+TEST(Rdb, ExplainCarriesRequirementColumns)
+{
+    auto    ref = std::string(REFEREE_TEST_DATA_DIR) + "/explain_rows.ref";
+    auto    csv = std::string(REFEREE_TEST_DATA_DIR) + "/explain_rows.csv";
+    auto    out = std::string(REFEREE_TEST_DATA_DIR) + "/explain_rows.ndjson.tmp";
+
+    {
+        std::ifstream       in(ref);
+        std::ostringstream  os;
+        Referee::executeAll(in, ref, {{csv, false}}, "", os,
+                            Referee::Detail::Requirements, {}, {}, out);
+
+        //  The self-check prints INTERNAL to the verdict stream on a
+        //  column/verdict mismatch. It must not.
+        EXPECT_EQ(os.str().find("INTERNAL"), std::string::npos) << os.str();
+    }
+
+    std::ifstream       f(out);
+    std::string         line, temporalLine, stateLine;
+    while (std::getline(f, line))
+    {
+        if (line.find("\"where\":\"always_nonneg\"") != std::string::npos) temporalLine = line;
+        if (line.find("\"where\":\"a_is_one_here\"")  != std::string::npos) stateLine    = line;
+    }
+    std::remove(out.c_str());
+
+    ASSERT_FALSE(temporalLine.empty());
+    ASSERT_FALSE(stateLine.empty());
+
+    //  G(a >= 0) with a = 1, 0, 3 holds from every state: [true, true, true].
+    EXPECT_NE(temporalLine.find("\"kind\":\"temporal\""), std::string::npos) << temporalLine;
+    EXPECT_NE(temporalLine.find("[true,true,true]"), std::string::npos) << temporalLine;
+
+    //  a == 1 is a fact about each state: true, false, false.
+    EXPECT_NE(stateLine.find("\"kind\":\"state\""), std::string::npos) << stateLine;
+    EXPECT_NE(stateLine.find("[true,false,false]"), std::string::npos) << stateLine;
+}
+
 // A whole-state accessor and a function alias share one C namespace, and a
 // specification can put them in the same place: signal `len` generates
 // `referee_state_len`, and `func state_len` aliases to the same spelling. The

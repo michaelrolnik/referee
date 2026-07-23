@@ -238,12 +238,18 @@ TEST(Cli, ExplainWritesASchemaValidRunTrace)
 
     std::ifstream       f(out);
     std::string         line;
-    int                 header = 0, signals = 0;
+    int                 header = 0, signals = 0, requirements = 0, withRows = 0;
 
     while (std::getline(f, line))
     {
         if (line.find("\"kind\":\"header\"")  != std::string::npos) header++;
         if (line.find("\"kind\":\"signal\"")  != std::string::npos) signals++;
+        if (line.find("\"kind\":\"requirement\"") != std::string::npos)
+        {
+            requirements++;
+            if (line.find("\"rows\":") != std::string::npos)
+                withRows++;
+        }
 
         //  One record per line, which is what makes the file streamable.
         EXPECT_NE(line.find('{'), std::string::npos) << line;
@@ -251,6 +257,15 @@ TEST(Cli, ExplainWritesASchemaValidRunTrace)
 
     EXPECT_EQ(header, 1);
     EXPECT_GT(signals, 0);
+
+    //  Bare requirements now carry their own per-state column, not just a
+    //  verdict. accumulate.ref is all bare expressions, so all but a shadowed
+    //  duplicate do -- two textually identical requirements at different lines
+    //  intern to one node, and only the first keeps the column's name.
+    //  Rdb.ExplainCarriesRequirementColumns checks the column's contents on a
+    //  fixture without that quirk.
+    EXPECT_GT(requirements, 0);
+    EXPECT_GE(withRows, requirements - 1) << "bare requirements should carry a column";
 
     //  Sentinels bracket the real states internally and must not appear: the
     //  trace has eight rows, and a picture showing ten would show two states

@@ -1,0 +1,20 @@
+# The requirement's own value at every state, for a run trace to draw.
+#
+# A companion function evaluates the same node the verdict comes from, at a
+# state the caller picks, so the column is the same compiler on the same AST
+# -- there is no second evaluator to disagree with the verdict. referee checks
+# that the column's first-state value equals the verdict on every explain run;
+# a mismatch is a bug in referee, not a picture.
+
+data a : integer;
+
+# A temporal requirement: false at a state is a claim about the suffix from
+# there, so its row is drawn as a span, not a cell. Marked `temporal`.
+@always_nonneg
+G(a >= 0);
+
+# A state requirement: false at a state is a fact about that state. Marked
+# `state`, and the distinction is the reason a plotting library is the right
+# viewer rather than a waveform one.
+@a_is_one_here
+a == 1;

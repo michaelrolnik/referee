@@ -187,6 +187,11 @@ protected:
             {
                 if(name == "debug" || name == "__prepare__")
                     continue;
+                //  A `__col__<req>` companion is a four-argument column
+                //  evaluator, not a requirement -- calling it with three
+                //  arguments dereferences a garbage `curr`.
+                if(name.rfind("__col__", 0) == 0)
+                    continue;
 
                 auto    symbol  = ExitOnErr(TheJIT->lookup(name));
                 auto    func    = symbol.toPtr<bool (*)(state_t*, state_t*, void*)>();

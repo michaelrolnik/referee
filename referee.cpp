@@ -660,6 +660,13 @@ JitWithSpecs    buildJitFromRef(std::istream& refStream, std::string const& refN
         auto name = F.getName().str();
         if (name == "__prepare__") continue;
 
+        //  `__col__<req>` is a companion that evaluates a requirement at a
+        //  caller-chosen state -- a four-argument function reached by name
+        //  from the explain path, never a requirement to run. Calling it as a
+        //  three-argument requirement passes garbage for `curr` and
+        //  dereferences it.
+        if (name.rfind("__col__", 0) == 0) continue;
+
         auto        head = name.substr(0, name.find(" .. "));   // "[file:]row:col"
         std::string file;
         int         row = 0, col = 0;
@@ -701,9 +708,14 @@ bool    runAllSpecs(llvm::orc::LLJIT& jit,
                     std::vector<std::string> const& funcNames,
                     void* frst, void* last, void* conf,
                     std::ostream& os,
-                    std::ostream* explain = nullptr)
+                    std::ostream* explain = nullptr,
+                    std::size_t   stride = 0,
+                    std::size_t   firstReal = 0,
+                    std::size_t   lastReal = 0,
+                    std::set<std::string> const* temporalReqs = nullptr)
 {
     using SpecFn = bool(*)(void*, void*, void*);
+    using ColFn  = bool(*)(void*, void*, void*, void*);
 
     //  An index outside its array cannot be answered, and it cannot be turned
     //  into a verdict inside the generated code either: a requirement returns
@@ -772,12 +784,43 @@ bool    runAllSpecs(llvm::orc::LLJIT& jit,
            << (result ? " PASS" : " FAIL")
            << (why.empty() ? "" : "  " + why) << "\n";
 
-        //  The same verdict, as a record. No rows yet -- those need
-        //  per-subexpression columns -- and no scope, which must not be
-        //  guessed: an empty `active` means the scope never opened, so
-        //  writing one speculatively would mark everything vacuous.
+        //  The verdict, and the requirement's own per-state column beside it.
+        //  A companion `__col__` evaluates the same node at each state, so the
+        //  column is the same compiler applied to the same AST -- there is no
+        //  second evaluator to drift from the verdict, which is what makes a
+        //  second evaluation path safe rather than dangerous.
+        //
+        //  The check that pays for it: the column's value at the first state
+        //  is what the requirement returns, so the two must agree. A mismatch
+        //  is a bug in referee, reported as one rather than drawn as a picture.
+        //  A bare `Expr` requirement has a `__col__`; a Dwyer pattern does not
+        //  -- it quantifies over the whole trace and has no per-state value to
+        //  draw -- so its record carries the verdict alone, as before.
         if (explain != nullptr)
         {
+            std::vector<bool>   column;
+            bool                haveColumn = false;
+
+            if (stride != 0)
+            {
+                if (auto sym = jit.lookup("__col__" + name))
+                {
+                    auto    col  = sym->toPtr<ColFn>();
+                    auto*   base = static_cast<std::uint8_t*>(frst);
+
+                    for (std::size_t si = firstReal; si < lastReal; si++)
+                        column.push_back(col(frst, last, base + si * stride, conf));
+
+                    haveColumn = true;
+
+                    if (!column.empty() && column.front() != result)
+                        os << std::left << std::setw(40) << name
+                           << " INTERNAL  column disagrees with verdict\n";
+                }
+                else
+                    llvm::consumeError(sym.takeError());
+            }
+
             json::Writer    w(*explain);
             {
                 auto    doc = w.object();
@@ -785,6 +828,22 @@ bool    runAllSpecs(llvm::orc::LLJIT& jit,
                 w.key("where").value(name);
                 w.key("verdict").value(result ? "pass" : "fail");
                 w.key("vacuous").value(false);
+
+                if (haveColumn)
+                {
+                    w.key("rows");
+                    auto    rows = w.array();
+                    auto    row  = w.object();
+                    w.key("id").value("r0");
+                    w.key("label").value(name);
+                    w.key("kind").value(
+                        temporalReqs && temporalReqs->count(name) ? "temporal" : "state");
+                    w.key("type").value("boolean");
+                    w.key("values");
+                    auto    vals = w.array();
+                    for (bool v : column)
+                        w.value(v);
+                }
             }
             w.line();
         }
@@ -1153,9 +1212,28 @@ bool    runOneTrace(JitWithSpecs&            js,
         }
     }
 
+    //  Which requirement columns are a claim about the future rather than a
+    //  fact about the instant. `G(p)` false at a state is a judgement about
+    //  the suffix from there; `p == 1` false is a fact about that state. Drawn
+    //  the same they read the same, and one misleads -- so the viewer is told
+    //  which it is, from the AST that already knows.
+    std::set<std::string>   temporalReqs;
+    {
+        auto&   exprs = js.astModule->getExprs();
+        for (std::size_t ei = 0; ei < exprs.size(); ei++)
+            if (exprs[ei]->is_temporal())
+            {
+                auto const& named = js.astModule->getExprName(ei);
+                temporalReqs.insert(named.empty() ? exprs[ei]->where().text() : named);
+            }
+    }
+
     return runAllSpecs(*js.jit, js.funcNames,
                        runStates.data(), runStates.data() + (numStates - 1) * stateStride, rdb.confPtr(),
-                       os, explain);
+                       os, explain,
+                       stateStride, std::size_t(1),
+                       numStates > 1 ? numStates - 1 : std::size_t(1),
+                       &temporalReqs);
 }
 
 // Compile, then run against a single trace. The original single-trace entry

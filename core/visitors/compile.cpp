@@ -618,10 +618,21 @@ CompileExprImpl::CompileExprImpl(
     m_T     = llvm::ConstantInt::getTrue(*m_context);
     m_F     = llvm::ConstantInt::getFalse(*m_context);
 
-    auto    iter    = function->arg_begin();
+    //  A requirement function is `(frst, last, conf)` and is evaluated at the
+    //  first real state. A *column* function is `(frst, last, curr, conf)` --
+    //  the same body, but evaluated at a state the caller chooses, so calling
+    //  it once per state produces the per-state column a run trace draws. The
+    //  arity tells the two apart, so nothing else has to.
+    auto    iter        = function->arg_begin();
+    bool    hasCurrArg  = function->arg_size() == 4;
 
     m_frst.push_back(iter++);
     m_last.push_back(iter++);
+
+    llvm::Value*    currArg = nullptr;
+    if(hasCurrArg)
+        currArg = iter++;
+
     m_conf  = iter;
     m_propType      = propType;
     m_propPtrType   = m_frst.front()->getType();
@@ -629,7 +640,7 @@ CompileExprImpl::CompileExprImpl(
     m_confPtrType   = m_conf->getType();
     m_boolType      = m_builder->getInt1Ty();
 
-    m_curr.push_back(getNext(m_frst.front()));
+    m_curr.push_back(hasCurrArg ? currArg : getNext(m_frst.front()));
 }
 
 void    CompileExprImpl::visit(ExprAdd*          expr)
@@ -3530,6 +3541,32 @@ void Compile::make(llvm::LLVMContext* context, llvm::Module* module, Module* ref
         TypeCalc::make(refmod, temp);
         compExpr.compileTemporalLoops(temp);
         builder->CreateRet(compExpr.make(temp));
+
+        //  A companion that evaluates the same node at a state the caller
+        //  chooses, so calling it once per state gives the requirement's
+        //  per-state column -- the baseline row a run trace draws, and the
+        //  column whose first-state value must equal the verdict above. Same
+        //  AST, same compiler; there is no second evaluator to drift from the
+        //  first. Emitted always; the JIT compiles it only if `--explain`
+        //  looks it up.
+        {
+            auto    colType = llvm::FunctionType::get(builder->getInt1Ty(),
+                                {propPtrType, propPtrType, propPtrType, confPtrType}, false);
+            auto    colBody = llvm::Function::Create(colType, llvm::Function::ExternalLinkage,
+                                "__col__" + funcName, module);
+            auto    colArg  = colBody->args().begin();
+            colArg->setName("frst"); colArg++;
+            colArg->setName("last"); colArg++;
+            colArg->setName("curr"); colArg++;
+            colArg->setName("conf");
+
+            builder->SetInsertPoint(llvm::BasicBlock::Create(*context, "entry", colBody));
+            CompileExprImpl col(context, module, builder.get(), colBody, refmod, propType, confType);
+            col.compileTemporalLoops(temp);
+            builder->CreateRet(col.make(temp));
+            llvm::verifyFunction(*colBody, &llvm::outs());
+        }
+
         if(!llvm::verifyFunction(*funcBody, &llvm::outs()))
         {
 //  LCOV_EXCL_START 

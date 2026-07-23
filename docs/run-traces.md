@@ -1,6 +1,6 @@
 # Design: run traces, and why they are mostly not about failures
 
-**Status:** partly built. `--explain` writes the header and signal lines; requirement lines are not emitted yet.
+**Status:** partly built. Header, signal, and requirement lines are written. A bare requirement carries its own per-state column; Dwyer patterns carry the verdict alone (they quantify over the whole trace and have no per-state value). Subexpression rows, scope, and computed vacuity are still to come.
 **Scope:** `referee execute --explain run.json`, producing a per-requirement record of what was evaluated where, for a visualiser (Bokeh) to draw.
 
 ## The obvious motivation, and the better one
@@ -167,8 +167,28 @@ so the decision and the output agree by construction rather than by care. A
 flag with two distinct values across ten states goes sparse with two entries;
 a counter changing at every state stays dense.
 
-**Not built:** requirement lines. Those need per-subexpression columns, which
-is the larger half and is designed below.
+**Built since:** requirement lines, each with the requirement's own per-state
+column. The column comes from a companion `__col__<req>` compiled beside every
+bare requirement -- the same node the verdict comes from, evaluated at a state
+the caller chooses. It is the same compiler on the same AST, so there is no
+second evaluator to drift from the verdict, and referee checks that the
+column's first-state value equals the verdict on every explain run. A
+disagreement prints `INTERNAL` and is a bug in referee, not a drawing choice.
+
+Each column is marked `state` or `temporal` from the AST: `G(p)` false at a
+state is a claim about the suffix, `p == 1` false is a fact about the instant,
+and a viewer must not draw them the same. That distinction is the whole reason
+this is worth a column rather than a verdict.
+
+**Cost, and the ceiling on it.** A temporal column is O(N) per state and so
+O(N^2) per requirement -- each state rebuilds the operator's buffer. ~0.9 s for
+one `G` over 20 000 states, against 0.16 s without `--explain`. Affordable for
+one trace, and exactly the waste the bottom-up column evaluator below removes;
+until then, `--explain` is opt-in and single-trace.
+
+**Still not built:** subexpression rows, `scope.active`, and computed vacuity
+-- the parts that make a run trace *coverage* rather than a debugger, and the
+half that works in CI.
 
 ## Format
 
