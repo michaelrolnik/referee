@@ -207,7 +207,8 @@ struct TypeCalcImpl
     Type*   nmbrNmbr2Bool(  
                     Expr*       expr,
                     Expr*       lhs,
-                    Expr*       rhs);
+                    Expr*       rhs,
+                            bool        ordering = false);
 
     Type*   typeBoolean = Factory<TypeBoolean>::create();
     Type*   typeInteger = Factory<TypeInteger>::create();
@@ -314,12 +315,12 @@ void    TypeCalcImpl::visit(ExprEqu*                expr)
 
 void    TypeCalcImpl::visit(ExprGe*                 expr)
 {
-    m_type = nmbrNmbr2Bool(expr, expr->lhs, expr->rhs);
+    m_type = nmbrNmbr2Bool(expr, expr->lhs, expr->rhs, /*ordering*/ true);
 }
 
 void    TypeCalcImpl::visit(ExprGt*                 expr)
 {
-    m_type = nmbrNmbr2Bool(expr, expr->lhs, expr->rhs);
+    m_type = nmbrNmbr2Bool(expr, expr->lhs, expr->rhs, /*ordering*/ true);
 }
 
 void    TypeCalcImpl::visit(ExprImp*                expr)
@@ -329,12 +330,12 @@ void    TypeCalcImpl::visit(ExprImp*                expr)
 
 void    TypeCalcImpl::visit(ExprLe*                 expr)
 {
-    m_type = nmbrNmbr2Bool(expr, expr->lhs, expr->rhs);
+    m_type = nmbrNmbr2Bool(expr, expr->lhs, expr->rhs, /*ordering*/ true);
 }
 
 void    TypeCalcImpl::visit(ExprLt*                 expr)
 {
-    m_type = nmbrNmbr2Bool(expr, expr->lhs, expr->rhs);
+    m_type = nmbrNmbr2Bool(expr, expr->lhs, expr->rhs, /*ordering*/ true);
 }
 
 void    TypeCalcImpl::visit(ExprMmbr*               expr)
@@ -402,6 +403,11 @@ void    TypeCalcImpl::visit(ExprSum*              expr)
 
 void    TypeCalcImpl::visit(ExprInt*              expr)
 {
+    //  The bounds are timestamps, so integers -- the same check Sum makes.
+    //  Without it a `number` bound died as an LLVM selection error instead of
+    //  a diagnostic.
+    safe(expr->time);
+
     auto    lhs = make(expr->lhs);
     auto    rhs = make(expr->rhs);
 
@@ -511,7 +517,11 @@ void    TypeCalcImpl::visit(ExprMod*                expr)
     auto    lhs = make(expr->lhs);
     auto    rhs = make(expr->rhs);
 
-    if(lhs != typeInteger && rhs != typeInteger)
+    //  || not &&: one number operand is enough to reject. The && form only
+    //  refused when *both* sides were wrong, so `x % 2` with x : number
+    //  type-checked and then died inside LLVM -- the same bug the arithmetic
+    //  siblings document as fixed; this one was missed.
+    if(lhs != typeInteger || rhs != typeInteger)
     {
 //  LCOV_EXCL_START 
 //  GCOV_EXCL_START 
@@ -1025,10 +1035,19 @@ Type*   TypeCalcImpl::bool2Bool(
 Type*   TypeCalcImpl::nmbrNmbr2Bool(  
                     Expr*       expr,
                     Expr*       lhs,
-                    Expr*       rhs)
+                    Expr*       rhs,
+                    bool        ordering)
 {
     auto    typeLhs = make(lhs);    
     auto    typeRhs = make(rhs);
+
+    //  Strings compare for equality only. `<` on them would order by the
+    //  interned pointer -- a heap address, so `"aaa" < "zzz"` was whatever the
+    //  allocator felt like that run. The language defines no collation, so
+    //  ordering is refused rather than answered arbitrarily.
+    if(ordering && (typeLhs == typeString || typeRhs == typeString))
+        throw Exception(expr->where(),
+            "bad type: strings compare with == and != only -- no ordering is defined");
 
     if(     (((typeLhs == typeInteger) || (typeLhs == typeNumber))
         &&  ((typeRhs == typeInteger) || (typeRhs == typeNumber)))

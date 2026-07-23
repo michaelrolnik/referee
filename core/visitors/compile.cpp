@@ -1653,7 +1653,7 @@ void    CompileExprImpl::visit(ExprMmbr*         expr)
 
 void    CompileExprImpl::visit(ExprMod*          expr)
 {
-    m_value = m_builder->CreateURem(make(expr->lhs), make(expr->rhs));
+    m_value = m_builder->CreateSRem(make(expr->lhs), make(expr->rhs));
 }
 
 void    CompileExprImpl::visit(ExprMul*          expr)

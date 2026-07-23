@@ -760,7 +760,14 @@ void    RewriteImpl::visit(TimeMax*                 expr)
 
 void    RewriteImpl::visit( Spec*                   spec)
 {
-    m_expr  = Factory<ExprConstBoolean>::create(true);
+    //  This is the fallback for a pattern with no lowering -- today the
+    //  transient-state, steady-state and precedence-chain forms. It used to
+    //  return constant `true`, which is the worst possible answer: the
+    //  requirement parsed, printed PASS on every trace, and verified nothing.
+    //  A checker whose product is verdicts must refuse what it cannot check.
+    throw Exception(spec->where(),
+        "this specification pattern is not implemented yet -- it would"
+        " otherwise pass on every trace without checking anything");
 }
 
 void    RewriteImpl::visit( SpecAbsence*            spec)

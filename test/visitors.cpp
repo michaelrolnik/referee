@@ -233,11 +233,38 @@ TEST(Printer, PrintsRewrittenSpecifications)
 
     auto            schema = Referee::parseSchema(in, path);
 
-    for (auto* spec : schema.ast->getSpecs())
+    int     refused = 0;
+    for (auto* outer : schema.ast->getSpecs())
     {
-        auto    text = print(Rewrite::make(spec));
-        EXPECT_FALSE(text.empty());
+        //  Production rewrites the pattern *body*: the scoped wrappers are
+        //  handled by the compiler's scope visitors, which hand Rewrite the
+        //  inner pattern. Calling Rewrite on the wrapper hit the fallback for
+        //  all 29 specs -- constant true before, refusal now -- which is how
+        //  this test printed "true" 29 times and noticed nothing.
+        auto*   spec = outer;
+        while (auto* scoped = dynamic_cast<SpecScoped*>(spec))
+            spec = scoped->spec;
+
+        //  A pattern with no lowering must refuse loudly -- it used to lower
+        //  to constant true and pass every trace. The refusal is part of the
+        //  contract now, so it is counted rather than treated as a failure.
+        try
+        {
+            auto    text = print(Rewrite::make(spec));
+            EXPECT_FALSE(text.empty());
+        }
+        catch (Exception const& e)
+        {
+            EXPECT_NE(std::string(e.what()).find("not implemented"), std::string::npos)
+                << e.what();
+            refused++;
+        }
     }
+
+    //  specs.ref carries the transient-state, steady-state and two
+    //  precedence-chain patterns; anything above that count means a pattern
+    //  that used to lower has regressed into the fallback.
+    EXPECT_EQ(refused, 4);
 }
 
 // Note: Printer covers expressions and specification patterns only -- it has no

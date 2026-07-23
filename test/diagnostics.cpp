@@ -117,6 +117,50 @@ TEST(Diagnostics, RejectsMistypedOperands)
     }
 }
 
+// Verdict-corrupting holes the repo review found, each of which either
+// answered wrongly or died inside LLVM instead of diagnosing:
+//   - string ordering compiled to a heap-address compare ("aaa" < "zzz" was
+//     whatever the allocator felt like);
+//   - `%` used the &&-instead-of-|| check its arithmetic siblings document as
+//     fixed, so a number operand aborted the process;
+//   - Itg never type-checked its time bounds, so a number bound was an LLVM
+//     fatal error;
+//   - four spec patterns (transient state, steady state, both precedence
+//     chains) lowered to constant true and passed every trace.
+TEST(Diagnostics, RejectsWhatUsedToPassOrAbort)
+{
+    char const* cases[] = {
+        "data s : string;\nG(s < \"zzz\");\n",
+        "data s : string;\nG(\"aaa\" <= s);\n",
+        "data x : number;\nG(x % 2 == 0);\n",
+        "data i : integer;\ndata x : number;\nG(i % x == 0);\n",
+        "data a : boolean;\ndata x : number;\nG(Itg[x:2000](a, x) >= 0.0);\n",
+    };
+
+    int     n = 0;
+    for (auto const* src : cases)
+    {
+        EXPECT_THROW(parseSnippet(src, "hole" + std::to_string(n++)), std::exception)
+            << src;
+    }
+
+    //  The unimplemented patterns refuse at *compile*, in Rewrite -- a parse
+    //  is happy with them, which is exactly how they passed unnoticed.
+    char const* patterns[] = {
+        "data a : boolean;\nglobally, a holds in the long run;\n",
+        "data a : boolean;\nglobally, a holds after 100 milliseconds;\n",
+        "data a : boolean;\ndata b : boolean;\ndata c : boolean;\n"
+        "globally, if c holds, then it must have been the case that a and afterwards b have occurred before it;\n",
+    };
+
+    for (auto const* src : patterns)
+    {
+        std::istringstream  is(src);
+        EXPECT_THROW((void) Referee::compile(is, "<pattern" + std::to_string(n++) + ">"),
+                     std::exception) << src;
+    }
+}
+
 // Temporal operators quantify over boolean-valued expressions.
 TEST(Diagnostics, RejectsNonBooleanTemporalOperands)
 {

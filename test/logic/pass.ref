@@ -141,8 +141,11 @@ globally, if a, then in response c eventually holds;
 globally, if a, then in response c followed by e eventually holds;
 globally, if a followed by c, then in response e eventually holds;
 globally, if e holds, then it must have been the case that d has occurred before it;
-globally, if b and afterwards c holds, then it must have been the case that a has occurred before it;
-globally, if c holds, then it must have been the case that a and afterwards b have occurred before it;
+# The precedence-chain patterns ("X and afterwards Y ... before it") are not
+# implemented: they compiled to constant true, so the two lines that stood here
+# passed on every trace while verifying nothing. The compiler now refuses the
+# pattern outright (see RewriteImpl::visit(Spec*)), which is why they are gone
+# rather than kept -- test/diagnostics.cpp pins the refusal.
 globally, !z holds without interruption until z holds;
 globally, if a has occurred, then in response !a holds continually after 1000 nanoseconds;
 globally, once b becomes satisfied it remains so for at least 1000 nanoseconds;
@@ -150,7 +153,13 @@ globally, once b becomes satisfied it remains so for less than 1001 nanoseconds;
 
 7 % 2 == 1; 
 8 % 3 == 2; 
--8 % 3 == 2; 
+# C semantics: the sign follows the dividend, as in C, C++ and LLVM's srem.
+# This line read `== 2` while % compiled to an *unsigned* remainder -- which
+# is not mathematical modulo either: it happened to give 2 here but gives 0
+# for -4 % 3. One semantics had to be picked; C's matches everything else
+# the expression language borrows.
+-8 % 3 == -2; 
+-4 % 3 == -1; 
 
 !Us(a, b) == Rw(!a, !b);
 !Uw(a, b) == Rs(!a, !b);
