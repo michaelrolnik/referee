@@ -1,6 +1,6 @@
 # Run trace format
 
-**Status:** proposed. The format is the contract; the visualiser is replaceable, so this is the part worth agreeing on first.
+**Status:** implemented and enforced -- the producer validates against `schema/run-trace.schema.json`, and the CLI test runs the validator. `witnesses` on temporal rows are optional (derived on demand; omitted today).
 **Produced by:** `referee execute spec.ref trace.csv --explain run.json`
 **Consumed by:** anything. A Bokeh page is the intended first reader; a VCD exporter should also be possible from the same file, which is a constraint on the design rather than a nice-to-have.
 

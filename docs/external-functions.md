@@ -1,6 +1,6 @@
 # Design: external functions
 
-**Status:** proposed, not built.
+**Status:** built -- `func` declarations, `referee header`/`--stub`, `-L` loading, overloading, slices, the whole-state form. Kept as the design record.
 **Scope:** declaring a native function in a `.ref`, generating a C header from the specification's types, calling the function from a requirement, and an optional whole-state calling convention.
 
 ## The problem

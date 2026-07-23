@@ -1,10 +1,10 @@
 # Door, button, lock and alarm
 
 The worked example from a specification written against an older grammar,
-translated to current REF. **All nine requirements compile. Four fail against a
-trace built to be nominal**, and that is the interesting part — the file is
-committed in that state deliberately, because the failures are findings rather
-than mistakes to tidy away.
+translated to current REF. **All eight requirements pass** against the nominal
+trace -- but getting there surfaced three requirements that were wrong as
+first written, which is the interesting part; see *Three that were wrong*
+below.
 
 ```bash
 ./build/referee execute examples/door/door.ref examples/door/nominal.csv

@@ -57,7 +57,7 @@ the JIT-free half of the codebase (the `.rdb` Reader, the type classes, string
 interning, the schema codec) plus a small driver carrying `main()`
 (`runtime/checker.cpp`). The result's shared-library dependencies are libfmt,
 libstdc++ and libc: **no LLVM, no ANTLR**, which the test asserts with `ldd`.
-Verdicts match `referee execute` across all 233 requirements of `pass.ref`,
+Verdicts match `referee execute` across all 196 requirements of `pass.ref`,
 strings included.
 
 The runtime library is located at build time via `$REFEREE_RT_DIR`, then next
@@ -77,7 +77,7 @@ and YAML loaders (so a checker's shared-library set gains libyaml-cpp).
 
 `referee execute --checker spec.so trace.csv --conf conf.csv` and the
 standalone `./checker --conf conf.csv trace.csv` both work; verdicts match
-`referee execute` on all 233 requirements of `pass.ref`, strings and conf
+`referee execute` on all 196 requirements of `pass.ref`, strings and conf
 included.
 
 **Not yet:** dropping the `--explain` companions from the object as dead
@@ -93,7 +93,7 @@ Every run compiles from scratch. `referee execute` parses the `.ref`, lowers it 
 
 ### Measured, before deciding anything
 
-`pass.ref` (233 requirements) against traces of two sizes:
+`pass.ref` (196 requirements) against traces of two sizes:
 
 | trace | wall time |
 | --- | --- |

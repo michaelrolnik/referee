@@ -1,6 +1,6 @@
 # Ragged arrays: `{count, T[]}` per row
 
-**Status:** built, on branch `ragged-arrays`. `T[]` means unbounded: the loader
+**Status:** built and merged to main. `T[]` means unbounded: the loader
 reads however many cells a row held and writes a `{count, pointer}` descriptor,
 `.count` is a load, and a quantifier is a loop. One open consequence, below.
 **Shape:** an array of arrays where each inner array carries its own length, rather than every row having the same extent.

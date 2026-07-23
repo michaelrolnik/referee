@@ -13,7 +13,7 @@ are expressible at all.
 Each `.ref` runs against the `.csv` beside it:
 
 ```bash
-referee execute examples/mctp/packet-records.ref  examples/mctp/packet-records.csv
+referee execute examples/mctp/packet-records.ref  examples/mctp/packet-records.csv -L build   # needs the PEC plugin: see below
 referee execute examples/mctp/byte-stream.ref     examples/mctp/byte-stream.csv
 referee execute examples/mctp/message-records.ref examples/mctp/message-records.csv
 ```

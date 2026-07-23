@@ -1,6 +1,6 @@
 # Design: run traces, and why they are mostly not about failures
 
-**Status:** partly built. Header, signal, and requirement lines are written. A bare requirement carries its own per-state column; Dwyer patterns carry the verdict alone (they quantify over the whole trace and have no per-state value). Subexpression rows, scope, and computed vacuity are still to come.
+**Status:** built, except `quantifier_empty` vacuity and the bottom-up column evaluator. Header, signal and requirement lines are written; bare requirements carry their own per-state column plus subexpression rows; Dwyer patterns carry verdict, scope intervals and scope vacuity; implication vacuity is computed.
 **Scope:** `referee execute --explain run.json`, producing a per-requirement record of what was evaluated where, for a visualiser (Bokeh) to draw.
 
 ## The obvious motivation, and the better one

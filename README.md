@@ -23,7 +23,7 @@ In short: Referee connects human-readable requirement intent to executable verif
 - **Computed signals** (`data Name = expression;`) — named derived signals, including temporal ones, evaluated once per state for the whole trace by a generated `__prepare__` pass and then read like any other signal. See *Computed signals* below.
 - **Run traces** — `referee execute … --explain run.ndjson` records per-requirement columns, subexpression rows, scope intervals and computed vacuity for a viewer (`tools/view.py`, `tools/view_bokeh.py`) or for CI. See *Run traces* below.
 - A JIT-based test harness (`test/logic.cpp`) that compiles REF files, JITs them against a synthetic trace (`state_t[]` + `conf_t`), and asserts that each requirement evaluates to `true` (pass) or `false` (fail) over that trace. See `test/logic/pass.ref` and `test/logic/fail.ref` for the intended execution model.
-- A CLI with two subcommands:
+- A CLI with four subcommands (`compile`, `header`, `build`, `execute`):
   - `referee compile file.ref [-I dir]…` — emits LLVM IR for a given `.ref` file.
   - `referee execute file.ref trace.{csv,yaml,rdb}… [--success …] [--failure …] [--conf conf.{csv,yaml}] [-v 0..2] [-I dir]…` — JIT-compiles the requirements and evaluates them against one or more traces, reporting `PASS`/`FAIL` per requirement (and exiting non-zero if any requirement fails). Several traces are compiled **once** and checked in turn; `--failure` declares traces that must be rejected. See *Checking several traces* below. Column names in the CSV/YAML must match the layout produced by `csvHeaders` (e.g. `__time__`, `pos.x`, `limits[0]`, …); see `test/logic/data.csv` and `test/logic/conf.csv` for working examples. `.rdb` traces (see below) are read with no per-row processing — only pointer fix-up.
 - An **editor plugin** (`editors/vscode/`) giving syntax highlighting, bracket/comment handling and specification-pattern snippets for `.ref` files in VS Code and its forks (Cursor, Antigravity, VSCodium). Its keyword lists are generated from `core/referee.g4` rather than hand-written, and the grammar is tested against the same TextMate engine the editors use. See *Editor support* below.
@@ -33,7 +33,6 @@ In short: Referee connects human-readable requirement intent to executable verif
 
 **What is missing**
 
-- **Ahead-of-time compiled checkers.** An object file, a loadable `.so`, or a standalone executable, so a machine that validates logs needs neither LLVM nor the `.ref` sources. Designed in `docs/native-checkers.md`, which also records the measurements above — the motivation is deployment and embedding rather than speed, since most of the speed is available from the previous item.
 - **Streaming / online ingestion.** `referee execute` currently materialises the whole trace before invoking the JIT functions (CSV/YAML are parsed top-to-bottom into per-state blobs; `.rdb` is read into a single buffer). A streaming driver that feeds records to the JIT-compiled requirement functions as they arrive (and reports violation locations live) is not implemented yet — the on-disk `.rdb` layout is already mmap-friendly, so this is a Reader-side change rather than a format change.
 - **A fuller language server.** `referee-lsp` now provides live in-editor **diagnostics** (parse + type errors), **completion** (names in scope + keywords, narrowing to members after a `.`), **hover** (a name's declaration), **go-to-definition** (following `import`s across files), **document symbols** (the outline view), **find-references** (every use of a name, across imports), **rename** (rewrite a name and all its uses, across imports), and **signature help** (the parameters of the call you are typing, `func`s and `std::…` built-ins alike), wired into the VS Code extension — see *Language server (LSP)*. Find-references and rename are **type-aware**: a struct field or enum case is distinguished from a signal of the same name, and a field is matched only where the accessed value has its owning type. A full IDE feature set is in place.
 - **Product-specific model exporters/importers** to adapt arbitrary system logs into the canonical trace format.
@@ -71,7 +70,7 @@ Comments use `//`, `#`, or C-style `/* ... */`. Identifiers follow the usual C c
 - **Floating-point literals:** `1.5`, `.25`, `3.14e-2`, `1E6`. Used wherever the `number` type is expected.
 - **String literals:** `"..."` containing ASCII letters, digits, `_`, `.`, `?`, `!`, `/`, `-`, and spaces (the last three so that `import` targets can name paths). Strings are first-class values of type `string` and participate in `==` / `!=` comparisons.
 - **Signed literals:** a leading `+` / `-` in front of a numeric literal is part of the literal, not a separate unary operator, so `-3` is an integer constant while `- x` is unary negation on `x`.
-- **Reserved keywords.** In addition to the temporal-logic operator names (`G`, `F`, `Xs`, `Xw`, `Us`, `Uw`, `Rs`, `Rw`, `H`, `O`, `Ys`, `Yw`, `Ss`, `Sw`, `Ts`, `Tw`) and the accumulators (`Itg`, `Sum`, `Cnt`), the spec-pattern vocabulary is reserved: `after`, `afterwards`, `always`, `and`, `at`, `becomes`, `been`, `before`, `between`, `by`, `case`, `continually`, `eventually`, `every`, `followed`, `for`, `globally`, `has`, `have`, `holding`, `holds`, `if`, `in`, `interruption`, `is`, `it`, `least`, `less`, `long`, `must`, `never`, `occurred`, `once`, `remains`, `repeatedly`, `response`, `run`, `satisfied`, `so`, `than`, `that`, `the`, `then`, `until`, `while`, `within`, `without`, plus the time units `nanoseconds`, `microseconds`, `milliseconds`, `seconds`, `minutes`.
+- **Reserved keywords.** In addition to the temporal-logic operator names (`G`, `F`, `Xs`, `Xw`, `Us`, `Uw`, `Rs`, `Rw`, `H`, `O`, `Ys`, `Yw`, `Ss`, `Sw`, `Ts`, `Tw`) and the accumulators (`Itg`, `Sum`, `Cnt`), the quantifier keywords (`all`, `some`, `none`, `one`, `most`, `least`) and the spec-pattern vocabulary are reserved: `after`, `afterwards`, `always`, `and`, `at`, `becomes`, `been`, `before`, `between`, `by`, `case`, `continually`, `eventually`, `every`, `followed`, `for`, `globally`, `has`, `have`, `holding`, `holds`, `if`, `in`, `interruption`, `is`, `it`, `least`, `less`, `long`, `must`, `never`, `occurred`, `once`, `remains`, `repeatedly`, `response`, `run`, `satisfied`, `so`, `than`, `that`, `the`, `then`, `until`, `while`, `within`, `without`, plus the time units `nanoseconds`, `microseconds`, `milliseconds`, `seconds`, `minutes`.
 
 ### Declarations and Types
 
@@ -589,7 +588,7 @@ in the trace length has been.
 Two costs sit outside the per-requirement column:
 
 - **Compilation** is a fixed cost paid once — roughly 700 ms for a
-  233-requirement specification — independent of trace length. It dominates
+  196-requirement specification — independent of trace length. It dominates
   below a few thousand states, which is why several traces are compiled once
   and checked in turn (*Checking several traces* above).
 - **Checking** is about 0.12 ms per trace row per the same specification, so a
@@ -712,7 +711,7 @@ Then package a `.vsix` and install that — the recommended route (it bundles `o
 npx @vscode/vsce package --allow-missing-repository
 ```
 
-then, in the editor, **Extensions** view → the **`⋯`** menu → **Install from VSIX…** → pick `referee-ref-0.1.0.vsix`, and **Reload Window**. This works the same in VS Code and its forks — Cursor, Antigravity, VSCodium — which all consume the same `.vsix`.
+then, in the editor, **Extensions** view → the **`⋯`** menu → **Install from VSIX…** → pick `referee-ref-0.2.0.vsix`, and **Reload Window**. This works the same in VS Code and its forks — Cursor, Antigravity, VSCodium — which all consume the same `.vsix`.
 
 Open a `.ref` file and check the status bar reads **REF**. For diagnostics, set the server path (see *Language server (LSP)*); highlighting works with no further setup.
 
@@ -782,7 +781,7 @@ An editor's LSP client can use that whole `docker run …` line as its server `c
 
 # Running referee
 
-`build/referee` is the main CLI and is driven through two subcommands, `compile` and `execute`. Pass `--help` or `<subcommand> --help` for the full option list:
+`build/referee` is the main CLI, driven through four subcommands: `compile` (emit LLVM IR), `header` (C header/stub for external functions), `build` (ahead-of-time checker: object, `--shared`, `--executable`), and `execute`. Pass `--help` or `<subcommand> --help` for the full option list:
 
 ```bash
 ./build/referee --help
@@ -871,7 +870,7 @@ The general recipe is:
 referee execute spec.ref run-*.csv --conf conf.csv
 ```
 
-This matters more than it sounds. Compilation is a fixed cost — roughly 700 ms for a 233-requirement specification — while checking is about 0.12 ms per trace row. Twenty small traces one invocation at a time take ~13.7 s; the same twenty in one invocation take ~1.1 s, and the gap widens with the corpus.
+This matters more than it sounds. Compilation is a fixed cost — roughly 700 ms for a 196-requirement specification — while checking is about 0.12 ms per trace row. Twenty small traces one invocation at a time take ~13.7 s; the same twenty in one invocation take ~1.1 s, and the gap widens with the corpus.
 
 ### Naming a requirement
 
