@@ -754,3 +754,104 @@ TEST(Hover, EmptyOffToken)
     // "G(hov_q > 0);" — column 8 is the '>' operator, not part of any name.
     EXPECT_TRUE(hoverAt(src, 1, 8, "hovempty").empty());
 }
+
+// ── Go-to-definition ─────────────────────────────────────────────────────────
+//
+// Jump from a use of a name to its declaration. Click columns are computed with
+// find() so the tests do not depend on hand-counted offsets.
+
+namespace
+{
+
+std::string     joinLines(std::vector<std::string> const& L)
+{
+    std::string s;
+    for (auto const& l : L) { s += l; s.push_back('\n'); }
+    return s;
+}
+
+Referee::Definition     defineAt(
+    std::vector<std::string> const& L, unsigned line, unsigned col, std::string const& tag)
+{
+    std::istringstream  is(joinLines(L));
+    return Referee::define(is, "<" + tag + ">", {}, line, col);
+}
+
+//  The definition was found, on `line`, with its column landing on `word`.
+bool    pointsAt(std::vector<std::string> const& L, Referee::Definition const& d,
+                 unsigned line, std::string const& word)
+{
+    return d.found && d.line == line
+        && d.startCol < L[line].size()
+        && L[line].compare(d.startCol, word.size(), word) == 0;
+}
+
+} // namespace
+
+// A signal use jumps to its `data` declaration.
+TEST(Definition, DataSignal)
+{
+    std::vector<std::string>    L = {
+        "type DefPoint : struct { dfx : integer; dfy : integer; };",
+        "data def_pt : DefPoint;",
+        "G(def_pt.dfx > 0);",
+    };
+    unsigned    col = static_cast<unsigned>(L[2].find("def_pt")) + 1;
+    EXPECT_TRUE(pointsAt(L, defineAt(L, 2, col, "gotodata"), 1, "def_pt"));
+}
+
+// A type reference jumps to its `type` declaration.
+TEST(Definition, TypeReference)
+{
+    std::vector<std::string>    L = {
+        "type DefPoint : struct { dfx : integer; dfy : integer; };",
+        "data def_pt : DefPoint;",
+        "G(def_pt.dfx > 0);",
+    };
+    unsigned    col = static_cast<unsigned>(L[1].find("DefPoint")) + 1;
+    EXPECT_TRUE(pointsAt(L, defineAt(L, 1, col, "gototype"), 0, "DefPoint"));
+}
+
+// A member jumps to its field inside the owning struct.
+TEST(Definition, MemberField)
+{
+    std::vector<std::string>    L = {
+        "type DefPoint : struct { dfx : integer; dfy : integer; };",
+        "data def_pt : DefPoint;",
+        "G(def_pt.dfx > 0);",
+    };
+    unsigned    col = static_cast<unsigned>(L[2].find("dfx")) + 1;
+    EXPECT_TRUE(pointsAt(L, defineAt(L, 2, col, "gotofield"), 0, "dfx"));
+}
+
+// A conf use jumps to its `conf` declaration.
+TEST(Definition, ConfSignal)
+{
+    std::vector<std::string>    L = {
+        "conf def_lim : number;",
+        "data def_x : number;",
+        "G(def_x < def_lim);",
+    };
+    unsigned    col = static_cast<unsigned>(L[2].find("def_lim")) + 1;
+    EXPECT_TRUE(pointsAt(L, defineAt(L, 2, col, "gotoconf"), 0, "def_lim"));
+}
+
+// A function use jumps to its `func` declaration.
+TEST(Definition, Function)
+{
+    std::vector<std::string>    L = {
+        "func def_f : (integer) -> integer;",
+        "data def_a : integer;",
+        "G(def_f(def_a) == 0);",
+    };
+    unsigned    col = static_cast<unsigned>(L[2].find("def_f")) + 1;
+    EXPECT_TRUE(pointsAt(L, defineAt(L, 2, col, "gotofunc"), 0, "def_f"));
+}
+
+// On punctuation there is nothing to resolve.
+TEST(Definition, NotFoundOffToken)
+{
+    std::vector<std::string>    L = { "data def_q : integer;", "G(def_q > 0);" };
+    unsigned    col = static_cast<unsigned>(L[1].find('>'));
+    EXPECT_FALSE(defineAt(L, 1, col, "gotonone").found);
+}

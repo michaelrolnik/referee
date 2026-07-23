@@ -53,9 +53,11 @@ or `"docker"` with `referee.lsp.args` for a containerized server. The command
 with `ninja -C build referee-lsp` in a referee checkout.
 
 It also does **member completion** (type `.` after a struct or enum signal and the
-editor lists its fields / enum cases) and **hover** (point at a name to see its
-declaration — `data pt : Point`, a struct/enum body, a field's type).
-Go-to-definition is not implemented yet.
+editor lists its fields / enum cases), **hover** (point at a name to see its
+declaration — `data pt : Point`, a struct/enum body, a field's type), and
+**go-to-definition** (F12 / Ctrl-click a name to jump to its declaration; a member
+jumps to its field in the owning `type`). Go-to-definition is same-document today —
+it does not follow `import`s.
 
 ## Install
 

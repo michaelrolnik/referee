@@ -132,6 +132,25 @@ public:
                              std::vector<std::string> const& includePaths,
                              unsigned line, unsigned character);
 
+    /// The source range of a name's declaration, for go-to-definition. `found`
+    /// is false when nothing was located; line/columns are 0-based (LSP) and name
+    /// a same-document span (import targets are not followed).
+    struct Definition
+    {
+        bool        found    = false;
+        unsigned    line     = 0;
+        unsigned    startCol = 0;
+        unsigned    endCol   = 0;
+    };
+
+    /// Locate the declaration of the name — or dotted member — under the caret at
+    /// (line, character), both 0-based (LSP). A top-level name resolves to its
+    /// `data` / `conf` / `type` / `func` declaration; a member resolves to its
+    /// field inside the owning `type`. Same-document only. Never throws.
+    static Definition define(std::istream& is, std::string name,
+                             std::vector<std::string> const& includePaths,
+                             unsigned line, unsigned character);
+
     /// Compile `refPath` and emit a native object file to `outPath`, ready to
     /// be linked into an ahead-of-time checker. The object exports one symbol,
     /// `referee_module` (see `runtime/referee_checker.h`), and carries the

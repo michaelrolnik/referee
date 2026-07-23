@@ -191,6 +191,36 @@ void handleHover(const llvm::json::Value& id, llvm::json::Object* params)
         {"contents", llvm::json::Object{{"kind", "markdown"}, {"value", markdown}}}});
 }
 
+// ── Go-to-definition: jump to the declaration of the symbol under the caret. ──
+void handleDefinition(const llvm::json::Value& id, llvm::json::Object* params)
+{
+    Referee::Definition def;
+    std::string         uri;
+    if (params)
+        if (auto* doc = params->getObject("textDocument"))
+            if (auto* pos = params->getObject("position"))
+            {
+                uri = doc->getString("uri").value_or("").str();
+                auto it = g_docs.find(uri);
+                if (it != g_docs.end())
+                {
+                    unsigned line = static_cast<unsigned>(pos->getInteger("line").value_or(0));
+                    unsigned chr  = static_cast<unsigned>(pos->getInteger("character").value_or(0));
+                    try   { std::istringstream is(it->second);
+                            def = Referee::define(is, uriToPath(uri), /*includePaths*/ {}, line, chr); }
+                    catch (...) { /* never let go-to-def crash the server */ }
+                }
+            }
+
+    if (!def.found) { reply(id, nullptr); return; }         // null = no definition
+    reply(id, llvm::json::Object{
+        {"uri", uri},
+        {"range", llvm::json::Object{
+            {"start", llvm::json::Object{{"line", def.line}, {"character", def.startCol}}},
+            {"end",   llvm::json::Object{{"line", def.line}, {"character", def.endCol}}},
+        }}});
+}
+
 } // namespace
 
 int main()
@@ -217,6 +247,7 @@ int main()
                         {"resolveProvider", false},
                     }},
                     {"hoverProvider", true},
+                    {"definitionProvider", true},
                 }},
                 {"serverInfo", llvm::json::Object{{"name", "referee-lsp"}, {"version", "0.2.0"}}},
             });
@@ -263,6 +294,10 @@ int main()
         else if (method == "textDocument/hover")
         {
             handleHover(*id, msg->getObject("params"));
+        }
+        else if (method == "textDocument/definition")
+        {
+            handleDefinition(*id, msg->getObject("params"));
         }
         else if (method == "textDocument/didClose")
         {

@@ -661,6 +661,196 @@ std::string Referee::hover(
     return "";
 }
 
+// ── Go-to-definition text helpers ────────────────────────────────────────────
+namespace
+{
+
+bool    isWordChar(char c)
+{
+    return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
+}
+
+//  `name` occurs as a whole word in `line` at index i.
+bool    wordAt(std::string const& line, std::size_t i, std::string const& name)
+{
+    if (i + name.size() > line.size())              return false;
+    if (line.compare(i, name.size(), name) != 0)    return false;
+    if (i > 0 && isWordChar(line[i - 1]))           return false;
+    std::size_t after = i + name.size();
+    if (after < line.size() && isWordChar(line[after])) return false;
+    return true;
+}
+
+//  If `line` is a top-level `<kw> name …` declaration (kw restricted when given,
+//  else any of data/type/conf/func), return the column of `name`; else npos.
+std::size_t declCol(std::string const& line, std::string const& name, char const* kw)
+{
+    std::size_t i = 0;
+    while (i < line.size() && std::isspace(static_cast<unsigned char>(line[i]))) ++i;
+
+    for (char const* k : {"data", "type", "conf", "func"})
+    {
+        if (kw && std::string(kw) != k) continue;
+        std::string keyword(k);
+        if (line.compare(i, keyword.size(), keyword) != 0) continue;
+
+        std::size_t j = i + keyword.size();
+        if (j >= line.size() || !std::isspace(static_cast<unsigned char>(line[j]))) continue;
+        while (j < line.size() && std::isspace(static_cast<unsigned char>(line[j]))) ++j;
+        if (wordAt(line, j, name)) return j;
+    }
+    return std::string::npos;
+}
+
+//  Any top-level declaration begins the line (after indentation)?
+bool    startsDecl(std::string const& line)
+{
+    std::size_t i = 0;
+    while (i < line.size() && std::isspace(static_cast<unsigned char>(line[i]))) ++i;
+    for (char const* k : {"data", "type", "conf", "func"})
+    {
+        std::string keyword(k);
+        if (line.compare(i, keyword.size(), keyword) == 0
+            && i + keyword.size() < line.size()
+            && std::isspace(static_cast<unsigned char>(line[i + keyword.size()])))
+            return true;
+    }
+    return false;
+}
+
+} // namespace
+
+// ── Language-server go-to-definition: the declaration of the name under caret. ─
+Referee::Definition Referee::define(
+    std::istream& is, std::string name, std::vector<std::string> const& includePaths,
+    unsigned line, unsigned character)
+{
+    Definition  none;
+
+    std::string text((std::istreambuf_iterator<char>(is)), std::istreambuf_iterator<char>());
+    std::vector<std::string>    lines;
+    {
+        std::string cur;
+        for (char c : text)
+        {
+            if      (c == '\n') { lines.push_back(cur); cur.clear(); }
+            else if (c != '\r') { cur.push_back(c); }
+        }
+        lines.push_back(cur);
+    }
+    if (line >= lines.size())
+        return none;
+
+    //  The dotted chain ending at the identifier under the caret (as in hover).
+    std::string const&  lineText = lines[line];
+    std::size_t         nchar    = lineText.size();
+    std::size_t         c        = std::min<std::size_t>(character, nchar);
+    auto isChain = [](char ch) { return isWordChar(ch) || ch == '.'; };
+
+    std::size_t wend = c;
+    while (wend < nchar && isWordChar(lineText[wend])) ++wend;
+    std::size_t beg = wend;
+    while (beg > 0 && isChain(lineText[beg - 1])) --beg;
+
+    std::vector<std::string>    parts;
+    {
+        std::string p;
+        for (std::size_t i = beg; i < wend; ++i)
+        {
+            char ch = lineText[i];
+            if (ch == '.') { if (!p.empty()) { parts.push_back(p); p.clear(); } }
+            else             p.push_back(ch);
+        }
+        if (!p.empty()) parts.push_back(p);
+    }
+    if (parts.empty())
+        return none;
+
+    auto locate = [&](unsigned row, std::size_t col, std::string const& word) -> Definition {
+        return {true, row, static_cast<unsigned>(col), static_cast<unsigned>(col + word.size())};
+    };
+
+    //  A top-level name: scan for its `data` / `conf` / `type` / `func` decl.
+    if (parts.size() == 1)
+    {
+        for (std::size_t r = 0; r < lines.size(); ++r)
+        {
+            std::size_t col = declCol(lines[r], parts[0], nullptr);
+            if (col != std::string::npos)
+                return locate(static_cast<unsigned>(r), col, parts[0]);
+        }
+        return none;
+    }
+
+    //  A member: resolve the owning type via the AST, then find that `type`'s
+    //  declaration and the field inside it.
+    std::istringstream          pis(text);
+    antlr4::ANTLRInputStream     input(pis);
+    referee::refereeLexer        lexer(&input);
+    antlr4::CommonTokenStream    tokens(&lexer);
+    referee::refereeParser       parser(&tokens);
+    ParseErrors                  errors;
+    errors.attach(lexer, parser);
+
+    static std::atomic<unsigned>    s_uniq{0};
+    auto    uniqName = name + "#define:" + std::to_string(s_uniq.fetch_add(1));
+    auto    astOwner = std::make_unique<Antlr2AST>(uniqName, name, includePaths, Sizes{}, /*allowUnsized*/ true);
+    Arena::Scope    arenaScope(astOwner->arena);
+
+    auto*       tree   = parser.program();
+    ::Module*   module = nullptr;
+    try         { module = std::any_cast<::Module*>(astOwner->visitProgram(tree)); }
+    catch (...) { return none; }
+    if (module == nullptr)
+        return none;
+
+    Type*   owner = nullptr;
+    try { owner = module->getProp(parts[0]); } catch (...) { owner = nullptr; }
+    if (!owner)
+        try { owner = module->getConf(parts[0]); } catch (...) { owner = nullptr; }
+    for (std::size_t i = 1; i + 1 < parts.size() && owner != nullptr; ++i)   // stop before the field
+    {
+        auto* comp = dynamic_cast<TypeComposite*>(owner);
+        owner = comp ? comp->member(parts[i]) : nullptr;
+    }
+    if (!owner)
+        return none;
+
+    std::map<Type*, std::string>    named;
+    for (auto const& tn : module->getTypeNames())
+    {
+        Type* tt = nullptr;
+        try { tt = module->getType(tn); } catch (...) { tt = nullptr; }
+        if (tt) named[tt] = tn;
+    }
+    auto    it = named.find(owner);
+    if (it == named.end())
+        return none;                    // an anonymous type has no `type` decl to jump to
+
+    std::string const&  ownerName = it->second;
+    std::string const&  field     = parts.back();
+
+    //  Find `type ownerName`, then the field inside its declaration body.
+    for (std::size_t r = 0; r < lines.size(); ++r)
+    {
+        std::size_t oc = declCol(lines[r], ownerName, "type");
+        if (oc == std::string::npos)
+            continue;
+
+        for (std::size_t rr = r; rr < lines.size(); ++rr)
+        {
+            if (rr > r && startsDecl(lines[rr]))        // left the type's body
+                break;
+            std::size_t from = (rr == r) ? oc + ownerName.size() : 0;
+            for (std::size_t i = from; i < lines[rr].size(); ++i)
+                if (wordAt(lines[rr], i, field))
+                    return locate(static_cast<unsigned>(rr), i, field);
+        }
+        break;
+    }
+    return none;
+}
+
 // ── Schema lifetime helpers (out-of-line for the same forward-decl reasons
 //    as Compiled). ────────────────────────────────────────────────────────────
 Referee::Schema::Schema()                                       = default;
