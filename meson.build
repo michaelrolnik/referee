@@ -434,6 +434,11 @@ referee_rt_lib      = static_library(
     ],
     include_directories : project_inc,
     dependencies        : [fmt_dep, yamlcpp_dep],
+    # Same feature-test macros core_lib gets from the LLVM dependency, so the
+    # twice-compiled TUs cannot diverge on _GNU_SOURCE / limit-macro behaviour
+    # (or on asserts, should LLVM's flags ever carry NDEBUG).
+    cpp_args            : ['-D_GNU_SOURCE', '-D__STDC_CONSTANT_MACROS',
+                           '-D__STDC_FORMAT_MACROS', '-D__STDC_LIMIT_MACROS'],
     # Installed beside the binaries' ../lib so `referee build --executable`
     # works outside the build tree (see runtimeLibDir in referee.cpp).
     install             : true,

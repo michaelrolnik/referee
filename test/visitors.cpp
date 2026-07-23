@@ -199,6 +199,24 @@ TEST(Printer, PrintsCanonicAndRewrittenForms)
     EXPECT_EQ(negatedText.find("???"), std::string::npos) << negatedText;
 }
 
+// The production lowering canonicalises a runtime quantifier's body: an `=>`
+// inside it must be gone by the time the code generator (which has no
+// lowering for implication) sees the tree. Canonic alone deliberately treats
+// comparisons as atoms and never descends into them -- the review flagged
+// that as a gap, but it is Rewrite's job, and this pins Rewrite doing it.
+TEST(Rewrite, CanonicalisesRuntimeQuantifierBody)
+{
+    std::istringstream  is(
+        "data v : boolean[];\n"
+        "data g : boolean;\n"
+        "all x in v: (g => x);\n");
+    auto    schema = Referee::parseSchema(is, "<rewrite-count>");
+    ASSERT_EQ(schema.ast->getExprs().size(), 1u);
+
+    auto    text = print(Rewrite::make(schema.ast->getExprs()[0]));
+    EXPECT_EQ(text.find("=>"), std::string::npos) << text;
+}
+
 // specs.ref carries every specification pattern under every scope, so this
 // reaches the Spec visit() cases that a hand-written snippet would miss.
 TEST(Printer, PrintsEverySpecificationPattern)

@@ -79,7 +79,11 @@ void    CsvHeadersImpl::visit(TypeArray*    type)
         auto size = *it;
         if(size == 0)
         {
-            m_headers.push_back("#size");
+            //  An unbounded dimension has no fixed column set: the loader
+            //  derives each record's count from cell presence (`-` / empty),
+            //  so the hint here is one element's worth of columns. This used
+            //  to emit a `#size` column no loader reads -- a user following
+            //  the generated layout filled a cell that was silently ignored.
             size = 1;
         }
         
