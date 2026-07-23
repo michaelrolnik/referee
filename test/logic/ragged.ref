@@ -34,6 +34,17 @@ G(all v, i in pkt: v == pkt[i]);
 # ── Quantifiers over a length nobody wrote down ──────────────────────────────
 G(__time__ == 2000 => (none v in pkt: true));
 G(__time__ == 2000 => (all v in pkt: false));       # vacuous, and that is right
+# The rest of the vacuity table over the same empty record. `all` and `none`
+# hold over nothing; `some` and `one` cannot, since there is no witness. The
+# counting forms follow from the count being zero: `at least 0` and `at most 0`
+# are the only bounds an empty array meets, and `at least 1` is exactly the
+# claim `some` makes. A quantifier that special-cased the non-empty case and
+# fell through to a default for count==0 gets one of these backwards.
+G(__time__ == 2000 => !(some v in pkt: true));
+G(__time__ == 2000 => !(one  v in pkt: true));
+G(__time__ == 2000 =>  (at least 0 v in pkt: true));
+G(__time__ == 2000 => !(at least 1 v in pkt: true));
+G(__time__ == 2000 =>  (at most  0 v in pkt: true));
 G(__time__ == 3000 => (all v in pkt: v > 0));
 G(__time__ == 0    => (at least 2 v in pkt: v > 0x80));
 G(__time__ == 1000 => (at most 2 v in pkt: true));

@@ -38,6 +38,18 @@ a && 2 + 3 * 4 == 14;
 # Reads as (a || b) => (a || b), which holds whatever the operands are.
 a || b => a || b;
 
+# ── Implication is right-associative ─────────────────────────────────────────
+# `a => b => c` is `a => (b => c)`, not `(a => b) => c`. Pinned value-free so
+# it does not depend on this trace's signals: at false,false,false the two
+# groupings disagree, and only the right-associative reading is true --
+#   right: false => (false => false) = false => true  = true
+#   left:  (false => false) => false = true  => false = false
+# so this bare requirement passes iff <assoc=right> is in force. Without the
+# grammar annotation ANTLR left-associates, flipping the meaning of any
+# chained =>, and this line catches the regression.
+false => false => false;
+(false => false => false) == (false => (false => false));
+
 # ── Unary binds tightest ─────────────────────────────────────────────────────
 (-3 + 5) == 2;
 

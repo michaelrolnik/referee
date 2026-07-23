@@ -172,7 +172,14 @@ expression  : sign? integer                                     # ExprConst
             | expression '&&'  expression                       # ExprAnd
             | expression '||'  expression                       # ExprOr
 
-            | expression '=>'  expression                       # ExprImp
+            //  Implication is right-associative, as it is in logic and every
+            //  language that has it: `a => b => c` is `a => (b => c)`. Without
+            //  the annotation ANTLR left-associates a left-recursive rule, and
+            //  `(a => b) => c` is a different claim -- false where the intended
+            //  one is true (a=b=c=false). Biconditional is left as ANTLR's
+            //  default: `<=>` is fully associative, so grouping cannot change
+            //  a truth value.
+            | <assoc=right> expression '=>'  expression         # ExprImp
             | expression '<=>' expression                       # ExprEqu
 
             | expression '?' expression ':' expression          # ExprTer
