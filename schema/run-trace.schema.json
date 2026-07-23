@@ -266,11 +266,7 @@
               "kind"
             ]
           },
-          "then": {
-            "required": [
-              "witnesses"
-            ]
-          },
+          "then": {},
           "else": {
             "not": {
               "required": [

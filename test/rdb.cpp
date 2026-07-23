@@ -993,8 +993,8 @@ TEST(Rdb, ExplainCarriesRequirementColumns)
     std::string         line, temporalLine, stateLine;
     while (std::getline(f, line))
     {
-        if (line.find("\"where\":\"always_nonneg\"") != std::string::npos) temporalLine = line;
-        if (line.find("\"where\":\"a_is_one_here\"")  != std::string::npos) stateLine    = line;
+        if (line.find("\"name\":\"always_nonneg\"") != std::string::npos) temporalLine = line;
+        if (line.find("\"name\":\"a_is_one_here\"")  != std::string::npos) stateLine    = line;
     }
     std::remove(out.c_str());
 
@@ -1104,7 +1104,7 @@ TEST(Rdb, ExplainCarriesScopeAndScopeVacuity)
     while (std::getline(f, line))
     {
         for (auto const* n : {"glob", "after_run", "never_opens", "btw"})
-            if (line.find(std::string("\"where\":\"") + n + "\"") != std::string::npos)
+            if (line.find(std::string("\"name\":\"") + n + "\"") != std::string::npos)
                 byName[n] = line;
     }
     std::remove(out.c_str());

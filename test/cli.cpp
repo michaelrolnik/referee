@@ -258,6 +258,18 @@ TEST(Cli, ExplainWritesASchemaValidRunTrace)
     EXPECT_EQ(header, 1);
     EXPECT_GT(signals, 0);
 
+    //  Validate against the real schema when jsonschema is importable --
+    //  substring checks alone let the producer drift from the schema for
+    //  months (witnesses, names-in-where) while this test stayed green.
+    {
+        auto    probe = run("python3 -c 'import jsonschema' 2>/dev/null; echo $?");
+        if (probe.output.find("0") == 0)
+        {
+            auto    v = run("python3 schema/test/validate.py " + quote(out));
+            EXPECT_EQ(v.status, 0) << v.output;
+        }
+    }
+
     //  Bare requirements now carry their own per-state column, not just a
     //  verdict. accumulate.ref is all bare expressions, so all but a shadowed
     //  duplicate do -- two textually identical requirements at different lines

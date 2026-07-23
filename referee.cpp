@@ -2377,7 +2377,32 @@ bool    runAllSpecs(llvm::orc::LLJIT& jit,
             {
                 auto    doc = w.object();
                 w.key("kind").value("requirement");
-                w.key("where").value(name);
+
+                //  The format's contract: `where` is always the source label,
+                //  and a `@name` rides in `name` beside it. A named
+                //  requirement's function is *called* by its name, so the
+                //  position has to be recovered from the AST -- writing the
+                //  name into `where` violated the schema's position pattern
+                //  and lost the location, which is `where`'s whole job.
+                {
+                    std::string where = name;
+                    std::string reqName;
+                    if (astModule != nullptr)
+                    {
+                        auto const& exprs = astModule->getExprs();
+                        for (std::size_t i = 0; i < exprs.size(); i++)
+                            if (astModule->getExprName(i) == name)
+                            {   reqName = name; where = exprs[i]->where().text(); break; }
+                        auto const& specs = astModule->getSpecs();
+                        for (std::size_t i = 0; reqName.empty() && i < specs.size(); i++)
+                            if (astModule->getSpecName(i) == name)
+                            {   reqName = name; where = specs[i]->where().text(); break; }
+                    }
+                    w.key("where").value(where);
+                    if (!reqName.empty())
+                        w.key("name").value(reqName);
+                }
+
                 w.key("verdict").value(result ? "pass" : "fail");
                 w.key("vacuous").value(vacuous);
                 if (vacuous)
