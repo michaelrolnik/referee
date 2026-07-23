@@ -949,7 +949,9 @@ struct DataYamlPrinter
 
     void visit(TypeInteger*) override
     {
-        os << *reinterpret_cast<int const*>(data);
+        //  An integer is stored 64-bit; reading `int` here truncated it and,
+        //  on a big value, printed garbage.
+        os << *reinterpret_cast<std::int64_t const*>(data);
     }
 
     void visit(TypeNumber*) override
@@ -959,16 +961,19 @@ struct DataYamlPrinter
 
     void visit(TypeString*) override
     {
-        os << *reinterpret_cast<char * const*>(data);
+        auto*   s = *reinterpret_cast<char const* const*>(data);
+        os << (s != nullptr ? s : "");
     }
 
     void visit(TypeEnum* e) override
     {
-        int v = *reinterpret_cast<int const*>(data);
-        if (v >= 0 && (size_t)v < e->items.size())
-            os << e->items[v];
-        else
-            os << v;
+        //  One byte, 1-based, 0 meaning no member matched -- the same encoding
+        //  the loader writes and `writeValue` reads. Reading a 4-byte 0-based
+        //  index here named the *wrong member* (and off the end for the last),
+        //  so a dumped enum was silently one off.
+        auto    idx = std::size_t(*data);
+        if (idx == 0 || idx > e->items.size())  os << "null";
+        else                                    os << e->items[idx - 1];
     }
 
     void visit(TypeStruct* s) override
@@ -1067,6 +1072,144 @@ struct TypeYamlPrinter
         os << ind(indent + 4) << "count: " << a->count << "\n";
     }
 };
+
+//  Flatten one prop blob to `(column, value)` leaf pairs, in the order
+//  `csvHeaders` names the columns, so a header built from the types and a row
+//  built from a blob line up by position.
+//
+//  Structural traversal is DataYamlPrinter's -- align each struct member,
+//  stride an array by its element size. Leaf decoding is `writeValue`'s, which
+//  is the *current* one: an integer is 64-bit, an enum is 1-based with 0
+//  meaning "no member", a string is the fixed-up pointer. (DataYamlPrinter's
+//  own leaves read a 32-bit int and a 0-based enum, which is a latent dump bug,
+//  not something to reproduce here.)
+struct FlatRow
+    : Visitor<TypeBoolean, TypeByte, TypeInteger, TypeNumber, TypeString, TypeEnum, TypeStruct, TypeArray>
+{
+    std::vector<std::pair<std::string, std::string>>&   out;
+    std::string                                         prefix;
+    uint8_t const*                                      data;
+
+    FlatRow(std::vector<std::pair<std::string, std::string>>& out,
+            std::string prefix, uint8_t const* data)
+        : out(out), prefix(std::move(prefix)), data(data)
+    {
+    }
+
+    static void walk(std::vector<std::pair<std::string, std::string>>& out,
+                     std::string const& prefix, Type* type, uint8_t const* data)
+    {
+        FlatRow v(out, prefix, data);
+        type->accept(v);
+    }
+
+    void    leaf(std::string s) { out.emplace_back(prefix, std::move(s)); }
+
+    void visit(TypeBoolean*) override { leaf(*reinterpret_cast<bool const*>(data) ? "true" : "false"); }
+    void visit(TypeByte*)    override { leaf(std::to_string(unsigned(*data))); }
+    void visit(TypeInteger*) override { leaf(std::to_string(*reinterpret_cast<std::int64_t const*>(data))); }
+    void visit(TypeNumber*)  override { leaf(fmt::format("{}", *reinterpret_cast<double const*>(data))); }
+
+    void visit(TypeString*)  override
+    {
+        auto*   s = *reinterpret_cast<char const* const*>(data);
+        leaf(s != nullptr ? std::string(s) : std::string());
+    }
+
+    void visit(TypeEnum* e)  override
+    {
+        auto    idx = std::size_t(*data);       //  1-based; 0 means no member matched
+        leaf(idx == 0 || idx > e->items.size() ? std::string() : e->items[idx - 1]);
+    }
+
+    void visit(TypeStruct* s) override
+    {
+        std::size_t cur = 0;
+        for (auto const& m : s->members)
+        {
+            auto    align = m.data->alignment();
+            if (cur % align) cur += align - (cur % align);
+
+            walk(out, prefix + "." + m.name, m.data, data + cur);
+            cur += m.data->size();
+        }
+    }
+
+    void visit(TypeArray* a) override
+    {
+        auto    stride = a->type->size();
+        for (unsigned i = 0; i < a->count; i++)
+            walk(out, prefix + "[" + std::to_string(i) + "]", a->type, data + i * stride);
+    }
+};
+
+void    toCsv(Reader const& rdb, std::ostream& os)
+{
+    //  Header: the column names, taken from a walk of the types. A null blob
+    //  cannot supply them, so the first non-null blob per prop is used, and a
+    //  prop that is null in every real state falls back to a type-only walk
+    //  with a zero buffer -- which still yields the right column names.
+    auto const& props = rdb.props();
+    std::size_t real  = rdb.numStates() >= 2 ? rdb.numStates() - 2 : 0;
+
+    std::vector<std::string>    columns{"__time__"};
+    for (std::size_t pi = 0; pi < props.size(); pi++)
+    {
+        uint8_t const*  sample = nullptr;
+        for (std::size_t r = 0; r < real && sample == nullptr; r++)
+            sample = static_cast<uint8_t const*>(rdb.propBlob(r + 1, pi));
+
+        std::vector<std::pair<std::string, std::string>>    leaves;
+        if (sample != nullptr)
+            FlatRow::walk(leaves, props[pi].name, props[pi].type, sample);
+        else
+        {
+            std::vector<uint8_t>    zero(props[pi].type->size(), 0);
+            FlatRow::walk(leaves, props[pi].name, props[pi].type, zero.data());
+        }
+        for (auto const& [name, _] : leaves)
+            columns.push_back(name);
+    }
+
+    for (std::size_t i = 0; i < columns.size(); i++)
+        os << (i ? "," : "") << columns[i];
+    os << "\n";
+
+    //  One row per real state (sentinels at 0 and numStates-1 are dropped).
+    for (std::size_t r = 0; r < real; r++)
+    {
+        std::size_t si = r + 1;
+        os << rdb.time(si);
+
+        for (std::size_t pi = 0; pi < props.size(); pi++)
+        {
+            auto*   blob = static_cast<uint8_t const*>(rdb.propBlob(si, pi));
+
+            std::vector<std::pair<std::string, std::string>>    leaves;
+            if (blob != nullptr)
+                FlatRow::walk(leaves, props[pi].name, props[pi].type, blob);
+
+            //  A null slot has no leaves to emit; a value read as its type's
+            //  zero would be an invention, so the cells are left empty, which
+            //  is what the reader treats as zero on the way back in.
+            std::size_t widthOfProp = 0;
+            {
+                std::vector<uint8_t>    zero(props[pi].type->size(), 0);
+                std::vector<std::pair<std::string, std::string>>    names;
+                FlatRow::walk(names, props[pi].name, props[pi].type, zero.data());
+                widthOfProp = names.size();
+            }
+
+            if (blob != nullptr)
+                for (auto const& [_, value] : leaves)
+                    os << "," << value;
+            else
+                for (std::size_t k = 0; k < widthOfProp; k++)
+                    os << ",";
+        }
+        os << "\n";
+    }
+}
 
 void dump(std::string const& path, std::ostream& os)
 {

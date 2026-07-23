@@ -122,17 +122,36 @@ int main(int argc, char* argv[])
             if (mergeSources.size() < 2)
                 throw std::runtime_error("merge: give at least two sources");
 
-            //  Each source is opened, then held open: `loader::Row` keeps its
-            //  parsed cells, which `mergeTraces` reads by name.
-            std::vector<std::unique_ptr<std::ifstream>>     streams;
+            //  Each source becomes a `loader::Row` mergeTraces reads by name.
+            //  CSV/YAML open directly; a `.rdb` is already-packed binary, so it
+            //  is decoded back to a flat CSV in memory first and wrapped the
+            //  same way -- a `.rdb` stands in anywhere a CSV does.
+            auto    isRdb = [](std::string const& p)
+            {
+                return p.size() >= 4 && p.substr(p.size() - 4) == ".rdb";
+            };
+
+            std::vector<std::unique_ptr<std::istream>>      streams;
             std::vector<std::unique_ptr<loader::Row>>       owned;
             std::vector<loader::Row*>                       docs;
             for (auto const& path : mergeSources)
             {
-                streams.push_back(std::make_unique<std::ifstream>(path));
-                if (!*streams.back())
-                    throw std::runtime_error("merge: cannot open '" + path + "'");
-                owned.push_back(loader::Row::open(*streams.back(), path));
+                if (isRdb(path))
+                {
+                    referee::db::Reader     rdb(path);
+                    auto    csv = std::make_unique<std::stringstream>();
+                    referee::db::toCsv(rdb, *csv);
+                    owned.push_back(loader::Row::open(*csv, path + ".csv"));
+                    streams.push_back(std::move(csv));
+                }
+                else
+                {
+                    auto    in = std::make_unique<std::ifstream>(path);
+                    if (!*in)
+                        throw std::runtime_error("merge: cannot open '" + path + "'");
+                    owned.push_back(loader::Row::open(*in, path));
+                    streams.push_back(std::move(in));
+                }
                 docs.push_back(owned.back().get());
             }
 

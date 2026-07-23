@@ -957,7 +957,7 @@ __time__,fast     __time__,slow      __time__,fast,slow
 | Argument | Description |
 | --- | --- |
 | `spec.ref` | the specification, for the schema and column order of the `.rdb` |
-| `sources…` | two or more `.csv` / `.yaml` files, each carrying `__time__` and some of the signals |
+| `sources…` | two or more `.csv` / `.yaml` / **`.rdb`** files, each carrying `__time__` and some of the signals |
 | `-o merged.rdb` | the packed output |
 | `--conf conf.csv` | optional configuration, as for `rdb build` |
 | `--leading trim\|zero\|backfill` | what to do before a signal's first sample (default `trim`) |
@@ -971,9 +971,18 @@ happens when the same column appears in more than one source: `error` treats it
 as a mistake and says so; `merge` unions the two sources' samples of that one
 signal, last-write-wins on an exact-timestamp tie.
 
+A source may itself be a **`.rdb`** — an already-packed trace stands in
+anywhere a CSV does. It is decoded back to a flat trace first (the same
+operation `rdb dump` performs, but to CSV rather than YAML), so a packed
+baseline can be merged with a freshly-logged signal without unpacking it by
+hand.
+
 The merge is a plain column-and-timestamp operation — no `.ref` needed for the
 fold itself; the specification is used only to pack the result, so the same
 schema check `referee execute` runs applies to the merged `.rdb`.
+
+> **One clock.** Timestamps are compared across sources directly, so the
+> sources must share an epoch and unit. Align them first if they do not.
 
 ## Consuming `.rdb` files — `referee execute`
 

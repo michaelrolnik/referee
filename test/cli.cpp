@@ -555,6 +555,58 @@ TEST(Cli, RdbMergeMultiRateSources)
     std::remove(dir.c_str());
 }
 
+// A `.rdb` stands in as a merge source anywhere a CSV does: it is decoded back
+// to a flat trace first. The round trip has to preserve every type exactly --
+// a 1-based enum, a 64-bit integer, a struct field, an array element -- so this
+// merges a rich-type `.rdb` with a disjoint CSV and checks the values survived.
+TEST(Cli, RdbMergeAcceptsRdbSource)
+{
+    auto    dir   = tmpPath("rdbsrc", "");
+    auto    ref   = dir + ".ref";
+    auto    csv   = dir + ".csv";
+    auto    src   = dir + ".src.rdb";
+    auto    extra = dir + ".extra.csv";
+    auto    out   = dir + ".out.rdb";
+
+    {
+        std::ofstream f(ref);
+        f << "type K : enum { A, B, C };\n"
+             "data k : K;\n"
+             "data i : integer;\n"
+             "data p : struct { x : integer; y : integer; };\n"
+             "data arr : integer[3];\n"
+             "data extra : integer;\n"
+             "G(__time__ == 0 => k.B && i == 42 && p.x == 7 && arr[2] == 30 && extra == 99);\n";
+    }
+    { std::ofstream f(csv);   f << "__time__,k,i,p.x,p.y,arr[0],arr[1],arr[2]\n0,B,42,7,8,10,20,30\n"; }
+    { std::ofstream f(extra); f << "__time__,extra\n0,99\n"; }
+
+    //  A spec with just the .rdb's own signals, to pack it.
+    auto    srcRef = dir + ".src.ref";
+    {
+        std::ofstream f(srcRef);
+        f << "type K : enum { A, B, C };\n"
+             "data k : K;\n"
+             "data i : integer;\n"
+             "data p : struct { x : integer; y : integer; };\n"
+             "data arr : integer[3];\n"
+             "G(i >= 0);\n";
+    }
+    ASSERT_EQ(run(quote(RDB_BIN) + " build " + quote(srcRef) + " " + quote(csv)
+                + " -o " + quote(src)).status, 0);
+
+    auto    m = run(quote(RDB_BIN) + " merge " + quote(ref) + " "
+                  + quote(src) + " " + quote(extra) + " --leading backfill -o " + quote(out));
+    ASSERT_EQ(m.status, 0) << m.output;
+
+    //  If the enum/int/struct/array decoded correctly, this passes.
+    auto    exec = run(quote(REFEREE_BIN) + " execute " + quote(ref) + " " + quote(out));
+    EXPECT_EQ(exec.status, 0) << exec.output;
+
+    for (auto* p : {&out, &ref, &csv, &src, &extra, &srcRef, &dir})
+        std::remove(p->c_str());
+}
+
 // The same column in two sources is ambiguous, and the default refuses it
 // rather than pick a winner.
 TEST(Cli, RdbMergeRejectsOverlapByDefault)

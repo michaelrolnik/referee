@@ -174,4 +174,12 @@ private:
 /// using the schema embedded in the file.
 void    dump(std::string const& path, std::ostream& os);
 
+/// Decode an already-opened `.rdb` back to a flat CSV document on `os`:
+/// `__time__` plus one column per leaf of every `data` signal, one row per real
+/// state (the bracketing sentinels are omitted). The column layout is the one
+/// `csvHeaders` produces, so the output round-trips through `rdb build`. This is
+/// what lets a `.rdb` stand in as a source anywhere a CSV can -- notably
+/// `rdb merge`.
+void    toCsv(Reader const& rdb, std::ostream& os);
+
 } // namespace referee::db
