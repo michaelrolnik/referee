@@ -408,6 +408,27 @@ referee_exe         = executable(
     install      : true,
 )
 
+# Ahead-of-time checker runtime. The JIT-free half of the codebase -- the .rdb
+# Reader, the type classes, string interning, the schema codec -- plus the
+# standalone driver (its main()). `referee build --executable` links a compiled
+# specification against this, so the result runs with no LLVM and no ANTLR.
+# These sources are also in core_lib; compiled again here without the LLVM
+# include path, which they do not use.
+referee_rt_lib      = static_library(
+    'referee_rt',
+    [
+        'rdb/database.cpp',
+        'core/syntax.cpp',
+        'core/module.cpp',
+        'core/strings.cpp',
+        'core/utils.cpp',
+        'runtime/checker.cpp',
+    ],
+    include_directories : project_inc,
+    dependencies        : [fmt_dep],
+    install             : false,
+)
+
 # rdb helper CLI
 rdb_exe             = executable(
     'rdb',
@@ -421,6 +442,20 @@ rdb_exe             = executable(
         llvm_dep,
     ],
     install             : false,
+)
+
+# REF language server (LSP over stdio). Reuses the front-end via Referee::diagnose
+# (in core), so it needs only core_dep + LLVM (for llvm::json framing).
+lsp_exe             = executable(
+    'referee-lsp',
+    'lsp/main.cpp',
+    dependencies        : [
+        core_dep,
+        fmt_dep,
+        antlr4_runtime_dep,
+        llvm_dep,
+    ],
+    install             : true,
 )
 
 # tests
@@ -467,6 +502,7 @@ tests_exe           = executable(
         '-DREFEREE_BIN="' + referee_exe.full_path() + '"',
         '-DRDB_BIN="' + rdb_exe.full_path() + '"',
         '-DREFEREE_TEST_PLUGIN_DIR="' + meson.project_build_root() + '"',
+        '-DREFEREE_RT_DIR="' + meson.project_build_root() + '"',
     ],
     dependencies : [
         core_dep,
@@ -480,7 +516,7 @@ tests_exe           = executable(
 )
 
 test('tests', tests_exe,
-     depends  : [referee_exe, rdb_exe],
+     depends  : [referee_exe, rdb_exe, referee_rt_lib],
      workdir  : meson.project_source_root(),
      timeout  : 300)
 

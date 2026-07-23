@@ -1,6 +1,6 @@
 # Design: ahead-of-time compiled checkers
 
-**Status:** stages 1 and 2 built (object, `.so`, embedded schema, `--checker` runner). Stage 3 (standalone executable + JIT-free runtime library) not yet.
+**Status:** stages 1-3 built (object, `.so`, standalone executable, embedded schema, JIT-free runtime library). CSV via a checker and dropping the `--explain` companions remain.
 **Scope:** `referee build spec.ref -o checker` producing a native executable that validates traces without compiling anything.
 
 ## What is built (stages 1 and 2)
@@ -45,12 +45,32 @@ pass.
 (ragged arrays) rather than a per-run fixed extent -- the doc's open question 3,
 moot.
 
-**Not yet (stage 3):** a standalone executable and a JIT-free runtime library
-(`libreferee_rt.a`) so a third-party host needs no referee binary; CSV/YAML
-through `--checker` (which needs ingest driven by the embedded schema rather
-than a `.ref`); dropping the `--explain` companions from the object as dead
-weight; and matching `execute`'s report *order* (the checker walks the table in
-compile order, so verdicts match but line order can differ).
+## The standalone executable (stage 3)
+
+```bash
+referee build --executable spec.ref -o door-checker
+./door-checker run-*.rdb          # no referee, no LLVM, no ANTLR, no .ref
+```
+
+`emitExecutable` links the compiled specification against `libreferee_rt.a` --
+the JIT-free half of the codebase (the `.rdb` Reader, the type classes, string
+interning, the schema codec) plus a small driver carrying `main()`
+(`runtime/checker.cpp`). The result's shared-library dependencies are libfmt,
+libstdc++ and libc: **no LLVM, no ANTLR**, which the test asserts with `ldd`.
+Verdicts match `referee execute` across all 233 requirements of `pass.ref`,
+strings included.
+
+The runtime library is located at build time via `$REFEREE_RT_DIR`, then next
+to the referee binary, then the build tree. It is the same driver
+`referee execute --checker` runs in-process by dlopen, linked instead -- so a
+machine that only validates logs needs neither referee nor its dependencies,
+which is the whole point of the feature.
+
+**Not yet:** CSV/YAML through a checker (which needs ingest driven by the
+embedded schema rather than a `.ref`), dropping the `--explain` companions from
+the object as dead weight, and matching `execute`'s report *order* (the checker
+walks the table in compile order, so verdicts match but line order can
+differ).
 
 ---
 

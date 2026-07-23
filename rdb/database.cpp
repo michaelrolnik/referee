@@ -36,6 +36,7 @@
 #include <optional>
 #include <ostream>
 #include <stdexcept>
+#include <typeinfo>
 #include <unordered_map>
 
 namespace referee::db
@@ -1142,6 +1143,36 @@ struct FlatRow
             walk(out, prefix + "[" + std::to_string(i) + "]", a->type, data + i * stride);
     }
 };
+
+bool    typesEqual(Type* a, Type* b)
+{
+    if (a == b) return true;
+    if (!a || !b) return false;
+    if (typeid(*a) != typeid(*b)) return false;
+
+    if (auto* ea = dynamic_cast<TypeEnum*>(a))
+    {
+        auto* eb = dynamic_cast<TypeEnum*>(b);
+        return ea->items == eb->items;
+    }
+    if (auto* sa = dynamic_cast<TypeStruct*>(a))
+    {
+        auto* sb = dynamic_cast<TypeStruct*>(b);
+        if (sa->members.size() != sb->members.size()) return false;
+        for (size_t i = 0; i < sa->members.size(); i++)
+        {
+            if (sa->members[i].name != sb->members[i].name) return false;
+            if (!typesEqual(sa->members[i].data, sb->members[i].data)) return false;
+        }
+        return true;
+    }
+    if (auto* aa = dynamic_cast<TypeArray*>(a))
+    {
+        auto* ab = dynamic_cast<TypeArray*>(b);
+        return aa->count == ab->count && typesEqual(aa->type, ab->type);
+    }
+    return true;        // primitives -- class identity already matched
+}
 
 void    toCsv(Reader const& rdb, std::ostream& os)
 {

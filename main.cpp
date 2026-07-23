@@ -198,6 +198,9 @@ int main(int argc, char * argv[])
     bool        buildShared = false;
     build->add_flag("--shared", buildShared,
         "Link a shared object instead of emitting a plain object (needs a C compiler)");
+    bool        buildExe = false;
+    build->add_flag("--executable", buildExe,
+        "Link a standalone checker executable (needs a C++ compiler and libreferee_rt)");
     addIncludeOption(build);
 
     // execute subcommand
@@ -272,6 +275,8 @@ int main(int argc, char * argv[])
         {
             if (buildShared)
                 Referee::emitShared(buildRef, buildOut, buildTriple, includePaths);
+            else if (buildExe)
+                Referee::emitExecutable(buildRef, buildOut, buildTriple, includePaths);
             else
                 Referee::emitObject(buildRef, buildOut, buildTriple, includePaths);
         }

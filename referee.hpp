@@ -88,6 +88,23 @@ public:
                             Sizes const& sizes = {},
                             bool embedSchema = false);
 
+    /// A single diagnostic from `diagnose`: a parse or type error, positioned.
+    /// Lines and columns are 0-based (LSP convention); the range is half-open.
+    struct Diagnostic
+    {
+        unsigned    startLine = 0, startCol = 0;
+        unsigned    endLine   = 0, endCol   = 0;
+        std::string message;
+    };
+
+    /// Parse + type-check REF source from `is` WITHOUT lowering to LLVM, returning
+    /// every diagnostic found (all syntax errors; then, on a clean parse, the first
+    /// AST/type error). This is the language server's analysis entry — the cheap
+    /// subset of `compile`. Arrays may stay unsized (`T[]`) since the editor holds
+    /// no trace. `name` roots import resolution + labels, as in `compile`. Never throws.
+    static std::vector<Diagnostic> diagnose(std::istream& is, std::string name,
+                                            std::vector<std::string> const& includePaths = {});
+
     /// Compile `refPath` and emit a native object file to `outPath`, ready to
     /// be linked into an ahead-of-time checker. The object exports one symbol,
     /// `referee_module` (see `runtime/referee_checker.h`), and carries the
@@ -108,6 +125,17 @@ public:
                                std::string const& outPath,
                                std::string const& triple = {},
                                std::vector<std::string> const& includePaths = {});
+
+    /// Emit a standalone executable: `emitObject` linked against the JIT-free
+    /// runtime library and its driver, so the result validates `.rdb` traces
+    /// with no LLVM, no ANTLR, and no `.ref`. The runtime library
+    /// (`libreferee_rt.a`) is located via `$REFEREE_RT_DIR`, then next to the
+    /// referee binary, then the build tree. Needs a C++ compiler on the build
+    /// machine, not the checking one.
+    static void     emitExecutable(std::string const& refPath,
+                                   std::string const& outPath,
+                                   std::string const& triple = {},
+                                   std::vector<std::string> const& includePaths = {});
 
     /// Convenience wrapper around `compile()` that prints the resulting IR
     /// to `os`. Catches and reports exceptions to stderr. Returns true on

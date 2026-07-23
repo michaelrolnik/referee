@@ -370,6 +370,46 @@ TEST(Cli, CheckerRunsAgainstRdbAndMatchesExecute)
         std::remove(p->c_str());
 }
 
+// `build --executable` links a standalone checker: a native executable that
+// validates .rdb traces with no LLVM, no ANTLR, and no .ref. This is the whole
+// point of the ahead-of-time path, so the test both checks parity with
+// `execute` and asserts the binary does not link LLVM.
+TEST(Cli, ExecutableCheckerIsStandaloneAndNoLLVM)
+{
+    auto    dir = tmpPath("exe", "");
+    auto    ref = dir + ".ref";
+    auto    csv = dir + ".csv";
+    auto    rdb = dir + ".rdb";
+    auto    chk = dir + ".chk";
+
+    {
+        std::ofstream f(ref);
+        f << "data n : integer;\n@pos\nG(n >= 0);\n@is_one\nn == 1;\n";
+    }
+    { std::ofstream f(csv); f << "__time__,n\n0,1\n1000,2\n"; }
+    ASSERT_EQ(run(quote(RDB_BIN) + " build " + quote(ref) + " " + quote(csv) + " -o " + quote(rdb)).status, 0);
+
+    //  The runtime library sits in the build tree; point the builder at it.
+    auto    build = run("REFEREE_RT_DIR=" + std::string(REFEREE_RT_DIR) + " "
+                      + quote(REFEREE_BIN) + " build --executable " + quote(ref) + " -o " + quote(chk));
+    ASSERT_EQ(build.status, 0) << build.output;
+
+    //  Runs on its own, no referee, no .ref.
+    auto    r = run(quote(chk) + " " + quote(rdb));
+    EXPECT_EQ(r.status, 0) << r.output;
+    EXPECT_NE(r.output.find("pos"), std::string::npos) << r.output;
+    EXPECT_EQ(r.output.find("FAIL"), std::string::npos) << r.output;
+
+    //  The point of the whole exercise: no LLVM on the checking side.
+    auto    deps = run("ldd " + quote(chk));
+    EXPECT_EQ(deps.output.find("LLVM"), std::string::npos) << deps.output;
+    EXPECT_EQ(deps.output.find("llvm"), std::string::npos) << deps.output;
+    EXPECT_EQ(deps.output.find("antlr"), std::string::npos) << deps.output;
+
+    for (auto* p : {&ref, &csv, &rdb, &chk, &dir})
+        std::remove(p->c_str());
+}
+
 // A specification with an unbounded array needs no trace to build -- `T[]` is a
 // runtime descriptor, so its extent is not resolved at compile time. This is
 // the doc's open question #3, which ragged arrays settled.

@@ -157,6 +157,8 @@ void lowerMinMaxIntrinsics(llvm::Module& M)
 
 #include "antlr2ast.hpp"
 #include "strings.hpp"
+
+using referee::db::typesEqual;
 #include "visitors/compile.hpp"
 #include "utils.hpp"
 
@@ -309,6 +311,60 @@ Referee::Compiled   Referee::compile(std::istream& is, std::string name,
     // introduced by the optimizer (e.g. via SCEV/IndVarSimplify) are also
     // expanded into icmp+select for the ORC JIT.
     lowerMinMaxIntrinsics(*out.mod);
+
+    return out;
+}
+
+// ── Language-server analysis: parse + type-check, collect diagnostics, no LLVM. ──
+std::vector<Referee::Diagnostic> Referee::diagnose(
+    std::istream& is, std::string name, std::vector<std::string> const& includePaths)
+{
+    std::vector<Diagnostic> out;
+
+    antlr4::ANTLRInputStream    input(is);
+    referee::refereeLexer       lexer(&input);
+    antlr4::CommonTokenStream   tokens(&lexer);
+    referee::refereeParser      parser(&tokens);
+
+    ParseErrors                 errors;
+    errors.attach(lexer, parser);
+
+    // Own arena, unique name — same self-containment reasons as compile().
+    static std::atomic<unsigned>    s_uniq{0};
+    auto    uniqName = name + "#diagnose:" + std::to_string(s_uniq.fetch_add(1));
+    // allowUnsized: the editor has no trace, so a `T[]` must not be flagged as an error here.
+    auto    astOwner = std::make_unique<Antlr2AST>(uniqName, name, includePaths, Sizes{}, /*allowUnsized*/ true);
+    Arena::Scope    arenaScope(astOwner->arena);
+
+    auto*   tree = parser.program();
+
+    // Syntax errors first (ANTLR line is 1-based, col 0-based → 0-based LSP).
+    for (auto const& it : errors.items())
+    {
+        unsigned line = it.line ? it.line - 1 : 0;
+        out.push_back({line, it.col, line, it.col + 1, it.msg});
+    }
+    // A broken parse tree is not safe to walk; syntax errors are enough to report.
+    if (errors.any())
+        return out;
+
+    // AST-build folds in imports and runs TypeCalc, so this catches both bad
+    // imports and type errors — each thrown as an Exception carrying its Position.
+    try
+    {
+        astOwner->visitProgram(tree);
+    }
+    catch (Exception const& e)
+    {
+        auto    p = e.where();
+        unsigned sl = p.beg.row ? p.beg.row - 1 : 0;
+        unsigned el = p.end.row ? p.end.row - 1 : 0;
+        out.push_back({sl, p.beg.col, el, p.end.col, e.reason()});
+    }
+    catch (std::exception const& e)
+    {
+        out.push_back({0, 0, 0, 1, e.what()});
+    }
 
     return out;
 }
@@ -1103,35 +1159,6 @@ bool    runAllSpecs(llvm::orc::LLJIT& jit,
 
 // Structurally compare two AST types. Used to verify a .rdb's embedded
 // schema is layout-compatible with the .ref the user is executing against.
-bool    typesEqual(Type* a, Type* b)
-{
-    if (a == b) return true;
-    if (!a || !b) return false;
-    if (typeid(*a) != typeid(*b)) return false;
-
-    if (auto* ea = dynamic_cast<TypeEnum*>(a))
-    {
-        auto* eb = dynamic_cast<TypeEnum*>(b);
-        return ea->items == eb->items;
-    }
-    if (auto* sa = dynamic_cast<TypeStruct*>(a))
-    {
-        auto* sb = dynamic_cast<TypeStruct*>(b);
-        if (sa->members.size() != sb->members.size()) return false;
-        for (size_t i = 0; i < sa->members.size(); i++)
-        {
-            if (sa->members[i].name != sb->members[i].name) return false;
-            if (!typesEqual(sa->members[i].data, sb->members[i].data)) return false;
-        }
-        return true;
-    }
-    if (auto* aa = dynamic_cast<TypeArray*>(a))
-    {
-        auto* ab = dynamic_cast<TypeArray*>(b);
-        return aa->count == ab->count && typesEqual(aa->type, ab->type);
-    }
-    return true;        // primitives — class identity already matched
-}
 
 } // namespace
 
@@ -1850,6 +1877,65 @@ void    Referee::emitShared(std::string const&               refPath,
     if (rc != 0)
         throw std::runtime_error(
             "emit shared: link failed (" + cmd + ") -- a C compiler is needed on the build machine");
+}
+
+//  Where `libreferee_rt.a` lives: the env override first, then the directory
+//  of the running referee binary (an installed layout keeps them together),
+//  then the build tree. First hit that actually holds the archive wins.
+static std::string  runtimeLibDir()
+{
+    std::vector<std::string>    candidates;
+
+    if (auto const* env = std::getenv("REFEREE_RT_DIR"); env && *env)
+        candidates.emplace_back(env);
+
+    //  Next to the executable, resolved from /proc/self/exe where available.
+    {
+        char    buf[4096];
+        auto    n = ::readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+        if (n > 0)
+        {
+            std::string self(buf, static_cast<std::size_t>(n));
+            candidates.push_back(std::filesystem::path(self).parent_path().string());
+        }
+    }
+
+    candidates.emplace_back("build");
+    candidates.emplace_back(".");
+
+    for (auto const& d : candidates)
+        if (std::filesystem::exists(std::filesystem::path(d) / "libreferee_rt.a"))
+            return d;
+
+    throw std::runtime_error(
+        "emit executable: libreferee_rt.a not found -- set REFEREE_RT_DIR to its directory");
+}
+
+void    Referee::emitExecutable(std::string const&               refPath,
+                                std::string const&               outPath,
+                                std::string const&               triple,
+                                std::vector<std::string> const&  includePaths)
+{
+    auto    objPath = outPath + ".o";
+    emitObject(refPath, objPath, triple, includePaths);
+
+    auto        rtDir = runtimeLibDir();
+    auto const* cxx   = std::getenv("CXX");
+
+    //  The runtime library carries the driver's main(); the specification
+    //  object carries referee_module and the requirement functions. fmt is the
+    //  only third-party dependency the runtime half pulls in.
+    std::string cmd = std::string(cxx && *cxx ? cxx : "c++")
+                    + " " + objPath
+                    + " -L" + rtDir + " -lreferee_rt -lfmt"
+                    + " -o " + outPath;
+
+    int     rc = std::system(cmd.c_str());
+    std::remove(objPath.c_str());
+
+    if (rc != 0)
+        throw std::runtime_error(
+            "emit executable: link failed (" + cmd + ") -- a C++ compiler and libfmt are needed on the build machine");
 }
 
 bool    Referee::executeChecker(std::string const&          soPath,

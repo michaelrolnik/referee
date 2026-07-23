@@ -187,6 +187,11 @@ void    decodeSchema(uint8_t const*&                      cur,
                      std::vector<ConfDecl>&               confs,
                      std::vector<std::unique_ptr<Type>>&  sink);
 
+/// Structural type equality: same shape, same enum members, same struct member
+/// names and array extents. Used to check a trace's schema against the one a
+/// checker (or a .rdb) was built for.
+bool    typesEqual(Type* a, Type* b);
+
 /// Pretty-print the contents of `path` to `os`, decoding each prop/conf blob
 /// using the schema embedded in the file.
 void    dump(std::string const& path, std::ostream& os);
