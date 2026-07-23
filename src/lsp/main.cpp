@@ -494,7 +494,7 @@ int main()
                         {"triggerCharacters", llvm::json::Array{"(", ","}},
                     }},
                 }},
-                {"serverInfo", llvm::json::Object{{"name", "referee-lsp"}, {"version", "0.2.0"}}},
+                {"serverInfo", llvm::json::Object{{"name", "referee-lsp"}, {"version", "0.3.0"}}},
             });
         }
         else if (method == "shutdown")

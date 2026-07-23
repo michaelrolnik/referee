@@ -16,12 +16,12 @@
 project(
     'referee',
     ['c', 'cpp'],
-    version         : '0.2.0',
+    version         : '0.3.0',
     license         : 'MIT',
     meson_version   : '>=1.1',
     default_options : [
         'cpp_std=c++20',
-        'buildtype=debug',
+        'buildtype=release',
         'warning_level=1',
         'b_ndebug=false',
     ],
@@ -338,13 +338,13 @@ endif
 
 antlr4_gen          = custom_target(
     'antlr4-generate',
-    input           : 'core/referee.g4',
+    input           : 'src/core/referee.g4',
     output          : antlr4_outputs,
     command         : antlr4_command,
 )
 
 # include directories
-project_inc_dirs    = ['.', 'core']
+project_inc_dirs    = ['src', 'src/core', 'src/driver']
 if fs.is_dir(meson.project_source_root() / 'submodules/rapidcsv/src')
     project_inc_dirs += 'submodules/rapidcsv/src'
 else
@@ -356,28 +356,28 @@ project_inc         = include_directories(project_inc_dirs)
 
 # core static library
 core_sources        = [
-    'core/visitors/compile.cpp',
-    'core/visitors/canonic.cpp',
-    'core/visitors/negated.cpp',
-    'core/visitors/typecalc.cpp',
-    'core/visitors/printer.cpp',
-    'core/visitors/rewrite.cpp',
-    'core/visitors/csvHeaders.cpp',
-    'core/visitors/loader.cpp',
-    'core/loaders/row.cpp',
-    'core/loaders/csv.cpp',
-    'core/loaders/yml.cpp',
-    'core/antlr2ast.cpp',
-    'core/syntax.cpp',
-    'core/strings.cpp',
-    'core/module.cpp',
-    'core/utils.cpp',
-    'rdb/database.cpp',
-    'rdb/ingest.cpp',
-    'rdb/ingest_ref.cpp',
-    'rdb/merge.cpp',
-    'runtime/strfns.cpp',
-    'referee.cpp',
+    'src/core/visitors/compile.cpp',
+    'src/core/visitors/canonic.cpp',
+    'src/core/visitors/negated.cpp',
+    'src/core/visitors/typecalc.cpp',
+    'src/core/visitors/printer.cpp',
+    'src/core/visitors/rewrite.cpp',
+    'src/core/visitors/csvHeaders.cpp',
+    'src/core/visitors/loader.cpp',
+    'src/core/loaders/row.cpp',
+    'src/core/loaders/csv.cpp',
+    'src/core/loaders/yml.cpp',
+    'src/core/antlr2ast.cpp',
+    'src/core/syntax.cpp',
+    'src/core/strings.cpp',
+    'src/core/module.cpp',
+    'src/core/utils.cpp',
+    'src/rdb/database.cpp',
+    'src/rdb/ingest.cpp',
+    'src/rdb/ingest_ref.cpp',
+    'src/rdb/merge.cpp',
+    'src/runtime/strfns.cpp',
+    'src/driver/referee.cpp',
 ]
 
 core_lib            = static_library(
@@ -398,7 +398,7 @@ core_dep            = declare_dependency(
 # referee CLI
 referee_exe         = executable(
     'referee',
-    'main.cpp',
+    'src/driver/main.cpp',
     dependencies : [
         core_dep,
         fmt_dep,
@@ -419,18 +419,18 @@ referee_exe         = executable(
 referee_rt_lib      = static_library(
     'referee_rt',
     [
-        'rdb/database.cpp',
-        'rdb/ingest.cpp',
-        'core/syntax.cpp',
-        'core/module.cpp',
-        'core/strings.cpp',
-        'core/utils.cpp',
-        'core/visitors/loader.cpp',
-        'core/loaders/row.cpp',
-        'core/loaders/csv.cpp',
-        'core/loaders/yml.cpp',
-        'runtime/strfns.cpp',
-        'runtime/checker.cpp',
+        'src/rdb/database.cpp',
+        'src/rdb/ingest.cpp',
+        'src/core/syntax.cpp',
+        'src/core/module.cpp',
+        'src/core/strings.cpp',
+        'src/core/utils.cpp',
+        'src/core/visitors/loader.cpp',
+        'src/core/loaders/row.cpp',
+        'src/core/loaders/csv.cpp',
+        'src/core/loaders/yml.cpp',
+        'src/runtime/strfns.cpp',
+        'src/runtime/checker.cpp',
     ],
     include_directories : project_inc,
     dependencies        : [fmt_dep, yamlcpp_dep],
@@ -447,7 +447,7 @@ referee_rt_lib      = static_library(
 # rdb helper CLI
 rdb_exe             = executable(
     'rdb',
-    'rdb/main.cpp',
+    'src/rdb/main.cpp',
     dependencies        : [
         core_dep,
         fmt_dep,
@@ -463,7 +463,7 @@ rdb_exe             = executable(
 # (in core), so it needs only core_dep + LLVM (for llvm::json framing).
 lsp_exe             = executable(
     'referee-lsp',
-    'lsp/main.cpp',
+    'src/lsp/main.cpp',
     dependencies        : [
         core_dep,
         fmt_dep,
@@ -563,8 +563,8 @@ if gcovr_prog.found()
         # (they alone dragged branch coverage from 86% down to 72%).
         '--filter', meson.project_source_root() / 'core' / '',
         '--filter', meson.project_source_root() / 'rdb' / '',
-        '--filter', meson.project_source_root() / 'referee.cpp',
-        '--filter', meson.project_source_root() / 'main.cpp',
+        '--filter', meson.project_source_root() / 'src/driver/referee.cpp',
+        '--filter', meson.project_source_root() / 'src/driver/main.cpp',
         # Every C++ statement that can throw carries a hidden branch to its
         # cleanup path. Counting those buries the real conditionals: they alone
         # take branch coverage from ~67% to ~39% while saying nothing about how

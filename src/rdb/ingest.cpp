@@ -25,7 +25,7 @@
 #include "ingest.hpp"
 
 #include "database.hpp"
-#include "../referee.hpp"
+#include "referee.hpp"
 #include "loaders/row.hpp"
 #include "module.hpp"
 #include "syntax.hpp"
