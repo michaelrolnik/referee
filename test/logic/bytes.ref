@@ -58,4 +58,4 @@ Cnt((flag & 0x01) != 0) == 2;               # two messages start
 Sum(k.EOM, flag >> 4) == 4;                 # 3 + 1
 
 # ── `^` does double duty, as in C, since there is no `^^` ────────────────────
-G(k.SOM ^ k.MID ^ k.EOM);                   # exactly one kind holds
+G(k.SOM ^^ k.MID ^^ k.EOM);                 # exactly one kind holds (logical xor)

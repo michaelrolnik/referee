@@ -439,13 +439,14 @@ using ExprNot   = Final<SetOper<'!',   ExprUnary>>;
 //  `^^` to pair with `&&` and `||`.
 using ExprBnot  = Final<SetOper<'~',   ExprUnary>>;
 using ExprBand  = Final<SetOper<'&',   ExprBinary>>;
+using ExprBxor  = Final<SetOper<'^',   ExprBinary>>;   //  bitwise xor (`^`)
 using ExprBor   = Final<SetOper<'|',   ExprBinary>>;
 using ExprShl   = Final<SetOper<'<<',  ExprBinary>>;
 using ExprShr   = Final<SetOper<'>>',  ExprBinary>>;
 
 using ExprOr    = Final<SetOper<'||',  ExprBinary>>;
 using ExprAnd   = Final<SetOper<'&&',  ExprBinary>>;
-using ExprXor   = Final<SetOper<'^',   ExprBinary>>;
+using ExprXor   = Final<SetOper<'^^',  ExprBinary>>;   //  logical xor (`^^` / `xor`)
 using ExprImp   = Final<SetOper<'=>',  ExprBinary>>;
 using ExprEqu   = Final<SetOper<'<=>', ExprBinary>>;
 

@@ -79,12 +79,12 @@ G(__time__ == 2000 => rows[1][0] == 2);
 G(all row, i in rows: all p, j in row: p == row[j]);
 G(all row in rows: all p in row: p > 0);
 
-# Indices stay inside the count on purpose. An index past the end has never
-# been checked -- the language says so -- and on a padded array it read a pad
-# byte, which is a wrong answer. On a ragged array whose elements are
-# themselves arrays it reads a *descriptor* that was never written, and
-# dereferences it. Neither `&&` nor `=>` guards against that, because neither
-# short-circuits: both operands are evaluated. See docs/ragged-arrays.md.
+# Indices stay inside the count on purpose. A bare index past the end is not
+# checked -- the language says so -- and reads a wrong value: a pad byte on a
+# padded array, or, on a ragged array of arrays, a descriptor that was never
+# written and then dereferenced. Guard it with `&&`, `=>` or `? :`, which
+# short-circuit -- `i < pkt.count && pkt[i] == x` never evaluates `pkt[i]`
+# when the guard is false, so the read never happens. See docs/ragged-arrays.md.
 
 # ── Accumulating over lengths ────────────────────────────────────────────────
 Sum(true, pkt.count) == 9;                  # 3 + 2 + 0 + 4

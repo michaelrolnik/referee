@@ -81,6 +81,7 @@ struct RewriteImpl
              , ExprCount
              , ExprBinder
              , ExprBand
+             , ExprBxor
              , ExprBor
              , ExprShl
              , ExprShr
@@ -165,6 +166,7 @@ public:
     void    visit(ExprCount*        expr) override;
     void    visit(ExprBinder*       expr) override;
     void    visit(ExprBand*      expr) override;
+    void    visit(ExprBxor*      expr) override;
     void    visit(ExprBor*       expr) override;
     void    visit(ExprShl*       expr) override;
     void    visit(ExprShr*       expr) override;
@@ -667,6 +669,14 @@ void    RewriteImpl::visit( ExprXor*            expr)
 void    RewriteImpl::visit( ExprBand*        expr)
 {
     m_expr =  Factory<ExprBand>::create(
+        expr->where(),
+        make(expr->lhs),
+        make(expr->rhs));
+}
+
+void    RewriteImpl::visit( ExprBxor*        expr)
+{
+    m_expr =  Factory<ExprBxor>::create(
         expr->where(),
         make(expr->lhs),
         make(expr->rhs));

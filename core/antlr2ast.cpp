@@ -1043,7 +1043,12 @@ std::any Antlr2AST::visitExprUw(        referee::refereeParser::ExprUwContext*  
 
 std::any Antlr2AST::visitExprXor(       referee::refereeParser::ExprXorContext*     ctx)
 {
-    return acceptBinary<ExprXor>(ctx);
+    return acceptBinary<ExprXor>(ctx);      //  logical xor: `^^` / `xor`
+}
+
+std::any Antlr2AST::visitExprBxor(      referee::refereeParser::ExprBxorContext*     ctx)
+{
+    return acceptBinary<ExprBxor>(ctx);     //  bitwise xor: `^`
 }
 
 std::any Antlr2AST::visitExprBand(      referee::refereeParser::ExprBandContext*     ctx)

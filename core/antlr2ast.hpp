@@ -107,9 +107,9 @@ public:
 
     std::any visitDeclImport(   referee::refereeParser::DeclImportContext*      ctx) override;
     std::any visitExprQuant(    referee::refereeParser::ExprQuantContext*       ctx) override;
-    std::any visitDeclFunc(     referee::refereeParser::DeclFuncContext*    ctx) override;
-    std::any visitExprSlice(    referee::refereeParser::ExprSliceContext*   ctx) override;
-    std::any visitExprCall(     referee::refereeParser::ExprCallContext*    ctx) override;
+    std::any visitDeclFunc(     referee::refereeParser::DeclFuncContext*        ctx) override;
+    std::any visitExprSlice(    referee::refereeParser::ExprSliceContext*       ctx) override;
+    std::any visitExprCall(     referee::refereeParser::ExprCallContext*        ctx) override;
     std::any visitDeclConf(     referee::refereeParser::DeclConfContext*        ctx) override;
     std::any visitDeclDataTyped(referee::refereeParser::DeclDataTypedContext*   ctx) override;
     std::any visitDeclDataExpr( referee::refereeParser::DeclDataExprContext*    ctx) override;
@@ -155,11 +155,12 @@ public:
     std::any visitExprUs(       referee::refereeParser::ExprUsContext*      ctx) override;
     std::any visitExprUw(       referee::refereeParser::ExprUwContext*      ctx) override;
     std::any visitExprXor(      referee::refereeParser::ExprXorContext*     ctx) override;
-    std::any visitExprBand(      referee::refereeParser::ExprBandContext*     ctx) override;
+    std::any visitExprBxor(      referee::refereeParser::ExprBxorContext*   ctx) override;
+    std::any visitExprBand(      referee::refereeParser::ExprBandContext*   ctx) override;
     std::any visitExprBor(      referee::refereeParser::ExprBorContext*     ctx) override;
     std::any visitExprShl(      referee::refereeParser::ExprShlContext*     ctx) override;
     std::any visitExprShr(      referee::refereeParser::ExprShrContext*     ctx) override;
-    std::any visitExprBnot(      referee::refereeParser::ExprBnotContext*     ctx) override;
+    std::any visitExprBnot(      referee::refereeParser::ExprBnotContext*   ctx) override;
     std::any visitExprXs(       referee::refereeParser::ExprXsContext*      ctx) override;
     std::any visitExprXw(       referee::refereeParser::ExprXwContext*      ctx) override;
     std::any visitExprYs(       referee::refereeParser::ExprYsContext*      ctx) override;

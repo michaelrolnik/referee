@@ -60,6 +60,7 @@ struct TypeCalcImpl
              , ExprCount
              , ExprBinder
              , ExprBand
+             , ExprBxor
              , ExprBor
              , ExprShl
              , ExprShr
@@ -111,7 +112,6 @@ struct TypeCalcImpl
     bool    isNumeric(Type* type) const;
 
     Type*   bitwise(Expr* expr, Expr* lhs, Expr* rhs);
-    Type*   bitOrLogical(Expr* expr, Expr* lhs, Expr* rhs);
 
     //  `byte` is a storage width, not a value kind: reading one yields an
     //  integer. Applied wherever a value comes out of storage, so nothing
@@ -160,6 +160,7 @@ struct TypeCalcImpl
     void    visit(ExprCount*            expr) override;
     void    visit(ExprBinder*           expr) override;
     void    visit(ExprBand*          expr) override;
+    void    visit(ExprBxor*          expr) override;
     void    visit(ExprBor*           expr) override;
     void    visit(ExprShl*           expr) override;
     void    visit(ExprShr*           expr) override;
@@ -804,29 +805,19 @@ void    TypeCalcImpl::visit(ExprCall*               expr)
     m_type = widen(decl.ret);
 }
 
-//  `&`, `|`, `^` are one operator each over two operand kinds: integers, where
-//  they read the bit pattern (a `byte` out of a trace is an integer), and
-//  booleans, where they are the non-short-circuiting logical operators --
-//  matching `&&` / `||` in result, differing only in that those two may stop
-//  at the first operand. A mixed pair is neither, and rejected. The three
-//  agree so a reader never has to remember which of them happens to take a
-//  boolean; `^` is also the only logical xor, there being no `^^`.
-Type*   TypeCalcImpl::bitOrLogical(Expr* expr, Expr* lhs, Expr* rhs)
-{
-    if(make(lhs) == typeInteger && make(rhs) == typeInteger)
-        return typeInteger;
-
-    return  boolBool2Bool(expr, lhs, rhs);
-}
-
+//  Logical xor (`^^` / `xor`): two booleans, result boolean. Unlike `&&` /
+//  `||` it cannot short-circuit -- both operands always decide the result --
+//  but it types like them, and its negation is the biconditional (see
+//  negated.cpp). The bitwise `^` is a different operator (below).
 void    TypeCalcImpl::visit(ExprXor*                expr)
 {
-    m_type  = bitOrLogical(expr, expr->lhs, expr->rhs);
+    m_type  = boolBool2Bool(expr, expr->lhs, expr->rhs);
 }
 
-//  Shift is integer-only: there is no bitwise reading of a number, and
-//  shifting a boolean is meaningless -- unlike `&` / `|` / `^`, `<<` / `>>`
-//  do not generalise to booleans, so they keep the stricter check.
+//  `&`, `^`, `|`, `<<`, `>>` are bitwise: they read the bit pattern of an
+//  integer (a `byte` out of a trace is an integer), and take integers only.
+//  A number has no bit pattern and a boolean is not a bitfield -- the logical
+//  operators (`&&`, `^^`, `||`) are what act on booleans.
 Type*   TypeCalcImpl::bitwise(Expr* expr, Expr* lhs, Expr* rhs)
 {
     auto    lhsT    = make(lhs);
@@ -843,12 +834,17 @@ Type*   TypeCalcImpl::bitwise(Expr* expr, Expr* lhs, Expr* rhs)
 
 void    TypeCalcImpl::visit(ExprBand*               expr)
 {
-    m_type  = bitOrLogical(expr, expr->lhs, expr->rhs);
+    m_type  = bitwise(expr, expr->lhs, expr->rhs);
+}
+
+void    TypeCalcImpl::visit(ExprBxor*               expr)
+{
+    m_type  = bitwise(expr, expr->lhs, expr->rhs);
 }
 
 void    TypeCalcImpl::visit(ExprBor*                expr)
 {
-    m_type  = bitOrLogical(expr, expr->lhs, expr->rhs);
+    m_type  = bitwise(expr, expr->lhs, expr->rhs);
 }
 
 void    TypeCalcImpl::visit(ExprShl*                expr)

@@ -284,30 +284,33 @@ Enum members are reached **through the signal**, not through the type: `lock.ON`
 
 REF expressions combine the familiar C-family operator set with dedicated temporal operators. Outside of the temporal layer, the non-temporal expression language is what requirement authors use most of the time.
 
-**Operators, from tightest to loosest binding.** The ordering follows C++ and Kotlin, which agree on all of these: multiplicative, additive, shift, relational, equality, `&`, `^`, `|`, `&&`, `||`. `=>` and `<=>` have no C++ equivalent and sit where logic conventionally puts them — looser than `||`, tighter than the conditional. So `2 + 3 * 4` is 14, `a || b && c` is `a || (b && c)`, and `a && x <= 5` needs no parentheses. `=>` is right-associative, again following logic: `a => b => c` is `a => (b => c)`.
+**Operators, from tightest to loosest binding.** The ordering follows C++ and Kotlin, which agree on all of these: multiplicative, additive, shift, relational, equality, `&`, `^`, `|`, `&&`, `^^`, `||`. `=>` and `<=>` have no C++ equivalent and sit where logic conventionally puts them — looser than `||`, tighter than the conditional. So `2 + 3 * 4` is 14, `a || b && c` is `a || (b && c)`, and `a && x <= 5` needs no parentheses. `=>` is right-associative, again following logic: `a => b => c` is `a => (b => c)`.
+
+**Bitwise and logical are separate families.** `&` `^` `|` are bitwise — integers only, operating on the bit pattern. `&&` `^^` `||` are logical — booleans only. They do not overlap: `a & b` on booleans is a type error, and so is `a && b` on integers. Each logical operator also has an English **word alias** — `and` `xor` `or`, and `not` for `!` — the same operator under a second spelling, so `a and not b` is exactly `a && !b`. (`and` doubles as the `between P and Q` keyword; the parser tells the two uses apart by context.)
 
 
 | Category    | Operators                                  | Notes                                            |
 | ----------- | ------------------------------------------ | ------------------------------------------------ |
 | Postfix     | `.field`, `[index]`, `[lo:hi]`, `.count`   | Member access, array indexing, half-open slice, element count. |
-| Unary       | `!`, `-`, `~`                              | Logical negation, arithmetic negation, bitwise complement. |
+| Unary       | `!` (`not`), `-`, `~`                      | Logical negation, arithmetic negation, bitwise complement. |
 | Multiplicative | `*`, `/`, `%`                           | `%` is integer modulo.                           |
 | Additive    | `+`, `-`                                   |                                                  |
 | Shift       | `<<`, `>>`                                 | Integers only. `>>` is arithmetic — REF integers are signed. |
 | Relational  | `<`, `<=`, `>`, `>=`                       |                                                  |
 | Equality    | `==`, `!=`                                 | Works on booleans, numbers, strings, enums.      |
-| AND         | `&`                                        | Bitwise on integers, logical on booleans.        |
-| XOR         | `^`                                        | Bitwise on integers, logical on booleans; the only logical xor. |
-| OR          | `\|`                                       | Bitwise on integers, logical on booleans.        |
-| Logical AND | `&&`                                       | Booleans; short-circuits. `&` is the non-short-circuiting form. |
-| Logical OR  | `\|\|`                                      | Booleans; short-circuits. `\|` is the non-short-circuiting form. |
-| Implication | `=>`, `<=>`                                | Material implication and biconditional.          |
+| Bitwise AND | `&`                                        | Integers only.                                   |
+| Bitwise XOR | `^`                                        | Integers only.                                   |
+| Bitwise OR  | `\|`                                       | Integers only.                                   |
+| Logical AND | `&&` (`and`)                               | Booleans; short-circuits — the right side is evaluated only if the left doesn't decide it. |
+| Logical XOR | `^^` (`xor`)                               | Booleans; evaluates both operands (xor cannot short-circuit). |
+| Logical OR  | `\|\|` (`or`)                               | Booleans; short-circuits.                        |
+| Implication | `=>`, `<=>`                                | Material implication and biconditional. Also short-circuit. |
 | Ternary     | `cond ? then : else`                       | Selects between two values of the same type.     |
 | Grouping    | `(...)`                                    |                                                  |
 
-The precedence is C's, exactly — including the part everyone trips over: `&`, `^` and `\|` bind *looser* than `==`, so `flag & 0x80 != 0` reads as `flag & (0x80 != 0)`. C computes that silently; REF rejects it, because `!=` yields a boolean while `flag` is an integer, and `&` takes two of a kind — two integers or two booleans, not one of each. Write `(flag & 0x80) != 0`.
+The precedence is C's, exactly — including the part everyone trips over: `&`, `^` and `\|` bind *looser* than `==`, so `flag & 0x80 != 0` reads as `flag & (0x80 != 0)`. C computes that silently; REF rejects it, because `!=` yields a boolean and `&` takes integers. Write `(flag & 0x80) != 0`.
 
-`^` is the one operator that does double duty — bitwise xor on integers, logical xor on booleans — because there is no `^^` to pair with `&&` and `\|\|`. `&` and `\|` stay integers-only for that reason: booleans already have the doubled spellings.
+The bitwise `^` and the logical `^^` sit at different precedence levels — `^` with the other bitwise operators just below `==`, `^^` with the logical ones just above `||` — because that is where each family belongs. `^^` (or `xor`) is the only logical xor; the bitwise `^` does not take booleans.
 
 `=>` and `<=>` are first-class operators, not macros: `p => q` is exactly `!p || q`, and `p <=> q` is `p == q` restricted to booleans, but writing them with the logical spelling makes requirement intent immediately readable ("whenever `p`, then `q`").
 

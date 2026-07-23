@@ -118,7 +118,7 @@ C.e.ON;
 1 - 2 == -1;
 
 a && b == false;
-a ^ b == true;
+a ^^ b == true;
 
 F(z && Ys(H(!z)));
 F(z && Ys(F(!z)));

@@ -1419,11 +1419,12 @@ TEST(Rdb, OperatorPrecedenceMatchesDocumentation)
     std::remove(rdbPath.c_str());
 }
 
-// `&`, `|`, `^` on booleans are the non-short-circuiting logical operators,
-// matching `&&` / `||` in result. `^` already accepted booleans; `&` and `|`
-// used to reject them. boolops.ref pins all three, and that integer bitwise is
-// unchanged; every requirement in it must pass.
-TEST(Rdb, BooleanLogicalBitwiseMatchesShortCircuit)
+// The logical operators and their word aliases: `&&`/`and`, `||`/`or`,
+// `^^`/`xor`, `!`/`not` are each one node under two spellings. boolops.ref
+// pins the words equalling their symbols, logical xor, de Morgan, and mixed
+// spellings; every requirement in it must pass. (Bitwise `&`/`^`/`|` are a
+// separate integer-only family -- see BytesAndBitwise.)
+TEST(Rdb, LogicalOperatorsAndWordAliases)
 {
     auto    refPath = std::string(REFEREE_TEST_DATA_DIR) + "/boolops.ref";
     auto    csvPath = std::string(REFEREE_TEST_DATA_DIR) + "/boolops.csv";

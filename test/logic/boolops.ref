@@ -1,22 +1,27 @@
-# `&`, `|`, `^` accept booleans and are the non-short-circuiting logical
-# operators, matching `&&` / `||` in result (they differ only in that `&&` /
-# `||` may stop at the first operand). `^` already did this; `&` and `|` used
-# to reject a boolean operand, which left the family inconsistent -- one of the
-# three worked on booleans and two did not. Every line here must hold.
+# The logical operators and their word aliases. `&&`/`and`, `||`/`or`,
+# `^^`/`xor`, `!`/`not` are each one operator under two spellings -- the word
+# is an alias for the symbol, the same node either way. The bitwise `&`/`^`/`|`
+# are a separate family, integers only (see bytes.ref); they are NOT logical
+# and do not appear here on booleans. Every line must hold.
 
 data a : boolean;
 data b : boolean;
 
-# ── the single-char forms match the double-char ones on booleans ─────────────
-G((a & b) == (a && b));
-G((a | b) == (a || b));
+# ── word aliases equal their symbols, operand for operand ────────────────────
+G((a and b) == (a && b));
+G((a or  b) == (a || b));
+G((a xor b) == (a ^^ b));
+G((not a)   == (!a));
 
-# `^` is the only logical xor -- there is no `^^` -- and it agrees with the two
-# ways it would otherwise be written.
-G((a ^ b) == (a != b));
-G((a ^ b) == ((a || b) && !(a & b)));
+# ── logical xor: true iff the operands differ; no `^^^`, and it is the only
+#    logical xor (the bitwise `^` does not take booleans) ─────────────────────
+G((a ^^ b) == (a != b));
+G((a xor b) == ((a || b) && not (a && b)));
 
-# ── integer bitwise is untouched: same operators, integer operands ───────────
-G((0xF0 & 0x0F) == 0x00);
-G((0xF0 | 0x0F) == 0xFF);
-G((0xFF ^ 0x0F) == 0xF0);
+# ── the words compose and nest like the symbols ──────────────────────────────
+G((a and not b) == (a && !b));
+G((not (a or b)) == (!a && !b));            # de Morgan
+G(a xor b xor a == b);                      # xor is associative; a cancels
+
+# ── mixing spellings in one expression is fine -- same nodes ─────────────────
+G((a and b or not a) == (a && b || !a));

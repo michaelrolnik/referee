@@ -124,7 +124,7 @@ LINE_COMMENT: ('//'|'#') ~[\r\n]* -> skip
 
 time        : '[' expression ':' expression ']'                 # TimeFull
             | '['            ':' expression ']'                 # TimeUpper
-            | '[' expression ':'         ']'                    # TimeLower
+            | '[' expression ':'            ']'                 # TimeLower
             ;
 
 expression  : sign? integer                                     # ExprConst
@@ -132,21 +132,22 @@ expression  : sign? integer                                     # ExprConst
             | string                                            # ExprConst
             | boolean                                           # ExprConst
 
-            | funcID '(' (expression (',' expression)*)? ')'   # ExprCall
+            | funcID '(' (expression (',' expression)*)? ')'    # ExprCall
             | dataID                                            # ExprData
             | expression '.' mmbrID                             # ExprMmbr
             | expression '[' expression ':' expression ']'      # ExprSlice
             | expression '[' expression ']'                     # ExprIndx
 
-            | '!' expression                                    # ExprNot
+            | ('!' | 'not') expression                          # ExprNot
             | '-' expression                                    # ExprNeg
             | '~' expression                                    # ExprBnot
 
             //  Precedence is the order of these alternatives, tightest first.
             //  It follows C++ / Kotlin: multiplicative, additive, relational,
-            //  equality, ^, &&, ||.  Implication and biconditional have no C++
-            //  equivalent and sit where logic conventionally puts them, looser
-            //  than || and tighter than the conditional.
+            //  equality, the bitwise & ^ |, then the logical && ^^ ||.
+            //  Implication and biconditional have no C++ equivalent and sit
+            //  where logic conventionally puts them, looser than || and
+            //  tighter than the conditional.
             | expression '*'   expression                       # ExprMul
             | expression '/'   expression                       # ExprDiv
             | expression '%'   expression                       # ExprMod
@@ -166,19 +167,13 @@ expression  : sign? integer                                     # ExprConst
             | expression '!='  expression                       # ExprNe
 
             | expression '&'   expression                       # ExprBand
-            | expression '^'   expression                       # ExprXor
+            | expression '^'   expression                       # ExprBxor
             | expression '|'   expression                       # ExprBor
 
-            | expression '&&'  expression                       # ExprAnd
-            | expression '||'  expression                       # ExprOr
+            | expression ('&&' | 'and') expression              # ExprAnd
+            | expression ('^^' | 'xor') expression              # ExprXor
+            | expression ('||' | 'or' ) expression              # ExprOr
 
-            //  Implication is right-associative, as it is in logic and every
-            //  language that has it: `a => b => c` is `a => (b => c)`. Without
-            //  the annotation ANTLR left-associates a left-recursive rule, and
-            //  `(a => b) => c` is a different claim -- false where the intended
-            //  one is true (a=b=c=false). Biconditional is left as ANTLR's
-            //  default: `<=>` is fully associative, so grouping cannot change
-            //  a truth value.
             | <assoc=right> expression '=>'  expression         # ExprImp
             | expression '<=>' expression                       # ExprEqu
 
@@ -207,14 +202,8 @@ expression  : sign? integer                                     # ExprConst
             | 'Ts' time? '(' expression ',' expression ')'      # ExprTs
             | 'Tw' time? '(' expression ',' expression ')'      # ExprTw
 
-            //  The three accumulators, named as a family: Int integrates a
-            //  value over time, Sum totals it over records, Cnt counts them.
             | 'Itg' time? '(' expression ',' expression ')'     # ExprInt
             | 'Itg' time? '(' expression ')'                    # ExprInt
-
-            //  Discrete counterparts, shaped like Itg: a condition selects
-            //  the states, and states where it fails are skipped. Cnt(p) is
-            //  Sum(p, 1).
             | 'Sum' time? '(' expression ',' expression ')'     # ExprSum
             | 'Cnt' time? '(' expression ')'                    # ExprCnt
 

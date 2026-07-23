@@ -315,6 +315,7 @@ struct CompileExprImpl
              , ExprCount
              , ExprBinder
              , ExprBand
+             , ExprBxor
              , ExprBor
              , ExprShl
              , ExprShr
@@ -383,6 +384,7 @@ struct CompileExprImpl
     void    visit(ExprCount*        expr) override;
     void    visit(ExprBinder*       expr) override;
     void    visit(ExprBand*      expr) override;
+    void    visit(ExprBxor*      expr) override;
     void    visit(ExprBor*       expr) override;
     void    visit(ExprShl*       expr) override;
     void    visit(ExprShr*       expr) override;
@@ -2150,19 +2152,26 @@ void    CompileExprImpl::visit( ExprCall*       expr)
     m_value = widenByte(m_builder->CreateCall(callee, args, expr->name + "()"), decl.ret);
 }
 
-//  `&`, `|`, `^` lower to the one LLVM instruction each whatever the operand
-//  width: i64 for integers (a `byte` is widened on load), i1 for booleans,
-//  where the same instruction is the logical operator. TypeCalc has already
-//  ruled out a mixed pair, so both operands share a width here and no juggling
-//  is needed. `>>` (below) is arithmetic, since REF integers are signed.
+//  Logical xor (`^^` / `xor`): both operands are i1 and both are evaluated --
+//  xor cannot short-circuit, since neither operand alone decides the result --
+//  so it is the one xor instruction, no branching. `&&` / `||` branch (see
+//  shortCircuit); this does not.
 void    CompileExprImpl::visit( ExprXor*        expr)
 {
     m_value = m_builder->CreateXor(make(expr->lhs), make(expr->rhs), "xor");
 }
 
+//  Bitwise `&`, `^`, `|`: the operands are i64 (a `byte` is widened on load),
+//  one instruction each, no branching. `>>` (below) is arithmetic, since REF
+//  integers are signed.
 void    CompileExprImpl::visit( ExprBand*       expr)
 {
     m_value = m_builder->CreateAnd(make(expr->lhs), make(expr->rhs), "band");
+}
+
+void    CompileExprImpl::visit( ExprBxor*       expr)
+{
+    m_value = m_builder->CreateXor(make(expr->lhs), make(expr->rhs), "bxor");
 }
 
 void    CompileExprImpl::visit( ExprBor*        expr)

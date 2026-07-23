@@ -1,9 +1,9 @@
 # Operator precedence, pinned.
 #
 # REF follows C++ / Kotlin: multiplicative, then additive, then relational,
-# then equality, then ^, then &&, then ||. Implication and biconditional have
-# no C++ equivalent and sit where logic conventionally puts them -- looser than
-# || and tighter than the conditional.
+# then equality, then the bitwise & ^ |, then the logical && ^^ ||. Implication
+# and biconditional have no C++ equivalent and sit where logic conventionally
+# puts them -- looser than || and tighter than the conditional.
 #
 # These requirements state the groupings, so the grammar and the precedence
 # table in the README cannot drift apart.
