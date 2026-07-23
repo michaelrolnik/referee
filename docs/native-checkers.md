@@ -1,7 +1,31 @@
 # Design: ahead-of-time compiled checkers
 
-**Status:** proposal, not implemented.
+**Status:** stage 1 built (object emission + requirement table). Stages 2 (`.so`) and 3 (executable) not yet.
 **Scope:** `referee build spec.ref -o checker` producing a native executable that validates traces without compiling anything.
+
+## What is built (stage 1)
+
+`referee build spec.ref -o spec.o` emits a native ELF object -- the module
+`Referee::compile` already produces, run through `addPassesToEmitFile` at PIC.
+It exports one symbol, `referee_module`, returning the `referee_module_v1`
+table (`runtime/referee_checker.h`): version, the requirements as `{label,
+eval}` pairs in report order, and `__prepare__`. The requirement functions keep
+their source-position names internally; the human label rides as data, so an
+ELF symbol never has to hold a space or a colon.
+
+A host links the object and walks the table -- proved end to end: a driver
+calling `referee_module()->requirements[i].eval(...)` against a `.rdb` prints
+verdicts byte-identical to `referee execute`, with no JIT. The schema fields are
+still null (stage 2 fills them), and the object still carries the `--explain`
+companions as dead weight (an AOT-lean mode would drop them).
+
+One open question the original design flagged has since resolved itself:
+`referee build` needs **no trace**, because `T[]` is now a runtime descriptor
+(ragged arrays) rather than a per-run fixed extent, so an unsized array no
+longer has to be resolved at compile time.
+
+---
+
 
 ## The problem
 

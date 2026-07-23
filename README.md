@@ -869,7 +869,27 @@ Per requirement, the file records:
 - **scope intervals** — where a Dwyer pattern's scope was actually open (`before P` open until the first `P`, `while P` over each run where it holds, and so on);
 - **vacuity** — whether the requirement passed *without proving anything*: an implication whose antecedent never fired (`antecedent_never_true`), or a scope that never opened (`scope_never_opened`). A requirement can be `pass` and `vacuous` at once, and that combination is the point — it is the coverage gap a green report otherwise hides, and it is computed by referee so it shows up in CI where a picture cannot.
 
-Every column comes from a companion function the compiler emits from the *same* AST node the verdict comes from, so the picture cannot drift from the verdict — referee checks that the column's first-state value equals the verdict on every run. The format is the contract (`schema/run-trace.schema.json`, `docs/run-trace-format.md`); the viewers are replaceable. `examples/door/` ships a worked run trace with its rendered HTML.
+Every column comes from a companion function the compiler emits from the *same* AST node the verdict comes from, so the picture cannot drift from the verdict — referee checks that the column's first-state value equals the verdict on every run. The format is the contract (`schema/run-trace.schema.json`, `docs/run-trace-format.md`); the viewers are replaceable. `examples/door/` ships a worked run trace with its rendered HTML (`examples/door/nominal.bokeh.html`).
+
+### Visualizing traces with `view_bokeh.py`
+
+`tools/view_bokeh.py` generates an interactive HTML dashboard using Bokeh:
+
+```bash
+# Install dependencies
+pip install bokeh pandas
+
+# Generate ndjson trace and build interactive Bokeh dashboard
+./build/referee execute spec.ref trace.csv --explain run.ndjson
+python3 tools/view_bokeh.py run.ndjson -o run.bokeh.html
+```
+
+#### Bokeh Viewer Features
+
+- **Interactive Hover & Tooltips**: Hover over states or intervals to view timestamps, signal values, verdict states (`PASS`, `FAIL`, `VACUOUS`), and temporal witness spans.
+- **Linked Zoom & Pan**: All requirement panels share a common time axis. Zooming or panning on one panel dynamically updates all requirement rows simultaneously.
+- **Requirement Selector Dropdown**: Select a specific requirement from the "show" dropdown menu (e.g., `@door_closes_in_2s` or `spec.ref:12:0`) to isolate that requirement and automatically filter out unrelated background signals.
+- **Offline & Self-Contained**: Uses `mode="inline"` to bundle BokehJS into the output file (~1.7 MB), ensuring `run.bokeh.html` can be viewed offline, attached to CI build artifacts, or shared directly without external dependencies.
 
 > **Cost.** A temporal requirement's column is O(N²) — each state re-walks its operator — so `--explain` is opt-in and single-trace. It is affordable for one trace; the verdict path it instruments stays O(N).
 
@@ -983,6 +1003,26 @@ schema check `referee execute` runs applies to the merged `.rdb`.
 
 > **One clock.** Timestamps are compared across sources directly, so the
 > sources must share an epoch and unit. Align them first if they do not.
+
+### `rdb merge` Worked Examples
+
+**Example 1: Merging multi-rate CSV sensor logs with backfilling**
+Combine a 1 kHz accelerometer log with a 10 Hz temperature telemetry file, filling initial leading gaps with each signal's first recorded sample:
+
+```bash
+./build/rdb merge spec.ref sensors_1khz.csv temp_10hz.csv \
+                --leading backfill \
+                -o trace_merged.rdb
+```
+
+**Example 2: Overlaying a new signal onto an existing `.rdb` trace**
+Merge a pre-packed baseline trace (`baseline.rdb`) with an additional debug log (`debug_overlay.csv`), resolving shared overlapping columns by merging records:
+
+```bash
+./build/rdb merge spec.ref baseline.rdb debug_overlay.csv \
+                --overlap merge \
+                -o trace_updated.rdb
+```
 
 ## Consuming `.rdb` files — `referee execute`
 

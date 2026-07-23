@@ -183,6 +183,20 @@ int main(int argc, char * argv[])
         "Name to #include from a --stub skeleton (default: spec.h)");
     addIncludeOption(header);
 
+    // build subcommand: emit a native object file for an ahead-of-time
+    // checker. Stage one of docs/native-checkers.md -- the object exports one
+    // symbol, referee_module, and carries the compiled requirements.
+    std::string buildRef, buildOut, buildTriple;
+    auto        build = app.add_subcommand(
+        "build", "Compile a specification to a native object file (ahead-of-time checker)");
+    build->add_option("reffile", buildRef, "REF specification file")
+        ->required()
+        ->check(CLI::ExistingFile);
+    build->add_option("-o,--output", buildOut, "Output object (.o) path")->required();
+    build->add_option("--target", buildTriple,
+        "Target triple to cross-emit for (default: the host)");
+    addIncludeOption(build);
+
     // execute subcommand
     std::string runRef;
     std::vector<std::string> runData;
@@ -243,6 +257,10 @@ int main(int argc, char * argv[])
         {
             std::ifstream   is(compileRef, std::ios_base::in);
             if (!Referee::printIR(is, compileRef, std::cout, includePaths)) return 1;
+        }
+        else if(app.got_subcommand("build"))
+        {
+            Referee::emitObject(buildRef, buildOut, buildTriple, includePaths);
         }
         else if(app.got_subcommand("header"))
         {

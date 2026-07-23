@@ -198,6 +198,8 @@ protected:
                     continue;
                 if(name.rfind("__scope", 0) == 0)
                     continue;
+                if(name == "referee_module")
+                    continue;
 
                 auto    symbol  = ExitOnErr(TheJIT->lookup(name));
                 auto    func    = symbol.toPtr<bool (*)(state_t*, state_t*, void*)>();

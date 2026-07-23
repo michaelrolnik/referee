@@ -72,7 +72,12 @@
 #include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/Support/raw_os_ostream.h"
+#include "llvm/Support/FileSystem.h"
 #include "llvm/TargetParser/Host.h"
+#include "llvm/MC/TargetRegistry.h"
+#include "llvm/Target/TargetMachine.h"
+#include "llvm/Target/TargetOptions.h"
+#include "llvm/IR/LegacyPassManager.h"
 #include "llvm/ExecutionEngine/Orc/LLJIT.h"
 #include <dlfcn.h>
 #include <filesystem>
@@ -669,6 +674,7 @@ JitWithSpecs    buildJitFromRef(std::istream& refStream, std::string const& refN
         if (name.rfind("__ante__", 0) == 0) continue;
         if (name.rfind("__sub__", 0) == 0) continue;
         if (name.rfind("__scope", 0) == 0) continue;
+        if (name == "referee_module") continue;
 
         auto        head = name.substr(0, name.find(" .. "));   // "[file:]row:col"
         std::string file;
@@ -1690,6 +1696,62 @@ std::string     cArraySuffix(Type* type)
 }
 
 } // namespace
+
+void    Referee::emitObject(std::string const&               refPath,
+                            std::string const&               outPath,
+                            std::string const&               triple,
+                            std::vector<std::string> const&  includePaths)
+{
+    //  Every linked target, so a cross-triple can be selected; the host case
+    //  needs only the native one but initialising all is cheap and uniform.
+    llvm::InitializeAllTargetInfos();
+    llvm::InitializeAllTargets();
+    llvm::InitializeAllTargetMCs();
+    llvm::InitializeAllAsmParsers();
+    llvm::InitializeAllAsmPrinters();
+
+    auto    tripleStr = triple.empty() ? llvm::sys::getDefaultTargetTriple() : triple;
+
+    std::string     err;
+    auto const*     target = llvm::TargetRegistry::lookupTarget(tripleStr, err);
+    if (target == nullptr)
+        throw std::runtime_error("emit object: " + err);
+
+    //  PIC, so the object is equally usable in a shared object or an
+    //  executable -- the shared-object form is the next stage and the more
+    //  useful one, so it should not need a second code-generation mode.
+    llvm::TargetOptions options;
+    std::unique_ptr<llvm::TargetMachine>    tm(
+        target->createTargetMachine(tripleStr, "generic", "", options,
+                                    llvm::Reloc::PIC_, std::nullopt,
+                                    llvm::CodeGenOptLevel::Default));
+
+    //  Compile with the target's own layout so the emitted code and the .rdb
+    //  the checker reads agree on struct offsets, exactly as the JIT path pins
+    //  the module to the JIT's layout.
+    std::ifstream   in(refPath);
+    if (!in)
+        throw std::runtime_error("emit object: cannot open '" + refPath + "'");
+
+    auto    dl       = tm->createDataLayout();
+    auto    compiled = compile(in, refPath, &dl, includePaths);
+    compiled.mod->setDataLayout(dl);
+    compiled.mod->setTargetTriple(tripleStr);
+
+    std::error_code         ec;
+    llvm::raw_fd_ostream    os(outPath, ec, llvm::sys::fs::OF_None);
+    if (ec)
+        throw std::runtime_error("emit object: cannot write '" + outPath + "': " + ec.message());
+
+    //  addPassesToEmitFile still wants the legacy pass manager; the module is
+    //  already O2-optimised by compile(), so this is code generation only.
+    llvm::legacy::PassManager   pm;
+    if (tm->addPassesToEmitFile(pm, os, nullptr, llvm::CodeGenFileType::ObjectFile))
+        throw std::runtime_error("emit object: target cannot emit an object file");
+
+    pm.run(*compiled.mod);
+    os.flush();
+}
 
 void    Referee::emitHeader(std::string const& refPath,
                             std::ostream& os,

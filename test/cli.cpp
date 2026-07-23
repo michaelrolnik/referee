@@ -278,6 +278,57 @@ TEST(Cli, ExplainWritesASchemaValidRunTrace)
     std::remove(out.c_str());
 }
 
+// `referee build` emits a native object for an ahead-of-time checker: an ELF
+// relocatable exporting one symbol, `referee_module`, plus `__prepare__`, with
+// each requirement's label embedded as data. The full link needs a toolchain,
+// so this checks the object's contract with `nm`, which is portable.
+TEST(Cli, BuildEmitsAnObjectExportingRefereeModule)
+{
+    auto    ref = tmpPath("build", ".ref");
+    auto    obj = tmpPath("build", ".o");
+    {
+        std::ofstream   f(ref);
+        f << "data a : integer;\n@r1\nG(a >= 0);\n@r2\na == 1;\n";
+    }
+
+    auto    b = run(quote(REFEREE_BIN) + " build " + quote(ref) + " -o " + quote(obj));
+    ASSERT_EQ(b.status, 0) << b.output;
+
+    //  A defined `referee_module` (and `__prepare__`) is the ABI a driver binds
+    //  to; `nm` marks a defined symbol with a capital type letter.
+    auto    syms = run("nm " + quote(obj));
+    ASSERT_EQ(syms.status, 0) << syms.output;
+    EXPECT_NE(syms.output.find("referee_module"), std::string::npos) << syms.output;
+    EXPECT_NE(syms.output.find("__prepare__"),    std::string::npos) << syms.output;
+
+    //  The requirement labels ride as data, not as symbols.
+    auto    str = run("strings " + quote(obj));
+    EXPECT_NE(str.output.find("r1"), std::string::npos) << str.output;
+    EXPECT_NE(str.output.find("r2"), std::string::npos) << str.output;
+
+    std::remove(ref.c_str());
+    std::remove(obj.c_str());
+}
+
+// A specification with an unbounded array needs no trace to build -- `T[]` is a
+// runtime descriptor, so its extent is not resolved at compile time. This is
+// the doc's open question #3, which ragged arrays settled.
+TEST(Cli, BuildAcceptsAnUnsizedArrayWithoutATrace)
+{
+    auto    ref = tmpPath("buildrag", ".ref");
+    auto    obj = tmpPath("buildrag", ".o");
+    {
+        std::ofstream   f(ref);
+        f << "data pkt : byte[];\nG(pkt.count >= 0);\n";
+    }
+
+    auto    b = run(quote(REFEREE_BIN) + " build " + quote(ref) + " -o " + quote(obj));
+    EXPECT_EQ(b.status, 0) << b.output;
+
+    std::remove(ref.c_str());
+    std::remove(obj.c_str());
+}
+
 // `--stub` emits a C skeleton implementing the declared functions. The point
 // is that the first build is a copy rather than a transcription -- C cannot
 // diagnose a signature mismatch -- so the test is that the generated pair

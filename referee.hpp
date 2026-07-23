@@ -87,6 +87,18 @@ public:
                             std::vector<std::string> const& includePaths = {},
                             Sizes const& sizes = {});
 
+    /// Compile `refPath` and emit a native object file to `outPath`, ready to
+    /// be linked into an ahead-of-time checker. The object exports one symbol,
+    /// `referee_module` (see `runtime/referee_checker.h`), and carries the
+    /// compiled requirement functions -- no JIT, no LLVM on the consuming side.
+    /// `triple` empty means the host; otherwise a target triple to cross-emit
+    /// for. An unsized (`T[]`) array needs no trace: it is a runtime
+    /// descriptor, so a specification compiles without one.
+    static void     emitObject(std::string const& refPath,
+                               std::string const& outPath,
+                               std::string const& triple = {},
+                               std::vector<std::string> const& includePaths = {});
+
     /// Convenience wrapper around `compile()` that prints the resulting IR
     /// to `os`. Catches and reports exceptions to stderr. Returns true on
     /// success, false if compilation failed.

@@ -34,17 +34,8 @@ has never heard of bokeh. Two lazily-loaded extras (MathJax and an icon
 webfont) still reference a CDN; neither is used here, so only toolbar icons
 degrade offline.
 
-## Not built yet
+## Interactive Features in `view_bokeh.py`
 
-**A requirement selector.** With more than a handful of requirements the page
-becomes a wall, and scrolling is the wrong way to find one. It wants a picker
-— one requirement at a time — showing **only the signals that requirement
-actually reads**, which the format already makes possible: rows carry `ref`
-into the signal lines, so the relevant subset is exactly the referenced ids
-rather than something a viewer has to guess.
-
-That also fixes a subtler problem. Drawing every signal for every requirement
-implies they are all relevant, and the ones that are not are noise competing
-for attention with the ones that are. A per-requirement view says what the
-requirement depends on, which is itself information — and a requirement that
-reads fewer signals than you expected is worth noticing.
+- **Requirement Selector**: Includes a dropdown ("show") allowing you to isolate any single requirement (e.g. `@name` or `file:row:col`). Selecting a requirement displays only the signals that requirement actually reads, hiding irrelevant background noise.
+- **Linked Pan & Zoom**: Synchronizes time-axis zooming and panning across all requirement panels simultaneously.
+- **Hover Inspection**: Displays state values, timestamps, and witness intervals on hover.

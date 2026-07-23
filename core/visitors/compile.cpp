@@ -3519,9 +3519,74 @@ llvm::Value*Compile::make(llvm::LLVMContext* context, llvm::Module* module, Expr
     return nullptr;
 }
 
+//  Emit a static table an ahead-of-time checker walks instead of looking each
+//  requirement up by name. The requirement functions are named after their
+//  source position -- fine as JIT keys, poor as ELF symbols (spaces, colons) --
+//  so the label rides as *data* and the functions are reached by pointer. The
+//  table is additive: the JIT ignores it, and nothing that compiles today
+//  compiles differently.
+//
+//  One exported symbol, `referee_module`, returns a `referee_module_v1` whose
+//  layout `runtime/referee_checker.h` defines. Schema fields are left null here
+//  and filled by the object-emission stage that has the schema bytes.
+static void     emitCheckerTable(llvm::LLVMContext* context, llvm::Module* module,
+                                 std::vector<std::pair<std::string, llvm::Function*>> const& reqs,
+                                 llvm::Function* prepare)
+{
+    auto    ptrTy   = llvm::PointerType::get(*context, 0);
+    auto    i32     = llvm::Type::getInt32Ty(*context);
+    auto    i64     = llvm::Type::getInt64Ty(*context);
+
+    auto    cstr    = [&](std::string const& s) -> llvm::Constant*
+    {
+        auto    data = llvm::ConstantDataArray::getString(*context, s, true);
+        auto    gv   = new llvm::GlobalVariable(*module, data->getType(), true,
+                            llvm::GlobalValue::PrivateLinkage, data, ".req.label");
+        gv->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
+        return gv;
+    };
+
+    //  { const char* label; bool (*eval)(...); }
+    auto    reqTy   = llvm::StructType::get(*context, {ptrTy, ptrTy});
+
+    std::vector<llvm::Constant*>    entries;
+    for (auto const& [label, fn] : reqs)
+        entries.push_back(llvm::ConstantStruct::get(reqTy, {cstr(label), fn}));
+
+    auto    arrTy   = llvm::ArrayType::get(reqTy, entries.size());
+    auto    reqsGV  = new llvm::GlobalVariable(*module, arrTy, true,
+                        llvm::GlobalValue::PrivateLinkage,
+                        llvm::ConstantArray::get(arrTy, entries), "referee_reqs");
+
+    //  referee_module_v1: version, count, requirements, prepare, schema, bytes.
+    auto    modTy   = llvm::StructType::get(*context, {i32, i32, ptrTy, ptrTy, ptrTy, i64});
+    auto    modC    = llvm::ConstantStruct::get(modTy, {
+                        llvm::ConstantInt::get(i32, 1),
+                        llvm::ConstantInt::get(i32, entries.size()),
+                        reqsGV,
+                        prepare ? static_cast<llvm::Constant*>(prepare)
+                                : llvm::ConstantPointerNull::get(ptrTy),
+                        llvm::ConstantPointerNull::get(ptrTy),
+                        llvm::ConstantInt::get(i64, 0)});
+    auto    modGV   = new llvm::GlobalVariable(*module, modTy, true,
+                        llvm::GlobalValue::PrivateLinkage, modC, "referee_module_data");
+
+    //  const referee_module_v1* referee_module(void)
+    auto    fnTy    = llvm::FunctionType::get(ptrTy, false);
+    auto    fn      = llvm::Function::Create(fnTy, llvm::Function::ExternalLinkage,
+                        "referee_module", module);
+    llvm::IRBuilder<>   b(llvm::BasicBlock::Create(*context, "entry", fn));
+    b.CreateRet(modGV);
+}
+
 void Compile::make(llvm::LLVMContext* context, llvm::Module* module, Module* refmod)
 {
     auto    builder = std::make_unique<llvm::IRBuilder<>>(*context);
+
+    //  Collected for the checker table emitted at the end: one entry per
+    //  requirement, label plus its compiled function.
+    std::vector<std::pair<std::string, llvm::Function*>>    requirements;
+    llvm::Function*                                         prepareFn = nullptr;
 
     //  create __conf__
     std::vector<llvm::Type*>    confTypes;
@@ -3571,6 +3636,8 @@ void Compile::make(llvm::LLVMContext* context, llvm::Module* module, Module* ref
 
         auto    bb          = llvm::BasicBlock::Create(*context, "entry", funcBody);
         builder->SetInsertPoint(bb);
+
+        requirements.emplace_back(funcName, funcBody);
 
         CompileExprImpl compExpr(context, module, builder.get(), funcBody, refmod, propType, confType);
 
@@ -3780,6 +3847,8 @@ void Compile::make(llvm::LLVMContext* context, llvm::Module* module, Module* ref
         auto    bb          = llvm::BasicBlock::Create(*context, "entry", funcBody);
         builder->SetInsertPoint(bb);
 
+        requirements.emplace_back(funcName, funcBody);
+
         CompileExprImpl compExpr(context, module, builder.get(), funcBody, refmod, propType, confType);
 
         builder->CreateRet(compExpr.make(spec));
@@ -3861,6 +3930,7 @@ void Compile::make(llvm::LLVMContext* context, llvm::Module* module, Module* ref
         auto    funcName    = "__prepare__";
         auto    funcType    = llvm::FunctionType::get(builder->getVoidTy(), {propPtrType, propPtrType, confPtrType}, false);
         auto    funcBody    = llvm::Function::Create(funcType, llvm::Function::ExternalLinkage, funcName, module);
+        prepareFn           = funcBody;
         auto    funcArgs    = funcBody->args().begin();
 
         funcArgs->setName("frst");  funcArgs++;
@@ -3943,4 +4013,8 @@ void Compile::make(llvm::LLVMContext* context, llvm::Module* module, Module* ref
 //  LCOV_EXCL_STOP
         }
     }
+
+    //  The ahead-of-time checker table: label + function pointer per
+    //  requirement, plus __prepare__, behind one exported `referee_module`.
+    emitCheckerTable(context, module, requirements, prepareFn);
 }
