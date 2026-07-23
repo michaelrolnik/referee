@@ -22,7 +22,48 @@
     "ltl",
     "requirements"
   ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onLanguage:ref"
+  ],
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "vscode:prepublish": "npm run compile"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^8.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "@types/vscode": "^1.75.0",
+    "typescript": "^5.4.0"
+  },
   "contributes": {
+    "commands": [
+      {
+        "command": "referee.restartServer",
+        "title": "REF: Restart Language Server"
+      }
+    ],
+    "configuration": {
+      "title": "REF (Referee)",
+      "properties": {
+        "referee.lsp.path": {
+          "type": "string",
+          "default": "referee-lsp",
+          "description": "Path to the referee-lsp server binary. Use an absolute path to a local build (e.g. /home/you/referee/build/referee-lsp), or 'docker' to run the server in a container (set referee.lsp.args accordingly)."
+        },
+        "referee.lsp.args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Extra arguments passed to referee.lsp.path. For Docker: [\"run\",\"--rm\",\"-i\",\"--entrypoint\",\"referee-lsp\",\"-v\",\"${workspaceFolder}:${workspaceFolder}\",\"-w\",\"${workspaceFolder}\",\"referee:lsp\"]."
+        }
+      }
+    },
     "languages": [
       {
         "id": "ref",

@@ -1,6 +1,10 @@
 # The grammar test is a development tool; it pulls in a TextMate engine that has
 # no business shipping inside the extension.
 test/**
+# TypeScript sources compile to out/; ship the compiled JS, not the sources.
+src/**
+tsconfig.json
+out/**/*.map
 .gitignore
 .vscodeignore
 *.vsix

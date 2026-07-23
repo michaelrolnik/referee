@@ -35,7 +35,7 @@ In short: Referee connects human-readable requirement intent to executable verif
 
 - **Ahead-of-time compiled checkers.** An object file, a loadable `.so`, or a standalone executable, so a machine that validates logs needs neither LLVM nor the `.ref` sources. Designed in `docs/native-checkers.md`, which also records the measurements above — the motivation is deployment and embedding rather than speed, since most of the speed is available from the previous item.
 - **Streaming / online ingestion.** `referee execute` currently materialises the whole trace before invoking the JIT functions (CSV/YAML are parsed top-to-bottom into per-state blobs; `.rdb` is read into a single buffer). A streaming driver that feeds records to the JIT-compiled requirement functions as they arrive (and reports violation locations live) is not implemented yet — the on-disk `.rdb` layout is already mmap-friendly, so this is a Reader-side change rather than a format change.
-- **A language server.** The editor plugin does highlighting only, so there are no in-editor diagnostics, completion, hover or go-to-definition — errors still come from running `referee compile`. The compiler already produces positioned diagnostics (`file:row:col`), so the missing piece is the LSP plumbing rather than the analysis.
+- **A fuller language server.** `referee-lsp` now provides live in-editor **diagnostics** (parse + type errors), wired into the VS Code extension — see *Language server (LSP)*. Completion, hover and go-to-definition are the remaining gaps; the analysis to back them (the typed AST) already exists, so they are LSP plumbing on the same server.
 - **Product-specific model exporters/importers** to adapt arbitrary system logs into the canonical trace format.
 
 ## Design rationale
@@ -636,26 +636,33 @@ To configure coverage builds and render HTML/XML reports, see the dedicated [Cod
 
 # Editor support
 
-`editors/vscode/` is a syntax-highlighting extension for `.ref` files. It works in VS Code and its forks — Cursor, Antigravity, VSCodium — which all consume the same extension format.
+`editors/vscode/` is an extension for `.ref` files: syntax highlighting, snippets, and — via a bundled language-server client — live diagnostics. It works in VS Code and its forks — Cursor, Antigravity, VSCodium — which all consume the same extension format.
 
 It highlights the temporal operators (future and past scoped separately, and only where one is actually applied, so a stray capital is left alone), the whole Dwyer specification-pattern vocabulary, declarations with their declared names, freeze variables and `__time__`, and every literal form. The keyword lists are generated from `core/referee.g4` rather than written by hand, so they track the grammar exactly. There are also snippets for the common specification patterns.
 
-Highlighting is all the *extension* does — see *What is missing* above. For live error-checking, a separate **language server** is available; see *Language server (LSP)* below.
+Highlighting and snippets work with no setup; the **language server** adds live parse and type diagnostics once you point it at the `referee-lsp` binary — see *Language server (LSP)* below.
 
 ## Installing it
 
-The extension is not published to a marketplace; install it from this checkout. Copy it into your editor's extension directory and reload the window:
+The extension is not published to a marketplace; build and install it from this checkout. It now carries a language-server client (see *Language server (LSP)* below), so it has a compiled entry point and a runtime dependency — build it first:
 
 ```bash
 cd editors/vscode
-DEST=~/.vscode/extensions/michaelrolnik.referee-ref-0.1.0      # adjust per the table below
-mkdir -p "$DEST"
-cp -r package.json language-configuration.json syntaxes snippets README.md "$DEST/"
+npm install
+npm run compile        # tsc: src/extension.ts -> out/extension.js
 ```
 
-Then run **Developer: Reload Window** from the command palette, open a `.ref` file, and check that the status bar reads **REF**.
+Then package a `.vsix` and install that — the recommended route (it bundles `out/` and the `vscode-languageclient` runtime, and registers the extension with the editor rather than relying on a directory scan, so it also works over SSH):
 
-**Which directory** depends on the editor, and on whether you are working locally or over SSH. For a remote window the extension has to live on the **remote** machine, not on your laptop:
+```bash
+npx @vscode/vsce package --allow-missing-repository
+```
+
+then, in the editor, **Extensions** view → the **`⋯`** menu → **Install from VSIX…** → pick `referee-ref-0.1.0.vsix`, and **Reload Window**. This works the same in VS Code and its forks — Cursor, Antigravity, VSCodium — which all consume the same `.vsix`.
+
+Open a `.ref` file and check the status bar reads **REF**. For diagnostics, set the server path (see *Language server (LSP)*); highlighting works with no further setup.
+
+**Remote/SSH:** install the `.vsix` on the **remote** machine (the Extensions view does this when the window is remote), and make sure `referee-lsp` is built there too — both the client and the server run remote. If you install by hand instead of via `.vsix`, the extension directory per editor is:
 
 | Editor | Local | Remote (SSH) |
 | --- | --- | --- |
@@ -663,16 +670,7 @@ Then run **Developer: Reload Window** from the command palette, open a `.ref` fi
 | Cursor | `~/.cursor/extensions/` | `~/.cursor-server/extensions/` |
 | Antigravity | `~/.antigravity/extensions/` | `~/.antigravity-ide-server/extensions/` |
 
-If you are unsure, pick whichever already exists and holds your installed extensions.
-
-Alternatively, package a `.vsix` and install that — the more reliable route on a remote window, since it registers the extension with the server rather than relying on a directory scan:
-
-```bash
-cd editors/vscode
-npx @vscode/vsce package --allow-missing-repository
-```
-
-then Extensions view → `…` → **Install from VSIX…**.
+A hand copy must include the built `out/` and the production `node_modules` (the `vscode-languageclient` runtime), not just the static assets — which is why the `.vsix` route is preferred.
 
 ## Testing the grammar
 
@@ -698,7 +696,16 @@ vim.lsp.start({
 })
 ```
 
-The bundled VS Code extension (`editors/vscode/`) is highlighting-only; getting diagnostics there means adding a small [`vscode-languageclient`](https://www.npmjs.com/package/vscode-languageclient) shim that spawns `referee-lsp` for `language: ref`. It is not yet part of the extension.
+The VS Code extension in `editors/vscode/` bundles a [`vscode-languageclient`](https://www.npmjs.com/package/vscode-languageclient) client that launches `referee-lsp` for you, so diagnostics work in VS Code and its forks (Cursor, Antigravity, VSCodium) alongside the highlighting — see *Installing it* above, then set `referee.lsp.path`:
+
+```jsonc
+// Settings (JSON), or a workspace .vscode/settings.json
+{
+  "referee.lsp.path": "/absolute/path/to/referee/build/referee-lsp"
+}
+```
+
+The default is `referee-lsp` (found on `PATH`); point it at your build, or set it to `docker` with `referee.lsp.args` (below) for a containerized server. The command **REF: Restart Language Server** reloads it after a rebuild.
 
 One note on imports: the server resolves a file's `import`s against the document's own filesystem path, so open a spec by its real path for cross-file imports to resolve. A single self-contained `.ref` needs nothing.
 

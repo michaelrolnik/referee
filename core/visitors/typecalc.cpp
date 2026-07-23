@@ -345,7 +345,7 @@ void    TypeCalcImpl::visit(ExprMmbr*               expr)
     //  this has to be answered before the cast below rejects it. The count is
     //  known here, so it lowers to a literal -- see the matching case in
     //  CompileExprImpl.
-    if(auto* array = dynamic_cast<TypeArray*>(argType))
+    if(dynamic_cast<TypeArray*>(argType))
     {
         if(expr->mmbr == "count")
         {

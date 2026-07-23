@@ -1050,6 +1050,7 @@ bool    runAllSpecs(llvm::orc::LLJIT& jit,
             //  An implication whose antecedent never fires: passes and proves
             //  nothing. Only if a scope did not already explain the vacuity.
             if (!vacuous && result && stride != 0)
+            {
                 if (auto sym = jit.lookup("__ante__" + name))
                 {
                     auto    ante = sym->toPtr<ColFn>();
@@ -1062,6 +1063,7 @@ bool    runAllSpecs(llvm::orc::LLJIT& jit,
                 }
                 else
                     llvm::consumeError(sym.takeError());
+            }
 
             json::Writer    w(*explain);
             {

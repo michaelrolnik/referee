@@ -1,7 +1,8 @@
 # REF language support
 
-Syntax highlighting, bracket/comment handling and snippets for REF requirement
-specifications (`.ref`), the language compiled by
+Syntax highlighting, bracket/comment handling, snippets and — via a bundled
+language-server client — live diagnostics for REF requirement specifications
+(`.ref`), the language compiled by
 [referee](https://github.com/michaelrolnik/referee).
 
 Works in VS Code and its forks — Cursor, Antigravity, VSCodium — since they all
@@ -33,23 +34,52 @@ Dwyer specification-pattern vocabulary.
   characters the lexer rejects.
 - **Time units** — `nanoseconds` … `minutes`.
 
-## What it does not do
+## Diagnostics (language server)
 
-Highlighting only. There is no language server, so no diagnostics, completion,
-go-to-definition or hover. Compile errors still come from running `referee
-compile`. Adding an LSP is tracked in the main README's *What is missing*.
+The extension launches the `referee-lsp` server and shows **live parse and type
+errors** as you edit — the same errors `referee compile` reports, inline, with no
+build step. Point it at the server binary:
+
+```jsonc
+// Settings (JSON), or a workspace .vscode/settings.json
+{
+  "referee.lsp.path": "/absolute/path/to/referee/build/referee-lsp"
+}
+```
+
+The default is `referee-lsp` (found on `PATH`); set an absolute path to a build,
+or `"docker"` with `referee.lsp.args` for a containerized server. The command
+**REF: Restart Language Server** reloads it after you rebuild. Build the server
+with `ninja -C build referee-lsp` in a referee checkout.
+
+Completion, go-to-definition and hover are not implemented yet — today the server
+publishes diagnostics.
 
 ## Install
 
-### Antigravity or Cursor over SSH (remote)
-
-Extensions for a remote window live on the **remote** machine, not your laptop.
-Copy the extension into the remote server's extension directory and reload:
+The extension now carries a compiled client and a runtime dependency, so build it
+before installing — then use the `.vsix` route below (it bundles `out/` and the
+`vscode-languageclient` runtime, which a hand copy would miss):
 
 ```bash
-# on the remote host, from a referee checkout
-mkdir -p ~/.antigravity-ide-server/extensions/michaelrolnik.referee-ref-0.1.0
-cp -r editors/vscode/* ~/.antigravity-ide-server/extensions/michaelrolnik.referee-ref-0.1.0/
+cd editors/vscode
+npm install
+npm run compile        # src/extension.ts -> out/extension.js
+```
+
+### Antigravity or Cursor over SSH (remote)
+
+Extensions for a remote window live on the **remote** machine, not your laptop —
+and so does the `referee-lsp` binary the client launches. Install the `.vsix`
+(below) from the remote window's Extensions view; prefer it over a hand copy,
+which must include the built `out/` and production `node_modules`, not just the
+static assets:
+
+```bash
+# on the remote host, from a referee checkout — only if not using the .vsix:
+DEST=~/.antigravity-ide-server/extensions/michaelrolnik.referee-ref-0.1.0
+mkdir -p "$DEST"
+cp -r editors/vscode/{package.json,language-configuration.json,syntaxes,snippets,README.md,out,node_modules} "$DEST/"
 ```
 
 Then run **Developer: Reload Window** from the command palette.

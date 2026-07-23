@@ -36,6 +36,26 @@
 #include <set>
 
 namespace {
+
+//  LLVM's `GlobalVariable` self-registers with its `Module` in the constructor
+//  and is owned by it thereafter -- the `new` is the idiom and there is no
+//  matching `delete`. GCC's -Wmismatched-new-delete fires on the allocation
+//  regardless, since `User::operator new` is custom; wrap it once, suppressed,
+//  rather than at seven call sites.
+[[maybe_unused]]
+static llvm::GlobalVariable*    newGlobal(llvm::Module& m, llvm::Type* type, bool isConst,
+                                          llvm::GlobalValue::LinkageTypes link,
+                                          llvm::Constant* init, llvm::Twine const& name)
+{
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmismatched-new-delete"
+#endif
+    return new llvm::GlobalVariable(m, type, isConst, link, init, name);
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
+}
 //  An unbounded accumulator folds the same way the until/release family does,
 //  so it belongs on the same linear path. A *windowed* one does not -- the
 //  window is anchored at the evaluation point, so neighbouring states sum
@@ -803,7 +823,7 @@ void    CompileExprImpl::visit(ExprConstString*  expr)
     //  and a trace string of equal content share one address again. The `.str.
     //  slot` name is how the table of them is found (see `emitCheckerTable`).
     auto    bytes = m_builder->CreateGlobalStringPtr(expr->value, ".str.data");
-    auto    slot  = new llvm::GlobalVariable(*m_module, m_builder->getPtrTy(),
+    auto    slot  = newGlobal(*m_module, m_builder->getPtrTy(),
                         /*isConstant*/ false, llvm::GlobalValue::PrivateLinkage,
                         llvm::cast<llvm::Constant>(bytes), ".str.slot");
 
@@ -1067,7 +1087,7 @@ static llvm::GlobalVariable*    faultSlot(llvm::Module* module, llvm::LLVMContex
     if(auto* found = module->getGlobalVariable(name))
         return found;
 
-    return new llvm::GlobalVariable(*module, type, false,
+    return newGlobal(*module, type, false,
                 llvm::GlobalValue::ExternalLinkage,
                 llvm::Constant::getNullValue(type), name);
 }
@@ -3565,7 +3585,7 @@ static void     emitCheckerTable(llvm::LLVMContext* context, llvm::Module* modul
     auto    cstr    = [&](std::string const& s) -> llvm::Constant*
     {
         auto    data = llvm::ConstantDataArray::getString(*context, s, true);
-        auto    gv   = new llvm::GlobalVariable(*module, data->getType(), true,
+        auto    gv   = newGlobal(*module, data->getType(), true,
                             llvm::GlobalValue::PrivateLinkage, data, ".req.label");
         gv->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
         return gv;
@@ -3579,7 +3599,7 @@ static void     emitCheckerTable(llvm::LLVMContext* context, llvm::Module* modul
         entries.push_back(llvm::ConstantStruct::get(reqTy, {cstr(label), fn}));
 
     auto    arrTy   = llvm::ArrayType::get(reqTy, entries.size());
-    auto    reqsGV  = new llvm::GlobalVariable(*module, arrTy, true,
+    auto    reqsGV  = newGlobal(*module, arrTy, true,
                         llvm::GlobalValue::PrivateLinkage,
                         llvm::ConstantArray::get(arrTy, entries), "referee_reqs");
 
@@ -3592,7 +3612,7 @@ static void     emitCheckerTable(llvm::LLVMContext* context, llvm::Module* modul
     {
         auto    bytes = llvm::ConstantDataArray::get(*context,
                             llvm::ArrayRef<std::uint8_t>(schema->data(), schema->size()));
-        auto    gv    = new llvm::GlobalVariable(*module, bytes->getType(), true,
+        auto    gv    = newGlobal(*module, bytes->getType(), true,
                             llvm::GlobalValue::PrivateLinkage, bytes, "referee_schema");
         gv->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
         schemaPtr = gv;
@@ -3613,7 +3633,7 @@ static void     emitCheckerTable(llvm::LLVMContext* context, llvm::Module* modul
     if (!slots.empty())
     {
         auto    strArrTy = llvm::ArrayType::get(ptrTy, slots.size());
-        stringsPtr = new llvm::GlobalVariable(*module, strArrTy, true,
+        stringsPtr = newGlobal(*module, strArrTy, true,
                         llvm::GlobalValue::PrivateLinkage,
                         llvm::ConstantArray::get(strArrTy, slots), "referee_strings");
     }
@@ -3631,7 +3651,7 @@ static void     emitCheckerTable(llvm::LLVMContext* context, llvm::Module* modul
                         llvm::ConstantInt::get(i64, schemaLen),
                         stringsPtr,
                         llvm::ConstantInt::get(i64, slots.size())});
-    auto    modGV   = new llvm::GlobalVariable(*module, modTy, true,
+    auto    modGV   = newGlobal(*module, modTy, true,
                         llvm::GlobalValue::PrivateLinkage, modC, "referee_module_data");
 
     //  const referee_module_v1* referee_module(void)
