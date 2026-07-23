@@ -668,6 +668,41 @@ TEST(Completion, EmptyForUnknownSignal)
     EXPECT_TRUE(completeLabels(src, 1, 13, "unknown").empty());
 }
 
+// Away from a `.`, completion offers the names in scope and the keywords.
+TEST(Completion, BareOffersNamesAndKeywords)
+{
+    auto    src = std::string(
+        "type CbPoint : struct { cbx : integer; };\n"
+        "data cb_pt : CbPoint;\n"
+        "conf cb_lim : number;\n"
+        "func cb_f : (integer) -> integer;\n"
+        "G(cb);\n");                                 // caret inside the bare word 'cb'
+    auto    got = completeLabels(src, 4, 4, "bare");
+
+    EXPECT_TRUE(has(got, "cb_pt"))   << "a data signal";
+    EXPECT_TRUE(has(got, "cb_lim"))  << "a conf";
+    EXPECT_TRUE(has(got, "CbPoint")) << "a type";
+    EXPECT_TRUE(has(got, "cb_f"))    << "a function";
+    EXPECT_TRUE(has(got, "G"))       << "a temporal keyword";
+    EXPECT_TRUE(has(got, "data"))    << "a declaration keyword";
+}
+
+// After a `.`, only the type's members are offered — no keywords or names bleed in.
+TEST(Completion, MemberOffersOnlyMembers)
+{
+    auto    src = std::string(
+        "type CmPoint : struct { cmx : integer; cmy : integer; };\n"
+        "data cm_pt : CmPoint;\n"
+        "G(cm_pt.);\n");                             // caret right after the dot
+    auto    got = completeLabels(src, 2, 8, "memberonly");
+
+    EXPECT_EQ(got.size(), 2u);
+    EXPECT_TRUE(has(got, "cmx"));
+    EXPECT_TRUE(has(got, "cmy"));
+    EXPECT_FALSE(has(got, "G"))     << "keywords must not appear after '.'";
+    EXPECT_FALSE(has(got, "cm_pt")) << "signal names must not appear after '.'";
+}
+
 // ── Hover ────────────────────────────────────────────────────────────────────
 //
 // Hover shows the declaration of the name under the caret. Same resolution as

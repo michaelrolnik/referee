@@ -392,37 +392,37 @@ std::vector<Referee::Completion> Referee::complete(
     if (line >= lines.size())
         return out;
 
-    //  The dotted chain that ends at the access `.` just before the caret.
+    //  What is being typed at the caret, and whether it follows a member `.`.
     std::string const&  lineText = lines[line];
     std::size_t         col      = std::min<std::size_t>(character, lineText.size());
-    std::string         prefix   = lineText.substr(0, col);
+    auto isWord      = [](char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; };
+    auto isChainChar = [](char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '.'; };
 
-    std::size_t end = prefix.size();
-    if (end > 0 && prefix[end - 1] == '.')      // the access dot the user just typed
-        --end;
-    std::size_t beg = end;
-    auto isChainChar = [](char c) {
-        return std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '.';
-    };
-    while (beg > 0 && isChainChar(prefix[beg - 1]))
-        --beg;
+    std::size_t wstart = col;
+    while (wstart > 0 && isWord(lineText[wstart - 1])) --wstart;
+    bool    member = (wstart > 0 && lineText[wstart - 1] == '.');
 
+    //  In a member context, the dotted chain before the access `.`.
     std::vector<std::string>    parts;
+    if (member)
     {
+        std::size_t dot  = wstart - 1;
+        std::size_t cbeg = dot;
+        while (cbeg > 0 && isChainChar(lineText[cbeg - 1])) --cbeg;
+
         std::string p;
-        for (std::size_t i = beg; i < end; ++i)
+        for (std::size_t i = cbeg; i < dot; ++i)
         {
-            char c = prefix[i];
+            char c = lineText[i];
             if (c == '.') { if (!p.empty()) { parts.push_back(p); p.clear(); } }
             else            p.push_back(c);
         }
         if (!p.empty()) parts.push_back(p);
+        if (parts.empty()) return out;          // `.` with nothing before it
     }
-    if (parts.empty())
-        return out;
 
-    //  Blank the caret's line so a half-typed `sig.` does not break the parse;
-    //  the declarations we need to resolve `sig` live on the other lines.
+    //  Blank the caret's line so the token being typed does not break the parse;
+    //  the declarations we resolve against live on the other lines.
     lines[line].clear();
     std::string probe;
     for (std::size_t i = 0; i < lines.size(); ++i)
@@ -448,31 +448,63 @@ std::vector<Referee::Completion> Referee::complete(
     auto*       tree   = parser.program();
     ::Module*   module = nullptr;
     try         { module = std::any_cast<::Module*>(astOwner->visitProgram(tree)); }
-    catch (...) { return out; }      // a still-broken probe yields no completions
-    if (module == nullptr)
-        return out;
+    catch (...) { module = nullptr; }
 
-    //  Head resolves as a signal (data or conf); walk the rest through members.
-    Type*   type = nullptr;
-    try         { type = module->getProp(parts[0]); }
-    catch (...) { type = nullptr; }
-    if (type == nullptr)
+    //  Member context: the struct fields / enum cases of the resolved type.
+    if (member)
     {
-        try         { type = module->getConf(parts[0]); }
+        if (module == nullptr)
+            return out;
+
+        Type*   type = nullptr;
+        try         { type = module->getProp(parts[0]); }
         catch (...) { type = nullptr; }
-    }
-    for (std::size_t i = 1; i < parts.size() && type != nullptr; ++i)
-    {
-        auto* comp = dynamic_cast<TypeComposite*>(type);
-        type = comp ? comp->member(parts[i]) : nullptr;
-    }
-    if (type == nullptr)
-        return out;
+        if (type == nullptr)
+        {
+            try         { type = module->getConf(parts[0]); }
+            catch (...) { type = nullptr; }
+        }
+        for (std::size_t i = 1; i < parts.size() && type != nullptr; ++i)
+        {
+            auto* comp = dynamic_cast<TypeComposite*>(type);
+            type = comp ? comp->member(parts[i]) : nullptr;
+        }
+        if (type == nullptr)
+            return out;
 
-    if (auto* st = dynamic_cast<TypeStruct*>(type))
-        for (auto const& m : st->members) out.push_back({m.name, 5 /*Field*/});
-    else if (auto* en = dynamic_cast<TypeEnum*>(type))
-        for (auto const& it : en->items)  out.push_back({it,     20 /*EnumMember*/});
+        if (auto* st = dynamic_cast<TypeStruct*>(type))
+            for (auto const& m : st->members) out.push_back({m.name, 5 /*Field*/});
+        else if (auto* en = dynamic_cast<TypeEnum*>(type))
+            for (auto const& it : en->items)  out.push_back({it,     20 /*EnumMember*/});
+
+        return out;
+    }
+
+    //  Bare context: every name in scope (imports folded in), then the keywords.
+    //  The editor filters this list by what has been typed. Kinds are LSP
+    //  CompletionItemKind: Variable / Constant / Class / Function / Keyword.
+    if (module)
+    {
+        for (auto const& n : module->getPropNames()) out.push_back({n, 6  /*Variable*/});
+        for (auto const& n : module->getConfNames()) out.push_back({n, 21 /*Constant*/});
+        for (auto const& n : module->getTypeNames()) out.push_back({n, 7  /*Class*/});
+        for (auto const& n : module->getFuncNames()) out.push_back({n, 3  /*Function*/});
+    }
+
+    //  Word keywords come straight from the lexer's vocabulary, so they track the
+    //  grammar rather than a hand-kept list. Punctuation/operator literals skip.
+    auto const& vocab = lexer.getVocabulary();
+    for (std::size_t t = 1; t <= vocab.getMaxTokenType(); ++t)
+    {
+        auto lit = vocab.getLiteralName(t);         // std::string_view in this runtime
+        if (lit.size() < 3 || lit.front() != '\'' || lit.back() != '\'')
+            continue;
+        std::string w(lit.substr(1, lit.size() - 2));
+        bool        word = !w.empty();
+        for (char c : w)
+            if (!(std::isalpha(static_cast<unsigned char>(c)) || c == '_')) { word = false; break; }
+        if (word) out.push_back({w, 14 /*Keyword*/});
+    }
 
     return out;
 }
