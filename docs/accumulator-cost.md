@@ -1,6 +1,6 @@
 # Accumulators are quadratic under a temporal scope
 
-**Status:** fixed for `Sum`/`Cnt`. `Itg` is the same shape and still walks.
+**Status:** fixed for `Sum`, `Cnt` and `Itg`. All three fold in one pass.
 **Found:** by asking whether the O(N²) cost identified for run traces also applied to the compiled path. It does, for one family of operators.
 
 ## The measurement
@@ -21,10 +21,10 @@ G(Us(a, !a) || true);        G(Cnt(a) >= 0);
 doubles, and tracks `Us`, which is what it should always have done: the two
 are the same recurrence with a different carrier.
 
-`Cnt` desugars to `ExprSum`, so both are fixed. `Itg` is the same shape again,
-weighted by each step's duration, and has not been moved -- its lowering
-clamps the interval at both window ends, so it is more than an added
-accumulator.
+`Cnt` desugars to `ExprSum`, so both are fixed. `Itg` folds the same way,
+weighted by each step's duration -- `(t[i+1] - t[i])` per state -- so the
+linear lowering took one extra multiply and the same buffer. The three now
+share `compileAccumulatorLoop`, which differs only in that one weight.
 
 Smaller traces hide this: below about N = 8000 the fixed compilation cost
 (~50 ms here, ~700 ms for a large specification) dominates and both look

@@ -88,3 +88,14 @@ G(__time__ == 0 => Sum[0:1](true, len) == 10);
 # A window of zero width accumulates nothing at all.
 G(Cnt[0:0](true) == 0);
 G(Sum[0:0](true, len) == 0);
+
+# ── Itg folds linearly too, weighted by duration ─────────────────────────────
+# Itg is the same suffix fold as Sum, with each step weighted by how long the
+# state lasted -- so it now gets the same O(N) lowering rather than walking to
+# the end from every state. These pin it against the forward walk it replaced.
+# On this trace the states are 1000ns apart and the final step runs to the
+# closing sentinel one unit past the last, which is where the odd `+1` comes
+# from and where an off-by-one in the fold would show.
+G(Itg(false, len) == 0);                    # a condition false everywhere: identity
+G(__time__ == 5000 => Itg(true, 1) == 2001);  # duration from t=5000 to the sentinel
+G(__time__ == 6000 => Itg(true, 1) == 1001);

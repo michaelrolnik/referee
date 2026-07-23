@@ -43,9 +43,15 @@ namespace {
 //  trace. Only the unbounded form walked to the end from every state.
 bool isLoopAccumulator(Expr* expr)
 {
-    auto*   sum = dynamic_cast<ExprSum*>(expr);
-
-    return  sum != nullptr && sum->time == nullptr;
+    //  `Sum` totals a value over records; `Itg` integrates it over time. Both
+    //  fold the same way -- a suffix sum -- and differ only in the weight each
+    //  step carries, so both get the linear lowering. Only the *unbounded*
+    //  form: a window is anchored at the evaluation point, so neighbouring
+    //  states cover different ranges and the fold does not apply, but that
+    //  form is already O(N x window) rather than O(N^2).
+    if(auto* sum = dynamic_cast<ExprSum*>(expr))    return sum->time == nullptr;
+    if(auto* itg = dynamic_cast<ExprInt*>(expr))    return itg->time == nullptr;
+    return  false;
 }
 
 bool isLoopTemporal(Expr* expr)
@@ -419,7 +425,7 @@ struct CompileExprImpl
                                                bool         isUR);
     llvm::Value*    sliceCount(ExprSlice* expr);
     llvm::Value*    shortCircuit(Expr* lhs, Expr* rhs, bool isAnd);
-    llvm::Value*    compileAccumulatorLoop(ExprSum* expr, llvm::Type* type);
+    llvm::Value*    compileAccumulatorLoop(Temporal<ExprBinary>* expr, bool weighted, llvm::Type* type);
     llvm::Value*    guardIndex(llvm::Value* ptr,  llvm::Value* indx,
                                llvm::Value* count, llvm::Type* elemType, Expr* expr);
 
@@ -1308,6 +1314,17 @@ void    CompileExprImpl::visit(ExprSum*          expr)
 
 void    CompileExprImpl::visit(ExprInt*          expr)
 {
+    //  Fast path: the O(N) fold, built once before the state loop -- the same
+    //  linear lowering Sum uses, weighted by each step's duration.
+    if (auto it = m_accumBuffers.find(expr); it != m_accumBuffers.end())
+    {
+        auto [buffer, type] = it->second;
+        auto idx = m_builder->CreatePtrDiff(m_propType, m_curr.back(), m_frst.back(), "idx");
+
+        m_value = m_builder->CreateLoad(type,
+                    m_builder->CreateGEP(type, buffer, idx), false, "Itg");
+        return;
+    }
 /*
 typedef long long uint64_t;
 typedef struct prop_t
@@ -2917,13 +2934,17 @@ void CompileExprImpl::compileTemporalLoops(Expr* rootExpr)
         if (m_accumBuffers.count(expr)) continue;
         if (hasFreeContext(expr, {})) continue;
 
-        if (auto* sum = dynamic_cast<ExprSum*>(expr); isLoopAccumulator(expr))
+        if (isLoopAccumulator(expr))
         {
-            auto* type = valueType(sum->rhs) == Factory<TypeInteger>::create()
+            //  Sum and Itg are both Temporal<ExprBinary>: lhs selects, rhs is
+            //  the value. Itg additionally weights each step by its duration.
+            auto* acc      = dynamic_cast<Temporal<ExprBinary>*>(expr);
+            bool  weighted = dynamic_cast<ExprInt*>(expr) != nullptr;
+            auto* type = valueType(acc->rhs) == Factory<TypeInteger>::create()
                        ? static_cast<llvm::Type*>(m_builder->getInt64Ty())
                        : static_cast<llvm::Type*>(m_builder->getDoubleTy());
 
-            m_accumBuffers[expr] = {compileAccumulatorLoop(sum, type), type};
+            m_accumBuffers[expr] = {compileAccumulatorLoop(acc, weighted, type), type};
             continue;
         }
 
@@ -3121,14 +3142,19 @@ llvm::Value* CompileExprImpl::compileTemporalLoopInline(Expr*        expr,
 //  Same shape as the boolean recurrence above, with an add in place of the
 //  select chain and a carrier wider than a bit:
 //
-//      total[i] = (p[i] ? v[i] : 0) + total[i + 1]
+//      Sum:  total[i] = (p[i] ? v[i]            : 0) + total[i + 1]
+//      Itg:  total[i] = (p[i] ? v[i]*(t[i+1]-t[i]) : 0) + total[i + 1]
+//
+//  The two differ only in `weighted`: Itg carries each step's duration, which
+//  is what integrating over time rather than totalling over records means.
 //
 //  The slow path is a forward walk from every evaluation point, so under `G`
 //  it is N walks of length N. The walk itself was correct and about as tight
 //  as it can be; there was simply one per state. This was never a decision --
 //  the accumulators were added after the linear lowering existed and were not
 //  considered for it.
-llvm::Value* CompileExprImpl::compileAccumulatorLoop(ExprSum* expr, llvm::Type* type)
+llvm::Value* CompileExprImpl::compileAccumulatorLoop(Temporal<ExprBinary>* expr,
+                                                     bool weighted, llvm::Type* type)
 {
     auto frst = m_frst.back();
     auto last = m_last.back();
@@ -3171,6 +3197,16 @@ llvm::Value* CompileExprImpl::compileAccumulatorLoop(ExprSum* expr, llvm::Type* 
     //  the fold -- the condition selects states, it does not delimit them.
     auto cond    = make(expr->lhs);
     auto value   = make(expr->rhs);
+
+    //  Itg weights the value by how long this state lasted: the gap to the
+    //  next state's timestamp. `__time__` is in nanoseconds, so this is an
+    //  i64 the `mul` helper widens to double for a `number` integrand.
+    if (weighted)
+    {
+        auto dt = m_builder->CreateSub(getTime(getNext(curr)), getTime(curr), "dt");
+        value   = mul(value, dt, "weighted");
+    }
+
     auto contrib = m_builder->CreateSelect(cond, value, zero, "contrib");
     auto val     = add(nextVal, contrib, "total");
 
