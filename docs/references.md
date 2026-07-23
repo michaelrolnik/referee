@@ -60,6 +60,13 @@ past `Ys`/`Yw`, `Ss`/`Sw`, `Ts`/`Tw`). This is LTL over finite traces.
 
 - **G. De Giacomo, M. Y. Vardi.** *Linear Temporal Logic and Linear Dynamic
   Logic on Finite Traces.* Proceedings of IJCAI 2013, pp. 854–860.
+- **J. M. Couvreur, J. Ezpeleta.** *A Linear Temporal Logic Model Checking
+  Method over Finite Words with Correlated Transition Attributes.* Laboratoire
+  d'Informatique Fondamentale d'Orléans (LIFO), Université d'Orléans, and
+  Aragón Institute of Engineering Research (I3A), Universidad de Zaragoza.
+  [PDF](https://scispace.com/pdf/a-linear-temporal-logic-model-checking-method-over-finite-4cd88btqq9.pdf)
+  — finite-word LTL where a formula correlates attribute values carried by the
+  trace's transitions, which is the role REF's freeze variables (`x @ …`) play.
 
 See also the README's *Temporal lowering* and *Semantics* sections for how
 these operators are compiled to linear passes over a trace and the recurrences
