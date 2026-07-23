@@ -7,3 +7,10 @@ node_modules/
 
 # python virtualenv for the run-trace viewers
 .venv/
+
+# generated viewer output and scratch artifacts (never commit)
+/nominal.html
+/nominal.bokeh.html
+*.rdb
+/door
+/xyz.h
