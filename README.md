@@ -443,7 +443,7 @@ G(problem => t@(F(alarm && __time__ - t.__time__ <= 5)));
 
 ### Specification Patterns
 
-On top of raw temporal-logic expressions, REF provides Dwyer's property specification patterns so requirements can be written in near-natural English. The scope comes first (one or more of `globally`, `before P`, `after P`, `while P`, `between P and Q`, `after P until Q`), followed by a pattern body:
+On top of raw temporal-logic expressions, REF provides [Dwyer's property specification patterns](https://www.cs.colostate.edu/~france/CS614/Readings/Readings2011/propPatterns1-p7-dwyer.pdf) so requirements can be written in near-natural English — the paper that inspired this project. The scope comes first (one or more of `globally`, `before P`, `after P`, `while P`, `between P and Q`, `after P until Q`), followed by a pattern body:
 
 - `it is always the case that P holds [time bound];`
 - `it is never the case that P holds [time bound];`
@@ -1179,3 +1179,15 @@ Open the HTML report with `open build-cov/meson-logs/coveragereport/index.html` 
 Reset counters between runs by deleting `build-cov/**/*.gcda`, or wipe `build-cov/` entirely and re-run `meson setup` for a clean slate.
 
 > Meson also ships stock `ninja coverage`, `coverage-html`, `coverage-text`, and `coverage-xml` targets. They work on Linux, but on macOS `coverage-html` goes through `lcov`, which fails on Apple Clang's `.gcno` format with `inconsistent` function-end-line errors. Use the `coverage-gcovr-*` targets above for portable behaviour.
+
+## References
+
+REF is built on the property-specification patterns of Dwyer, Avrunin and
+Corbett, over a temporal-logic core drawn from the classical literature — LTL
+and its past-time mirror, metric (time-bounded) operators, TPTL freeze
+quantifiers, and finite-trace strong/weak semantics. The primary sources for
+each are collected in **[docs/references.md](docs/references.md)**.
+
+The paper that inspired the project: M. B. Dwyer, G. S. Avrunin, J. C. Corbett,
+*Patterns in Property Specifications for Finite-State Verification*, ICSE 1999
+([PDF](https://www.cs.colostate.edu/~france/CS614/Readings/Readings2011/propPatterns1-p7-dwyer.pdf)).
