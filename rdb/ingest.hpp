@@ -58,6 +58,16 @@ void    ingest(std::istream&        refIn,   std::string const& refName,
                std::ostream&        out,
                std::vector<std::string> const& includePaths = {});
 
+/// Pack a trace against an already-built schema `Module`, without parsing a
+/// `.ref`. This is the LLVM-and-ANTLR-free half of ingest: the `ingest`
+/// overloads above are just a `parseSchema` in front of it. An ahead-of-time
+/// checker, which carries its schema rather than a specification, calls this
+/// directly to accept CSV/YAML the same way the JIT path does.
+void    ingestWithModule(std::istream&        dataIn,  std::string const& dataName,
+                         std::istream*        confIn,  std::string const& confName,
+                         ::Module*            astModule,
+                         std::ostream&        out);
+
 /// File-paths convenience wrapper around the stream-based variant.
 /// `confPath` may be empty for "no conf file".
 void    ingest(std::string const& refPath,

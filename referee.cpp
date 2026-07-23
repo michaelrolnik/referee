@@ -1927,7 +1927,7 @@ void    Referee::emitExecutable(std::string const&               refPath,
     //  only third-party dependency the runtime half pulls in.
     std::string cmd = std::string(cxx && *cxx ? cxx : "c++")
                     + " " + objPath
-                    + " -L" + rtDir + " -lreferee_rt -lfmt"
+                    + " -L" + rtDir + " -lreferee_rt -lfmt -lyaml-cpp"
                     + " -o " + outPath;
 
     int     rc = std::system(cmd.c_str());
@@ -1935,13 +1935,14 @@ void    Referee::emitExecutable(std::string const&               refPath,
 
     if (rc != 0)
         throw std::runtime_error(
-            "emit executable: link failed (" + cmd + ") -- a C++ compiler and libfmt are needed on the build machine");
+            "emit executable: link failed (" + cmd + ") -- a C++ compiler, libfmt and libyaml-cpp are needed on the build machine");
 }
 
 bool    Referee::executeChecker(std::string const&          soPath,
                                 std::vector<Trace> const&   traces,
                                 std::ostream&               os,
-                                Detail                      detail)
+                                Detail                      detail,
+                                std::string const&          confPath)
 {
     void*   handle = dlopen(soPath.c_str(), RTLD_NOW | RTLD_LOCAL);
     if (handle == nullptr)
@@ -1965,26 +1966,57 @@ bool    Referee::executeChecker(std::string const&          soPath,
     //  own schema differs is rejected rather than read into the wrong shape --
     //  the same guarantee the .rdb execute path gives, with the checker's
     //  embedded schema standing in for the .ref's declarations.
+    //  Decoded once, and rebuilt into a `Module` so a CSV/YAML trace can be
+    //  packed against it -- the checker carries its schema, not a `.ref`.
     std::vector<referee::db::PropDecl>          checkerProps, checkerConfs;
     std::vector<std::unique_ptr<Type>>          typeSink;
+    ::Module                                    checkerSchema("checker");
     if (mod->schema != nullptr && mod->schemaBytes > 0)
     {
         auto const* cur = mod->schema;
         auto const* end = mod->schema + mod->schemaBytes;
         referee::db::decodeSchema(cur, end, checkerProps, checkerConfs, typeSink);
+        for (auto const& p : checkerProps) checkerSchema.addProp(p.name, p.type);
+        for (auto const& c : checkerConfs) checkerSchema.addConf(c.name, c.type);
     }
+
+    auto    endsWith = [](std::string const& s, char const* ext)
+    {
+        auto n = std::strlen(ext);
+        return s.size() >= n && s.compare(s.size() - n, n, ext) == 0;
+    };
 
     bool    everyTraceOk = true;
 
     for (auto const& trace : traces)
     {
-        //  `.rdb` only for now: it is already the state buffer, so no ingest
-        //  (and so no schema-derived column layout) is needed. A CSV would
-        //  have to be packed against the embedded schema first.
-        if (trace.path.size() < 4 || trace.path.substr(trace.path.size() - 4) != ".rdb")
-            throw std::runtime_error("checker: '" + trace.path + "' is not a .rdb -- the checker path takes packed traces only for now");
+        //  A `.rdb` is the state buffer already; a CSV/YAML is packed against
+        //  the embedded schema first, exactly as the JIT path packs it against
+        //  the parsed `.ref` -- but with no `.ref`.
+        std::unique_ptr<referee::db::Reader>    rdbPtr;
+        if (endsWith(trace.path, ".rdb"))
+        {
+            rdbPtr = std::make_unique<referee::db::Reader>(trace.path);
+        }
+        else
+        {
+            std::ifstream       data(trace.path);
+            if (!data)
+                throw std::runtime_error("checker: cannot open '" + trace.path + "'");
 
-        referee::db::Reader rdb(trace.path);
+            std::ifstream       conf;
+            if (!confPath.empty())
+                conf.open(confPath);
+
+            std::ostringstream  packed;
+            referee::db::ingestWithModule(data, trace.path,
+                                          confPath.empty() ? nullptr : &conf, confPath,
+                                          &checkerSchema, packed);
+            auto                str = std::move(packed).str();
+            rdbPtr = std::make_unique<referee::db::Reader>(
+                        std::vector<std::uint8_t>(str.begin(), str.end()), trace.path);
+        }
+        referee::db::Reader& rdb = *rdbPtr;
 
         //  Structural schema check against what the checker was built for.
         auto const& rp = rdb.props();

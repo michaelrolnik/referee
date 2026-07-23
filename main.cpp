@@ -330,7 +330,7 @@ int main(int argc, char * argv[])
             if (!runChecker.empty())
             {
                 //  A prebuilt checker: drive its table, no .ref, no compile.
-                bool    allPass = Referee::executeChecker(runChecker, traces, std::cout, detail);
+                bool    allPass = Referee::executeChecker(runChecker, traces, std::cout, detail, runConf);
                 if (!allPass) return 1;
             }
             else if (runRef.empty())

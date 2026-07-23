@@ -1,6 +1,6 @@
 # Design: ahead-of-time compiled checkers
 
-**Status:** stages 1-3 built (object, `.so`, standalone executable, embedded schema, JIT-free runtime library). CSV via a checker and dropping the `--explain` companions remain.
+**Status:** stages 1-3 built. A checker accepts `.rdb`, `.csv` and `.yaml`. Dropping the `--explain` companions from the object remains.
 **Scope:** `referee build spec.ref -o checker` producing a native executable that validates traces without compiling anything.
 
 ## What is built (stages 1 and 2)
@@ -66,11 +66,23 @@ to the referee binary, then the build tree. It is the same driver
 machine that only validates logs needs neither referee nor its dependencies,
 which is the whole point of the feature.
 
-**Not yet:** CSV/YAML through a checker (which needs ingest driven by the
-embedded schema rather than a `.ref`), dropping the `--explain` companions from
-the object as dead weight, and matching `execute`'s report *order* (the checker
-walks the table in compile order, so verdicts match but line order can
-differ).
+## CSV and YAML through a checker
+
+A checker takes `.csv` and `.yaml` traces too, not only `.rdb`. It carries its
+schema (the embedded types), so it rebuilds a `Module` from that and packs the
+trace against it -- the same `ingestWithModule` the JIT path uses, minus the
+`.ref` parse. That is why `ingest` was split: `ingestWithModule` is the
+LLVM-and-ANTLR-free half, and the runtime library links it along with the CSV
+and YAML loaders (so a checker's shared-library set gains libyaml-cpp).
+
+`referee execute --checker spec.so trace.csv --conf conf.csv` and the
+standalone `./checker --conf conf.csv trace.csv` both work; verdicts match
+`referee execute` on all 233 requirements of `pass.ref`, strings and conf
+included.
+
+**Not yet:** dropping the `--explain` companions from the object as dead
+weight, and matching `execute`'s report *order* (the checker walks the table in
+compile order, so verdicts match but line order can differ).
 
 ---
 

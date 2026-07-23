@@ -36,11 +36,16 @@
  */
 
 #include "rdb/database.hpp"
+#include "rdb/ingest.hpp"
+#include "module.hpp"
 #include "strings.hpp"
 
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
+#include <fstream>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -70,17 +75,58 @@ const referee_module_v1*    referee_module(void);
 
 int     main(int argc, char** argv)
 {
-    if (argc < 2)
-    {
-        std::fprintf(stderr, "usage: %s trace.rdb [trace.rdb ...]\n", argv[0]);
-        return 2;
-    }
-
     auto const* mod = referee_module();
     if (mod == nullptr || mod->version != 1)
     {
         std::fprintf(stderr, "checker: unsupported module version\n");
         return 2;
+    }
+
+    //  Traces are positional; `--conf FILE` supplies a configuration for the
+    //  CSV/YAML paths (a `.rdb` carries its own). Collected up front so the
+    //  order of flags and traces does not matter.
+    bool                        wantHelp = false;
+    std::string                 confPath;
+    std::vector<std::string>    tracePaths;
+    for (int a = 1; a < argc; a++)
+    {
+        std::string arg = argv[a];
+        if (arg == "--help" || arg == "-h")     wantHelp = true;
+        else if (arg == "--conf" && a + 1 < argc) confPath = argv[++a];
+        else                                    tracePaths.push_back(arg);
+    }
+
+    if (tracePaths.empty() || wantHelp)
+    {
+        //  A checker built by `referee build --executable` carries its own
+        //  identity: what it checks and what shape of trace it expects. Print
+        //  that rather than a bare usage line, since there is no `.ref` beside
+        //  it to consult.
+        std::printf("usage: %s trace.{rdb,csv,yaml} [trace ...]\n\n", argv[0]);
+        std::printf("An ahead-of-time referee checker: %u requirement%s over a "
+                    "trace of these signals.\n",
+                    mod->count, mod->count == 1 ? "" : "s");
+        std::printf("It reads .rdb, .csv and .yaml traces, and exits 0 "
+                    "iff every requirement holds.\n");
+
+        if (mod->schema != nullptr && mod->schemaBytes > 0)
+        {
+            std::vector<referee::db::PropDecl>  props, confs;
+            std::vector<std::unique_ptr<Type>>  sink;
+            auto const* cur = mod->schema;
+            referee::db::decodeSchema(cur, mod->schema + mod->schemaBytes, props, confs, sink);
+
+            std::printf("\ndata signals (%zu):", props.size());
+            for (auto const& p : props) std::printf(" %s", p.name.c_str());
+            std::printf("\n");
+            if (!confs.empty())
+            {
+                std::printf("conf values  (%zu):", confs.size());
+                for (auto const& c : confs) std::printf(" %s", c.name.c_str());
+                std::printf("\n");
+            }
+        }
+        return tracePaths.empty() && !wantHelp ? 2 : 0;
     }
 
     //  Re-intern the compiled string literals through this process's table, so
@@ -90,27 +136,66 @@ int     main(int argc, char** argv)
     for (std::uint64_t i = 0; i < mod->stringCount; i++)
         *mod->strings[i] = Strings::instance()->getString(*mod->strings[i]);
 
-    //  The schema the checker was built against, decoded once.
+    //  The schema the checker was built against, decoded once. It doubles as
+    //  the `Module` that packs a CSV/YAML trace -- rebuilt from the embedded
+    //  types rather than from a `.ref`, which the checker does not carry.
     std::vector<referee::db::PropDecl>  props, confs;
     std::vector<std::unique_ptr<Type>>  sink;
+    ::Module                            schema("checker");
     if (mod->schema != nullptr && mod->schemaBytes > 0)
     {
         auto const* cur = mod->schema;
         auto const* end = mod->schema + mod->schemaBytes;
         referee::db::decodeSchema(cur, end, props, confs, sink);
+        for (auto const& p : props) schema.addProp(p.name, p.type);
+        for (auto const& c : confs) schema.addConf(c.name, c.type);
     }
+
+    auto    endsWith = [](std::string const& s, char const* ext)
+    {
+        auto    n = std::strlen(ext);
+        return s.size() >= n && s.compare(s.size() - n, n, ext) == 0;
+    };
+
+    //  A `.rdb` is already the state buffer; anything else is packed against
+    //  the embedded schema first, exactly as `rdb build` would, but with no
+    //  `.ref` to parse.
+    auto    openTrace = [&](std::string const& path) -> std::unique_ptr<referee::db::Reader>
+    {
+        if (endsWith(path, ".rdb"))
+            return std::make_unique<referee::db::Reader>(path);
+
+        std::ifstream       data(path);
+        if (!data)
+            throw std::runtime_error("cannot open '" + path + "'");
+
+        std::ifstream       conf;
+        if (!confPath.empty())
+            conf.open(confPath);
+
+        std::ostringstream  packed;
+        referee::db::ingestWithModule(data, path,
+                                      confPath.empty() ? nullptr : &conf, confPath,
+                                      &schema, packed);
+
+        auto                str = std::move(packed).str();
+        std::vector<std::uint8_t>   bytes(str.begin(), str.end());
+        return std::make_unique<referee::db::Reader>(std::move(bytes), path);
+    };
 
     bool    everyTraceOk = true;
 
-    for (int a = 1; a < argc; a++)
+    for (auto const& path : tracePaths)
     {
-        std::string     path = argv[a];
         try
         {
-            referee::db::Reader rdb(path);
+            auto    rdbPtr = openTrace(path);
+            auto&   rdb    = *rdbPtr;
 
             //  Reject a trace whose shape differs from what the checker was
-            //  built for, rather than read it into the wrong layout.
+            //  built for, rather than read it into the wrong layout. (A packed
+            //  CSV already matches, since it was packed against this schema;
+            //  the check still guards a hand-built `.rdb`.)
             auto const& rp = rdb.props();
             auto const& rc = rdb.confs();
             bool    shapeOk = rp.size() == props.size() && rc.size() == confs.size();

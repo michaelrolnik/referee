@@ -374,6 +374,7 @@ core_sources        = [
     'core/utils.cpp',
     'rdb/database.cpp',
     'rdb/ingest.cpp',
+    'rdb/ingest_ref.cpp',
     'rdb/merge.cpp',
     'referee.cpp',
 ]
@@ -418,14 +419,19 @@ referee_rt_lib      = static_library(
     'referee_rt',
     [
         'rdb/database.cpp',
+        'rdb/ingest.cpp',
         'core/syntax.cpp',
         'core/module.cpp',
         'core/strings.cpp',
         'core/utils.cpp',
+        'core/visitors/loader.cpp',
+        'core/loaders/row.cpp',
+        'core/loaders/csv.cpp',
+        'core/loaders/yml.cpp',
         'runtime/checker.cpp',
     ],
     include_directories : project_inc,
-    dependencies        : [fmt_dep],
+    dependencies        : [fmt_dep, yamlcpp_dep],
     install             : false,
 )
 

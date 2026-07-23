@@ -109,30 +109,19 @@ Referee::Sizes  inferSizes(loader::Row const& doc)
 }
 
 
-void    ingest(std::istream&        refIn,   std::string const& refName,
-               std::istream&        dataIn,  std::string const& dataName,
-               std::istream*        confIn,  std::string const& confName,
-               std::ostream&        out,
-               std::vector<std::string> const& includePaths)
+void    ingestWithModule(std::istream&        dataIn,  std::string const& dataName,
+                         std::istream*        confIn,  std::string const& confName,
+                         ::Module*            astModule,
+                         std::ostream&        out)
 {
-    // 1. Open the trace first. Normally the specification determines the
-    //    columns; where an array is declared `T[]` the direction reverses and
-    //    the columns determine its extent, so the document has to be in hand
-    //    before the schema can be finished.
-    std::string refSrc{std::istreambuf_iterator<char>(refIn),
-                       std::istreambuf_iterator<char>()};
+    //  The trace determines a ragged array's per-record length, so the
+    //  document is opened before the blobs are built. The schema is given,
+    //  fully resolved -- no parse, no LLVM, no ANTLR.
     auto        doc     = loader::Row::open(dataIn, dataName);
 
-    // 2. Schema: cheap AST-only parse.
-    //  Column extents, read off the header. These no longer reach the type
-    //  system -- `T[]` means unbounded, and stays that way -- so this is the
-    //  loader's allocation figure and nothing else: how far to probe for
-    //  elements before concluding the row has no more.
+    //  Column extents read off the header -- how far to probe for a ragged
+    //  array's elements, nothing more.
     Referee::Sizes  sizes = referee::db::inferSizes(*doc);
-
-    std::istringstream  refForSchema(refSrc);
-    auto    schema      = Referee::parseSchema(refForSchema, refName, includePaths, sizes);
-    auto*   astModule   = schema.ast;
 
     //  Computed props (`data x = expr`) are deliberately absent from the .rdb:
     //  nothing in the trace file backs them, and their values are a function of
@@ -242,37 +231,6 @@ void    ingest(std::istream&        refIn,   std::string const& refName,
     for (std::size_t si = 0; si < numStates; si++)
         w.writeState(si, times[si], blobs[si]);
     w.finish();
-}
-
-void    ingest(std::string const& refPath,
-               std::string const& dataPath,
-               std::string const& confPath,
-               std::string const& outRdbPath,
-               std::vector<std::string> const& includePaths)
-{
-    std::ifstream   refIn(refPath);
-    if (!refIn)
-        throw std::runtime_error(fmt::format("rdb: cannot open '{}'", refPath));
-
-    std::ifstream   dataIn(dataPath);
-    if (!dataIn)
-        throw std::runtime_error(fmt::format("rdb: cannot open '{}'", dataPath));
-
-    std::ifstream   confIn;
-    std::istream*   confInPtr = nullptr;
-    if (!confPath.empty())
-    {
-        confIn.open(confPath);
-        if (!confIn)
-            throw std::runtime_error(fmt::format("rdb: cannot open '{}'", confPath));
-        confInPtr = &confIn;
-    }
-
-    std::ofstream   out(outRdbPath, std::ios::binary | std::ios::trunc);
-    if (!out)
-        throw std::runtime_error(fmt::format("rdb: cannot create '{}'", outRdbPath));
-
-    ingest(refIn, refPath, dataIn, dataPath, confInPtr, confPath, out, includePaths);
 }
 
 } // namespace referee::db

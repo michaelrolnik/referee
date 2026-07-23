@@ -270,7 +270,8 @@ public:
     static bool     executeChecker(std::string const& soPath,
                                    std::vector<Trace> const& traces,
                                    std::ostream& os,
-                                   Detail detail = Detail::Requirements);
+                                   Detail detail = Detail::Requirements,
+                                   std::string const& confPath = {});
 
     /// Compile REF source, JIT it, and evaluate every requirement against
     /// a packed `.rdb` trace whose state buffer is *already* the layout the

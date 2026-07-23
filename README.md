@@ -608,6 +608,7 @@ Executables land in `build/`:
   - `build/referee compile file.ref` — emits LLVM IR for the given `.ref` file to stdout.
   - `build/referee execute file.ref trace.{csv,yaml,rdb} [--conf conf.{csv,yaml}]` — JIT-compiles the requirements and evaluates them against the trace. Tabular `.csv` / `.yaml` inputs are parsed and re-encoded into the JIT's `state_t[]` buffer on the fly; `.rdb` inputs are *already* in that exact layout, so loading is just pointer fix-up (see *Referee Database* below). Prints one `PASS`/`FAIL` line per requirement and exits non-zero if any requirement fails. Working examples: `test/logic/pass.ref` + `test/logic/data.csv` + `test/logic/conf.csv`.
 - `build/rdb` — the RDB CLI: pack CSV/YAML traces into `.rdb` and pretty-print existing `.rdb` files.
+- `build/referee-lsp` — the REF language server (LSP over stdio). Built by the default `ninja -C build`; see *Language server (LSP)* under *Editor support*.
 - `build/tests` — the GoogleTest suite.
 
 ### Overriding dependency locations
@@ -639,7 +640,7 @@ To configure coverage builds and render HTML/XML reports, see the dedicated [Cod
 
 It highlights the temporal operators (future and past scoped separately, and only where one is actually applied, so a stray capital is left alone), the whole Dwyer specification-pattern vocabulary, declarations with their declared names, freeze variables and `__time__`, and every literal form. The keyword lists are generated from `core/referee.g4` rather than written by hand, so they track the grammar exactly. There are also snippets for the common specification patterns.
 
-Highlighting is all it does — see *What is missing* above.
+Highlighting is all the *extension* does — see *What is missing* above. For live error-checking, a separate **language server** is available; see *Language server (LSP)* below.
 
 ## Installing it
 
