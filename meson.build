@@ -374,6 +374,7 @@ core_sources        = [
     'core/utils.cpp',
     'rdb/database.cpp',
     'rdb/ingest.cpp',
+    'rdb/merge.cpp',
     'referee.cpp',
 ]
 

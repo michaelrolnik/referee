@@ -266,6 +266,7 @@ Member access uses `.` (`lock.ON`, `pos.x`, `xyz.limits`) and array indexing use
 It exists for binary protocols. A message arrives pre-framed — someone has already cut the stream into records — and the framing lives in individual bits of an octet:
 
 ```text
+conf k       : struct { SOM: boolean; EOM: boolean; };
 data flag    : byte;
 data payload : byte[];          // extent from the trace
 
@@ -512,8 +513,8 @@ The requirement is that the bounds be **loop-invariant** — literals, or expres
 
 ### Computational complexity
 
-For a trace of **N** states, one requirement containing **k** distinct temporal
-operators. The design intent is that checking a long trace against a large
+For a trace of **N** states and a requirement containing **k** distinct temporal
+operators, the table below details the evaluation complexity. The design intent is that checking a long trace against a large
 specification is the ordinary case, so every operator that can be made linear
 in the trace length has been.
 
@@ -630,19 +631,7 @@ The suite covers the compiler in-process and also drives the two CLI binaries as
 
 ### Coverage
 
-With [gcovr](https://gcovr.com/) installed, configure a build with coverage instrumentation and run one of the report targets:
-
-```bash
-meson setup build-cov -Db_coverage=true
-meson test -C build-cov
-ninja -C build-cov coverage-gcovr-text     # meson-logs/coverage.txt
-ninja -C build-cov coverage-gcovr-html     # meson-logs/coveragereport/index.html
-ninja -C build-cov coverage-gcovr-xml      # meson-logs/coverage.xml
-```
-
-The report covers `core/`, `rdb/`, `referee.cpp` and `main.cpp` — an include-filter rather than an exclude list, because gcovr's exclude patterns did not reliably keep the test tree out, and gtest's own branches alone moved the branch figure by 14 points. Branches arising from exception cleanup are excluded too: every C++ statement that can throw carries a hidden edge to its unwind path, and counting those buried the real conditionals (they took branch coverage from 86% to 39% while saying nothing about how well the code is exercised).
-
-Current figures: **95% of lines**, **89% of branches**, **89% of functions**. What remains is concentrated in `core/builder.hpp`, an operator-overloading DSL for constructing AST nodes whose unused operators are dead weight rather than untested logic, and in template machinery that is emitted but never instantiated.
+To configure coverage builds and render HTML/XML reports, see the dedicated [Code Coverage](#code-coverage) section below.
 
 # Editor support
 
@@ -938,6 +927,53 @@ The first and last `states` rows are sentinels (zero blobs, time outside the dat
 | `-o / --out trace.rdb` | yes | Output path for the packed `.rdb` file. |
 
 The CSV / YAML column schema is the same one `referee execute` accepts (see *Building your own trace* above). Both pipelines share the same `loader::Row` ingestor and `Loader::load` byte-layout, so a `.rdb` packed from CSV is **byte-identical** to one packed from equivalent YAML — the test suite asserts this in `Rdb.CsvAndYamlAgree`.
+
+## Merging multi-rate sources — `rdb merge`
+
+Signals for one specification often come from different sources at different
+sample rates — one file logs a fast sensor, another a slow status word, each on
+its own clock. `rdb merge` folds them into a single trace of complete rows:
+
+```bash
+./build/rdb merge spec.ref fast.csv slow.csv status.yaml -o merged.rdb
+```
+
+The operation is forced by REF's model. Values are held *between* rows, but an
+empty cell reads as the type's zero *within* one (see *What a trace means
+between samples*), so a merge cannot leave gaps for the reader to fill — it has
+to materialise the hold itself. It takes the **union of every source's
+timestamps**, and at each one every signal takes the **most recent value its own
+source reported at or before that time**:
+
+```text
+fast.csv          slow.csv           merged (held forward)
+__time__,fast     __time__,slow      __time__,fast,slow
+0,10              50,5               50,10,5
+100,11            250,7              100,11,5      ← slow still 5, held from t=50
+200,12                               200,12,5
+                                     250,12,7      ← slow now 7; fast still 12
+```
+
+| Argument | Description |
+| --- | --- |
+| `spec.ref` | the specification, for the schema and column order of the `.rdb` |
+| `sources…` | two or more `.csv` / `.yaml` files, each carrying `__time__` and some of the signals |
+| `-o merged.rdb` | the packed output |
+| `--conf conf.csv` | optional configuration, as for `rdb build` |
+| `--leading trim\|zero\|backfill` | what to do before a signal's first sample (default `trim`) |
+| `--overlap error\|merge` | a column present in two sources (default `error`) |
+
+**`--leading`** decides the leading gap, before a signal has reported at all:
+`trim` drops rows until every signal has a value (invents nothing, loses the
+earliest fast samples); `zero` keeps every row and reads the type's zero there;
+`backfill` uses the signal's earliest real value. **`--overlap`** decides what
+happens when the same column appears in more than one source: `error` treats it
+as a mistake and says so; `merge` unions the two sources' samples of that one
+signal, last-write-wins on an exact-timestamp tie.
+
+The merge is a plain column-and-timestamp operation — no `.ref` needed for the
+fold itself; the specification is used only to pack the result, so the same
+schema check `referee execute` runs applies to the merged `.rdb`.
 
 ## Consuming `.rdb` files — `referee execute`
 

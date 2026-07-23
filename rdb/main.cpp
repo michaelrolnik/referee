@@ -24,12 +24,17 @@
 
 #include "database.hpp"
 #include "ingest.hpp"
+#include "merge.hpp"
+#include "loaders/row.hpp"
 
 #include <CLI/App.hpp>
 #include <CLI/Config.hpp>
 #include <CLI/Formatter.hpp>
 
+#include <fstream>
 #include <iostream>
+#include <memory>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -72,6 +77,38 @@ int main(int argc, char* argv[])
     dumpCmd->add_option("rdb", dumpFile, "Input .rdb path")
         ->required()->check(CLI::ExistingFile);
 
+    //  merge: several sources, each sampling some of the signals at its own
+    //  rate, folded into one complete-row trace and packed to .rdb.
+    auto*   mergeCmd = app.add_subcommand(
+        "merge",
+        "Merge multi-rate trace sources into one .rdb (union of times, each signal held forward)");
+    std::string                 mergeRef;
+    std::vector<std::string>    mergeSources;
+    std::string                 mergeConf;
+    std::string                 mergeOut;
+    std::string                 mergeLeading = "trim";
+    std::string                 mergeOverlap = "error";
+    std::vector<std::string>    mergeIncludePaths;
+    mergeCmd->add_option("ref", mergeRef,
+        "REF source whose data/conf declarations define the schema")
+        ->required()->check(CLI::ExistingFile);
+    mergeCmd->add_option("sources", mergeSources,
+        "Two or more trace files (.csv / .yml / .yaml), each sampling some signals")
+        ->required()->expected(-1)->check(CLI::ExistingFile);
+    mergeCmd->add_option("--conf", mergeConf,
+        "Optional configuration file (.csv / .yml / .yaml)")
+        ->check(CLI::ExistingFile);
+    mergeCmd->add_option("-o,--out", mergeOut, "Output .rdb path")->required();
+    mergeCmd->add_option("--leading", mergeLeading,
+        "Leading gap before a signal's first sample: trim | zero | backfill")
+        ->check(CLI::IsMember({"trim", "zero", "backfill"}));
+    mergeCmd->add_option("--overlap", mergeOverlap,
+        "A column shared by two sources: error | merge")
+        ->check(CLI::IsMember({"error", "merge"}));
+    mergeCmd->add_option("-I,--include", mergeIncludePaths,
+        "Directory to search for imported .ref files (repeatable)")
+        ->check(CLI::ExistingDirectory);
+
     try
     {
         app.parse(argc, argv);
@@ -80,6 +117,58 @@ int main(int argc, char* argv[])
             referee::db::ingest(refFile, dataFile, confFile, outFile, includePaths);
         else if (dumpCmd->parsed())
             referee::db::dump(dumpFile, std::cout);
+        else if (mergeCmd->parsed())
+        {
+            if (mergeSources.size() < 2)
+                throw std::runtime_error("merge: give at least two sources");
+
+            //  Each source is opened, then held open: `loader::Row` keeps its
+            //  parsed cells, which `mergeTraces` reads by name.
+            std::vector<std::unique_ptr<std::ifstream>>     streams;
+            std::vector<std::unique_ptr<loader::Row>>       owned;
+            std::vector<loader::Row*>                       docs;
+            for (auto const& path : mergeSources)
+            {
+                streams.push_back(std::make_unique<std::ifstream>(path));
+                if (!*streams.back())
+                    throw std::runtime_error("merge: cannot open '" + path + "'");
+                owned.push_back(loader::Row::open(*streams.back(), path));
+                docs.push_back(owned.back().get());
+            }
+
+            auto    leading = mergeLeading == "zero"     ? referee::db::LeadingGap::Zero
+                            : mergeLeading == "backfill"  ? referee::db::LeadingGap::Backfill
+                            :                               referee::db::LeadingGap::Trim;
+            auto    overlap = mergeOverlap == "merge"     ? referee::db::Overlap::Merge
+                            :                               referee::db::Overlap::Error;
+
+            auto    merged  = referee::db::mergeTraces(docs, leading, overlap);
+
+            //  The merged table is a CSV in memory; ingest turns it into the
+            //  .rdb, deriving the schema and column order from the .ref. It is
+            //  named `.csv` so the ingestor picks the CSV loader for it.
+            std::ifstream       ref(mergeRef);
+            if (!ref)
+                throw std::runtime_error("merge: cannot open '" + mergeRef + "'");
+
+            std::istringstream  data(merged);
+            std::ifstream       conf;
+            if (!mergeConf.empty())
+            {
+                conf.open(mergeConf);
+                if (!conf)
+                    throw std::runtime_error("merge: cannot open '" + mergeConf + "'");
+            }
+
+            std::ofstream       out(mergeOut, std::ios::binary);
+            if (!out)
+                throw std::runtime_error("merge: cannot write '" + mergeOut + "'");
+
+            referee::db::ingest(ref,  mergeRef,
+                                data, "merged.csv",
+                                mergeConf.empty() ? nullptr : &conf, mergeConf,
+                                out,  mergeIncludePaths);
+        }
     }
     catch (CLI::ParseError const& e)
     {

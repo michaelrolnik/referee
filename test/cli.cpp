@@ -515,6 +515,75 @@ TEST(Cli, RdbBuildRejectsMissingInputs)
     std::remove(out.c_str());
 }
 
+// `rdb merge` folds signals sampled by different sources at different rates
+// into one trace of complete rows: the union of timestamps, each signal held
+// forward from its own most recent sample. REF reads an empty cell as zero, so
+// the merge has to materialise the hold rather than leave gaps.
+TEST(Cli, RdbMergeMultiRateSources)
+{
+    auto    dir  = tmpPath("merge", "");
+    auto    ref  = dir + ".ref";
+    auto    fast = dir + ".fast.csv";
+    auto    slow = dir + ".slow.csv";
+    auto    out  = dir + ".rdb";
+
+    { std::ofstream f(ref);  f << "data fast : integer;\ndata slow : integer;\nG(fast >= 0);\n"; }
+    { std::ofstream f(fast); f << "__time__,fast\n0,10\n100,11\n200,12\n"; }
+    { std::ofstream f(slow); f << "__time__,slow\n50,5\n250,7\n"; }
+
+    //  Default (trim): drop rows before both signals have a value, so the merge
+    //  starts at t=50 and invents nothing.
+    auto    m = run(quote(RDB_BIN) + " merge " + quote(ref) + " "
+                  + quote(fast) + " " + quote(slow) + " -o " + quote(out));
+    ASSERT_EQ(m.status, 0) << m.output;
+
+    auto    dump = run(quote(RDB_BIN) + " dump " + quote(out));
+    ASSERT_EQ(dump.status, 0) << dump.output;
+
+    //  At t=100 `slow` still reads its t=50 sample (held forward); `fast` its
+    //  t=100 one. The row is complete, which is the whole point.
+    EXPECT_NE(dump.output.find("time: 100"), std::string::npos) << dump.output;
+    EXPECT_NE(dump.output.find("fast: 11"),  std::string::npos) << dump.output;
+    EXPECT_NE(dump.output.find("slow: 5"),   std::string::npos) << dump.output;
+
+    //  A signal is checkable straight after the merge.
+    auto    exec = run(quote(REFEREE_BIN) + " execute " + quote(ref) + " " + quote(out));
+    EXPECT_EQ(exec.status, 0) << exec.output;
+
+    std::remove(out.c_str());
+    std::remove(ref.c_str());  std::remove(fast.c_str());  std::remove(slow.c_str());
+    std::remove(dir.c_str());
+}
+
+// The same column in two sources is ambiguous, and the default refuses it
+// rather than pick a winner.
+TEST(Cli, RdbMergeRejectsOverlapByDefault)
+{
+    auto    dir = tmpPath("overlap", "");
+    auto    ref = dir + ".ref";
+    auto    a   = dir + ".a.csv";
+    auto    b   = dir + ".b.csv";
+    auto    out = dir + ".rdb";
+
+    { std::ofstream f(ref); f << "data x : integer;\nG(x >= 0);\n"; }
+    { std::ofstream f(a);   f << "__time__,x\n0,1\n"; }
+    { std::ofstream f(b);   f << "__time__,x\n100,2\n"; }
+
+    auto    m = run(quote(RDB_BIN) + " merge " + quote(ref) + " "
+                  + quote(a) + " " + quote(b) + " -o " + quote(out));
+    EXPECT_NE(m.status, 0);
+    EXPECT_NE(m.output.find("appears in more than one source"), std::string::npos) << m.output;
+
+    //  With --overlap merge it is accepted and the timelines are unioned.
+    auto    ok = run(quote(RDB_BIN) + " merge " + quote(ref) + " "
+                   + quote(a) + " " + quote(b) + " --overlap merge --leading zero -o " + quote(out));
+    EXPECT_EQ(ok.status, 0) << ok.output;
+
+    std::remove(out.c_str());
+    std::remove(ref.c_str());  std::remove(a.c_str());  std::remove(b.c_str());
+    std::remove(dir.c_str());
+}
+
 TEST(Cli, RdbDumpRejectsNonRdbFile)
 {
     auto    r = run(quote(RDB_BIN) + " dump " + quote(data("data.csv")));
