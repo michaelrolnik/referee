@@ -449,8 +449,11 @@ std::vector<Referee::Completion> Referee::complete(
 
     auto*       tree   = parser.program();
     ::Module*   module = nullptr;
-    try         { module = std::any_cast<::Module*>(astOwner->visitProgram(tree)); }
-    catch (...) { module = nullptr; }
+    //  A syntactically broken tree is not safe to walk (the visitor assumes a
+    //  well-formed one), so resolve names only when the parse is clean.
+    if (!errors.any())
+        try         { module = std::any_cast<::Module*>(astOwner->visitProgram(tree)); }
+        catch (...) { module = nullptr; }
 
     //  Member context: the struct fields / enum cases of the resolved type.
     if (member)
@@ -624,8 +627,11 @@ std::string Referee::hover(
 
     auto*       tree   = parser.program();
     ::Module*   module = nullptr;
-    try         { module = std::any_cast<::Module*>(astOwner->visitProgram(tree)); }
-    catch (...) { return ""; }
+    //  A syntactically broken tree is not safe to walk; the null check below
+    //  then yields no hover.
+    if (!errors.any())
+        try         { module = std::any_cast<::Module*>(astOwner->visitProgram(tree)); }
+        catch (...) { module = nullptr; }
     if (module == nullptr)
         return "";
 
@@ -1104,8 +1110,11 @@ Referee::Definition Referee::define(
 
     auto*       tree   = parser.program();
     ::Module*   module = nullptr;
-    try         { module = std::any_cast<::Module*>(astOwner->visitProgram(tree)); }
-    catch (...) { return none; }
+    //  A syntactically broken tree is not safe to walk; the null check below
+    //  then yields no definition.
+    if (!errors.any())
+        try         { module = std::any_cast<::Module*>(astOwner->visitProgram(tree)); }
+        catch (...) { module = nullptr; }
     if (module == nullptr)
         return none;
 
@@ -1247,8 +1256,11 @@ std::vector<Referee::Symbol> Referee::symbols(
 
     auto*       tree   = parser.program();
     ::Module*   module = nullptr;
-    try         { module = std::any_cast<::Module*>(astOwner->visitProgram(tree)); }
-    catch (...) { module = nullptr; }
+    //  A syntactically broken tree is not safe to walk (the visitor assumes a
+    //  well-formed one), so resolve names only when the parse is clean.
+    if (!errors.any())
+        try         { module = std::any_cast<::Module*>(astOwner->visitProgram(tree)); }
+        catch (...) { module = nullptr; }
 
     std::map<Type*, std::string>    named;
     if (module)
@@ -1421,8 +1433,11 @@ std::vector<Referee::Reference> Referee::references(
 
     auto*       tree   = parser.program();
     ::Module*   module = nullptr;
-    try         { module = std::any_cast<::Module*>(astOwner->visitProgram(tree)); }
-    catch (...) { module = nullptr; }
+    //  A syntactically broken tree is not safe to walk (the visitor assumes a
+    //  well-formed one), so resolve names only when the parse is clean.
+    if (!errors.any())
+        try         { module = std::any_cast<::Module*>(astOwner->visitProgram(tree)); }
+        catch (...) { module = nullptr; }
 
     //  For a member target: the owning type (so `.field` on other types is not a
     //  match) and its declared name (to locate the field's own declaration).
@@ -1632,8 +1647,11 @@ Referee::SignatureHelp Referee::signatureHelp(
 
     auto*       tree   = parser.program();
     ::Module*   module = nullptr;
-    try         { module = std::any_cast<::Module*>(astOwner->visitProgram(tree)); }
-    catch (...) { module = nullptr; }
+    //  A syntactically broken tree is not safe to walk (the visitor assumes a
+    //  well-formed one), so resolve names only when the parse is clean.
+    if (!errors.any())
+        try         { module = std::any_cast<::Module*>(astOwner->visitProgram(tree)); }
+        catch (...) { module = nullptr; }
 
     std::map<Type*, std::string>    named;
     if (module)

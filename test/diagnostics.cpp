@@ -1285,3 +1285,32 @@ TEST(SignatureHelp, NoneOutsideCall)
     unsigned    col = static_cast<unsigned>(L[0].find("sh_q")) + 1;   // in the declaration
     EXPECT_FALSE(sigHelpAt(L, 0, col, "sh4").any);
 }
+
+// ── Robustness ───────────────────────────────────────────────────────────────
+
+// Regression: every LSP entry must refuse to walk a *syntactically broken* parse
+// tree. The AST visitor assumes a well-formed tree, so walking one segfaults —
+// `type P : struct { x` (a struct mid-typing, member `x` with no type) crashed
+// the server. Each entry now returns gracefully; reaching the end is the test.
+TEST(Robustness, LspEntriesSurviveBrokenParse)
+{
+    char const* broken[] = {
+        "type P : struct { x",              // the reported crash
+        "type E : enum { A,",
+        "data pt : Point;\nG(pt.",
+        "func f : (integer,",
+        "type S : struct { a : B",
+        "data d = ",
+        "G(f(g(h(",
+    };
+    for (auto const* src : broken)
+    {
+        { std::istringstream is(src); (void) Referee::symbols(is,       "<b>", {}); }
+        { std::istringstream is(src); (void) Referee::hover(is,         "<b>", {}, 0, 5); }
+        { std::istringstream is(src); (void) Referee::define(is,        "<b>", {}, 0, 5); }
+        { std::istringstream is(src); (void) Referee::references(is,    "<b>", {}, 0, 5, true); }
+        { std::istringstream is(src); (void) Referee::complete(is,      "<b>", {}, 0, 5); }
+        { std::istringstream is(src); (void) Referee::signatureHelp(is, "<b>", {}, 0, 5); }
+    }
+    SUCCEED();      // no segfault reaching here
+}
