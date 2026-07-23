@@ -36,6 +36,7 @@
 #include "rdb/database.hpp"
 #include "rdb/ingest.hpp"
 
+#include <algorithm>
 #include <cstdio>
 #include <fstream>
 #include <sstream>
@@ -572,4 +573,97 @@ TEST(Diagnostics, RejectsUnknownTraceFormat)
 
     std::remove(weird.c_str());
     std::remove(out.c_str());
+}
+
+// ── Member completion ────────────────────────────────────────────────────────
+//
+// The LSP's other half: after a `.` the server offers the members of the signal
+// to its left. These drive the front-end entry the server calls (Referee::
+// complete), so they pin the behaviour a user sees as the member popup.
+//
+// Signal names are interned process-globally (see RejectsBadCalls), so each
+// case uses names of its own to avoid a type leaking in from another test.
+
+namespace
+{
+
+//  Labels Referee::complete offers at (line, character) — both 0-based (LSP).
+std::vector<std::string>    completeLabels(
+    std::string const& src, unsigned line, unsigned character, std::string const& tag)
+{
+    std::istringstream          is(src);
+    auto                        cands = Referee::complete(is, "<" + tag + ">", {}, line, character);
+    std::vector<std::string>    labels;
+    for (auto const& c : cands) labels.push_back(c.label);
+    return labels;
+}
+
+bool    has(std::vector<std::string> const& v, std::string const& s)
+{
+    return std::find(v.begin(), v.end(), s) != v.end();
+}
+
+} // namespace
+
+// `sig.` on a struct offers its fields.
+TEST(Completion, ListsStructFields)
+{
+    auto    src = std::string(
+        "type CompPoint : struct { cx : integer; cy : integer; };\n"
+        "data comp_pt : CompPoint;\n"
+        "comp_pt.\n");                                  // caret at end, after the dot
+    auto    got = completeLabels(src, 2, 8, "structfields");
+
+    EXPECT_EQ(got.size(), 2u);
+    EXPECT_TRUE(has(got, "cx")) << "expected field cx";
+    EXPECT_TRUE(has(got, "cy")) << "expected field cy";
+}
+
+// `sig.` on an enum offers its cases.
+TEST(Completion, ListsEnumCases)
+{
+    auto    src = std::string(
+        "type CompEnum : enum { CA, CB, CC };\n"
+        "data comp_e : CompEnum;\n"
+        "comp_e.\n");
+    auto    got = completeLabels(src, 2, 7, "enumcases");
+
+    EXPECT_EQ(got.size(), 3u);
+    EXPECT_TRUE(has(got, "CA"));
+    EXPECT_TRUE(has(got, "CB"));
+    EXPECT_TRUE(has(got, "CC"));
+}
+
+// A dotted chain walks through nested struct members.
+TEST(Completion, WalksNestedStruct)
+{
+    auto    src = std::string(
+        "type CompInner : struct { na : integer; nb : integer; };\n"
+        "type CompOuter : struct { op : CompInner; oq : integer; };\n"
+        "data comp_o : CompOuter;\n"
+        "comp_o.op.\n");                                // members of the inner struct
+    auto    got = completeLabels(src, 3, 10, "nested");
+
+    EXPECT_EQ(got.size(), 2u);
+    EXPECT_TRUE(has(got, "na"));
+    EXPECT_TRUE(has(got, "nb"));
+}
+
+// A scalar has no members, so `.` after one offers nothing.
+TEST(Completion, EmptyForScalar)
+{
+    auto    src = std::string(
+        "data comp_i : integer;\n"
+        "comp_i.\n");
+    EXPECT_TRUE(completeLabels(src, 1, 7, "scalar").empty());
+}
+
+// The head must resolve to a signal; an unknown name offers nothing (and does
+// not crash the parse, which is the point of blanking the caret's line).
+TEST(Completion, EmptyForUnknownSignal)
+{
+    auto    src = std::string(
+        "data comp_z : integer;\n"
+        "comp_unknown.\n");
+    EXPECT_TRUE(completeLabels(src, 1, 13, "unknown").empty());
 }
