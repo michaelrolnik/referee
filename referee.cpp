@@ -3203,9 +3203,18 @@ void    Referee::emitShared(std::string const&               refPath,
     auto    objPath = outPath + ".o";
     emitObject(refPath, objPath, triple, includePaths);
 
+    //  Paths are shell-quoted: a space or a metacharacter in an output path
+    //  must not split the command or run anything.
+    auto    sh = [](std::string const& p)
+    {
+        std::string out = "'";
+        for (char c : p) { if (c == '\'') out += "'\\''"; else out += c; }
+        return out + "'";
+    };
+
     auto const* cc  = std::getenv("CC");
     std::string cmd = std::string(cc && *cc ? cc : "cc")
-                    + " -shared -fPIC " + objPath + " -o " + outPath;
+                    + " -shared -fPIC " + sh(objPath) + " -o " + sh(outPath);
 
     int     rc = std::system(cmd.c_str());
     std::remove(objPath.c_str());
@@ -3236,6 +3245,18 @@ static std::string  runtimeLibDir()
         }
     }
 
+    //  An installed layout keeps the archive in ../lib relative to the binary.
+    {
+        char    buf[4096];
+        auto    n = ::readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+        if (n > 0)
+        {
+            std::string self(buf, static_cast<std::size_t>(n));
+            candidates.push_back(
+                (std::filesystem::path(self).parent_path().parent_path() / "lib").string());
+        }
+    }
+
     candidates.emplace_back("build");
     candidates.emplace_back(".");
 
@@ -3261,10 +3282,17 @@ void    Referee::emitExecutable(std::string const&               refPath,
     //  The runtime library carries the driver's main(); the specification
     //  object carries referee_module and the requirement functions. fmt is the
     //  only third-party dependency the runtime half pulls in.
+    auto    sh = [](std::string const& p)
+    {
+        std::string out = "'";
+        for (char c : p) { if (c == '\'') out += "'\\''"; else out += c; }
+        return out + "'";
+    };
+
     std::string cmd = std::string(cxx && *cxx ? cxx : "c++")
-                    + " " + objPath
-                    + " -L" + rtDir + " -lreferee_rt -lfmt -lyaml-cpp"
-                    + " -o " + outPath;
+                    + " " + sh(objPath)
+                    + " -L" + sh(rtDir) + " -lreferee_rt -lfmt -lyaml-cpp"
+                    + " -o " + sh(outPath);
 
     int     rc = std::system(cmd.c_str());
     std::remove(objPath.c_str());

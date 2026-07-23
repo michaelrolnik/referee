@@ -190,7 +190,7 @@ llvm_modules        = [
 
 llvm_dep            = dependency(
     'llvm',
-    version  : '>=19',
+    version  : '>=18',
     modules  : llvm_modules,
     required : false,
 )
@@ -432,7 +432,9 @@ referee_rt_lib      = static_library(
     ],
     include_directories : project_inc,
     dependencies        : [fmt_dep, yamlcpp_dep],
-    install             : false,
+    # Installed beside the binaries' ../lib so `referee build --executable`
+    # works outside the build tree (see runtimeLibDir in referee.cpp).
+    install             : true,
 )
 
 # rdb helper CLI

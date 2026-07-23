@@ -64,6 +64,10 @@ struct PrinterImpl
              , ExprConstNumber
              , ExprConstString
              , ExprIndx
+             , ExprSlice
+             , ExprCall
+             , ExprCount
+             , ExprBinder
              , ExprChoice
              , ExprAt
              , Time
@@ -108,6 +112,10 @@ struct PrinterImpl
     void    visit(ExprConstNumber*      expr) override;
     void    visit(ExprConstString*      expr) override;
     void    visit(ExprIndx*             expr) override;
+    void    visit(ExprSlice*            expr) override;
+    void    visit(ExprCall*             expr) override;
+    void    visit(ExprCount*            expr) override;
+    void    visit(ExprBinder*           expr) override;
     void    visit(ExprChoice*           expr) override;
     void    visit(ExprContext*          expr) override;
     void    visit(ExprData*             expr) override;
@@ -239,6 +247,47 @@ void    PrinterImpl::visit(ExprIndx*            expr)
     os << "[";
     expr->rhs->accept(*this);
     os << "]";
+}
+
+//  The four nodes added after this printer was written rendered as `???`,
+//  which leaked into --explain row labels wherever a subexpression contained
+//  a slice, a call, or a runtime quantifier.
+void    PrinterImpl::visit(ExprSlice*           expr)
+{
+    expr->arg->accept(*this);
+    os << "[";
+    expr->lo->accept(*this);
+    os << ":";
+    expr->hi->accept(*this);
+    os << "]";
+}
+
+void    PrinterImpl::visit(ExprCall*            expr)
+{
+    os << expr->name << "(";
+    for (std::size_t i = 0; i < expr->args.size(); i++)
+    {
+        if (i) os << ", ";
+        expr->args[i]->accept(*this);
+    }
+    os << ")";
+}
+
+//  The desugared form of a quantifier over an unbounded array: how many
+//  elements of `arg` satisfy `body`. Printed in that spirit rather than as the
+//  surface syntax, which is no longer recoverable here.
+void    PrinterImpl::visit(ExprCount*           expr)
+{
+    os << "count(" << expr->binder->name << " in ";
+    expr->arg->accept(*this);
+    os << ": ";
+    expr->body->accept(*this);
+    os << ")";
+}
+
+void    PrinterImpl::visit(ExprBinder*          expr)
+{
+    os << expr->name;
 }
 
 void    PrinterImpl::visit(ExprChoice*          expr)
