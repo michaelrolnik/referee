@@ -25,6 +25,7 @@
 #include "referee.hpp"
 #include "core/factory.hpp"
 #include "core/json.hpp"
+#include "core/colormod.hpp"
 
 #include <fmt/format.h>
 
@@ -2095,6 +2096,40 @@ namespace
 //  equality stays a pointer compare. Runs before any requirement, in both the
 //  JIT setup (the module was compiled in-process, but the slots still start at
 //  their raw bytes) and the checker (a different process compiled them).
+//  Echo a block of verdict lines to `os`, colouring each line iff `os` is a
+//  terminal (colormod.hpp decides; a file, a pipe or a stringstream stays
+//  plain). The block is built plain and is also parsed elsewhere for the
+//  violates check, so colour is applied only here, at the edge: the leading
+//  name/position field -- a file reference -- yellow, the PASS/FAIL verdict
+//  green or red. A line carrying neither verdict passes through untouched.
+void    emitVerdicts(std::ostream& os, std::string const& block, char const* indent = "")
+{
+    Color::Modifier const   green (Color::FG_GREEN);
+    Color::Modifier const   red   (Color::FG_RED);
+    Color::Modifier const   yellow(Color::FG_YELLOW);
+    Color::Modifier const   reset (Color::FG_DEFAULT);
+
+    std::istringstream  lines(block);
+    std::string         line;
+    while (std::getline(lines, line))
+    {
+        auto    pass = line.find(" PASS");
+        auto    fail = line.find(" FAIL");
+        auto    at   = pass != std::string::npos ? pass : fail;
+
+        if (at == std::string::npos)
+        {
+            os << indent << line << "\n";
+            continue;
+        }
+
+        os << indent
+           << yellow << line.substr(0, at) << reset
+           << (pass != std::string::npos ? green : red) << line.substr(at, 5) << reset
+           << line.substr(at + 5) << "\n";
+    }
+}
+
 void    internModuleStrings(referee_module_v1 const* m)
 {
     for (std::uint64_t i = 0; i < m->stringCount; i++)
@@ -3454,7 +3489,7 @@ bool    Referee::executeChecker(std::string const&          soPath,
         }
 
         if (static_cast<int>(detail) >= static_cast<int>(Detail::Requirements))
-            os << report.str();
+            emitVerdicts(os, report.str());
 
         std::vector<std::string>    missing;
         for (auto const& want : trace.violates)
@@ -4013,13 +4048,21 @@ bool    Referee::executeAll(std::istream& refStream, std::string refName,
     bool    lone = traces.size() == 1 && !traces.front().expectFailure;
     if (lone && detail == Detail::Requirements)
     {
-        os << outcomes.front().detail;
+        emitVerdicts(os, outcomes.front().detail);
         return everyTraceOk;
     }
 
     std::size_t width = 0;
     for (auto const& o : outcomes)
         width = std::max(width, o.path.size());
+
+    //  Terminal-only colour (see colormod.hpp): trace path yellow, verdict
+    //  green/red. Written to `os` around the fmt fields, never inside them,
+    //  so an escape never counts toward fmt's width and alignment holds.
+    Color::Modifier const   green (Color::FG_GREEN);
+    Color::Modifier const   red   (Color::FG_RED);
+    Color::Modifier const   yellow(Color::FG_YELLOW);
+    Color::Modifier const   reset (Color::FG_DEFAULT);
 
     unsigned    good = 0, bad = 0, surprises = 0;
     for (auto const& o : outcomes)
@@ -4033,10 +4076,13 @@ bool    Referee::executeAll(std::istream& refStream, std::string refName,
         //  At Summary only misbehaviour is worth a line; the closing tally
         //  covers the rest.
         if (atLeast(Detail::Traces) || !o.ok())
-            os << fmt::format("{:<{}}  expected {:<7}  {:<4}  {}\n",
-                              o.path, width,
-                              o.expectFailure ? "failure" : "success",
-                              observed, verdict);
+        {
+            os << yellow << fmt::format("{:<{}}", o.path, width) << reset
+               << fmt::format("  expected {:<7}  ",
+                              o.expectFailure ? "failure" : "success")
+               << (o.allPass ? green : red) << fmt::format("{:<4}", observed) << reset
+               << "  " << verdict << "\n";
+        }
 
         //  The full table when asked for. Otherwise, only what a reader can
         //  act on: the violated requirements of a trace that was supposed to
@@ -4052,11 +4098,13 @@ bool    Referee::executeAll(std::istream& refStream, std::string refName,
         {
             std::istringstream  lines(o.detail);
             std::string         line;
+            std::ostringstream  keep;
             while (std::getline(lines, line))
             {
                 if (wantAll || line.find("FAIL") != std::string::npos)
-                    os << "    " << line << "\n";
+                    keep << line << "\n";
             }
+            emitVerdicts(os, keep.str(), "    ");
         }
 
         if (o.ok())                     good++;
