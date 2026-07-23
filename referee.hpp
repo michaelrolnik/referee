@@ -151,6 +151,27 @@ public:
                              std::vector<std::string> const& includePaths,
                              unsigned line, unsigned character);
 
+    /// One entry in the document outline. `kind` is an LSP SymbolKind (Variable
+    /// for `data`, Constant for `conf`, Function for `func`, Struct/Enum/Class for
+    /// `type`, Field / EnumMember for a type's members). The name span is
+    /// [line, startCol)–endCol; the full range runs to (endLine, endChar).
+    struct Symbol
+    {
+        std::string          name;
+        std::string          detail;     // e.g. the rendered type; may be empty
+        int                  kind = 0;
+        unsigned             line = 0, startCol = 0, endCol = 0;   // the name (selection)
+        unsigned             endLine = 0, endChar = 0;             // end of the full range
+        std::vector<Symbol>  children;
+    };
+
+    /// The document outline: every top-level declaration in source order, each
+    /// struct/enum carrying its fields/cases as children. Positions come from the
+    /// source; kinds and members from the parsed AST when the document parses
+    /// (top-level names still list without it). Same-document. Never throws.
+    static std::vector<Symbol> symbols(std::istream& is, std::string name,
+                                       std::vector<std::string> const& includePaths);
+
     /// Compile `refPath` and emit a native object file to `outPath`, ready to
     /// be linked into an ahead-of-time checker. The object exports one symbol,
     /// `referee_module` (see `runtime/referee_checker.h`), and carries the

@@ -851,6 +851,213 @@ Referee::Definition Referee::define(
     return none;
 }
 
+// ── Document-outline helpers ─────────────────────────────────────────────────
+namespace
+{
+
+struct DeclHead
+{
+    std::string keyword;
+    std::string name;
+    std::size_t nameCol = 0;
+};
+
+//  If `line` opens a top-level declaration, return its keyword + name + column.
+std::optional<DeclHead> parseDeclHead(std::string const& line)
+{
+    std::size_t i = 0;
+    while (i < line.size() && std::isspace(static_cast<unsigned char>(line[i]))) ++i;
+
+    for (char const* k : {"data", "type", "conf", "func"})
+    {
+        std::string keyword(k);
+        if (line.compare(i, keyword.size(), keyword) != 0) continue;
+
+        std::size_t j = i + keyword.size();
+        if (j >= line.size() || !std::isspace(static_cast<unsigned char>(line[j]))) continue;
+        while (j < line.size() && std::isspace(static_cast<unsigned char>(line[j]))) ++j;
+        if (j >= line.size()) continue;
+        if (!(std::isalpha(static_cast<unsigned char>(line[j])) || line[j] == '_')) continue;
+
+        std::size_t s = j;
+        while (j < line.size() && isWordChar(line[j])) ++j;
+        return DeclHead{keyword, line.substr(s, j - s), s};
+    }
+    return std::nullopt;
+}
+
+//  First whole-word occurrence of `word` at or after (startRow, startCol),
+//  stopping when a following line opens another top-level declaration.
+std::optional<std::pair<unsigned, std::size_t>> findWordAfter(
+    std::vector<std::string> const& lines, unsigned startRow, std::size_t startCol, std::string const& word)
+{
+    for (std::size_t rr = startRow; rr < lines.size(); ++rr)
+    {
+        if (rr > startRow && startsDecl(lines[rr]))
+            break;
+        std::size_t from = (rr == startRow) ? startCol : 0;
+        for (std::size_t i = from; i < lines[rr].size(); ++i)
+            if (wordAt(lines[rr], i, word))
+                return std::make_pair(static_cast<unsigned>(rr), i);
+    }
+    return std::nullopt;
+}
+
+} // namespace
+
+// ── Language-server document symbols: the outline of a specification. ─────────
+std::vector<Referee::Symbol> Referee::symbols(
+    std::istream& is, std::string name, std::vector<std::string> const& includePaths)
+{
+    std::vector<Symbol> out;
+
+    std::string text((std::istreambuf_iterator<char>(is)), std::istreambuf_iterator<char>());
+    std::vector<std::string>    lines;
+    {
+        std::string cur;
+        for (char c : text)
+        {
+            if      (c == '\n') { lines.push_back(cur); cur.clear(); }
+            else if (c != '\r') { cur.push_back(c); }
+        }
+        lines.push_back(cur);
+    }
+
+    //  Best-effort parse: the outline still lists top-level names without it, but
+    //  a clean parse adds member children, type kinds, and rendered detail. The
+    //  arena scope must outlive every use of `module` below, so keep it here.
+    std::istringstream          pis(text);
+    antlr4::ANTLRInputStream    input(pis);
+    referee::refereeLexer       lexer(&input);
+    antlr4::CommonTokenStream   tokens(&lexer);
+    referee::refereeParser      parser(&tokens);
+    ParseErrors                 errors;
+    errors.attach(lexer, parser);
+
+    static std::atomic<unsigned>    s_uniq{0};
+    auto    uniqName = name + "#symbols:" + std::to_string(s_uniq.fetch_add(1));
+    auto    astOwner = std::make_unique<Antlr2AST>(uniqName, name, includePaths, Sizes{}, /*allowUnsized*/ true);
+    Arena::Scope    arenaScope(astOwner->arena);
+
+    auto*       tree   = parser.program();
+    ::Module*   module = nullptr;
+    try         { module = std::any_cast<::Module*>(astOwner->visitProgram(tree)); }
+    catch (...) { module = nullptr; }
+
+    std::map<Type*, std::string>    named;
+    if (module)
+        for (auto const& tn : module->getTypeNames())
+        {
+            Type* tt = nullptr;
+            try { tt = module->getType(tn); } catch (...) { tt = nullptr; }
+            if (tt) named[tt] = tn;
+        }
+
+    for (std::size_t r = 0; r < lines.size(); ++r)
+    {
+        auto head = parseDeclHead(lines[r]);
+        if (!head)
+            continue;
+
+        Symbol  sym;
+        sym.name     = head->name;
+        sym.line     = static_cast<unsigned>(r);
+        sym.startCol = static_cast<unsigned>(head->nameCol);
+        sym.endCol   = static_cast<unsigned>(head->nameCol + head->name.size());
+        sym.endLine  = static_cast<unsigned>(r);
+        sym.endChar  = static_cast<unsigned>(lines[r].size());
+
+        if (head->keyword == "data")
+        {
+            sym.kind = 13;                          // Variable
+            if (module)
+            {
+                Type* t = nullptr;
+                try { t = module->getProp(head->name); } catch (...) { t = nullptr; }
+                if (t)
+                {
+                    sym.detail = renderType(t, named, false);
+                    bool computed = false;
+                    try { computed = module->getPropExpr(head->name) != nullptr; } catch (...) {}
+                    if (computed) sym.detail += " (computed)";
+                }
+            }
+        }
+        else if (head->keyword == "conf")
+        {
+            sym.kind = 14;                          // Constant
+            if (module)
+            {
+                Type* t = nullptr;
+                try { t = module->getConf(head->name); } catch (...) { t = nullptr; }
+                if (t) sym.detail = renderType(t, named, false);
+            }
+        }
+        else if (head->keyword == "func")
+        {
+            sym.kind = 12;                          // Function
+        }
+        else                                        // type
+        {
+            sym.kind = 5;                           // Class (a plain type alias)
+            Type* t = nullptr;
+            if (module)
+                try { t = module->getType(head->name); } catch (...) { t = nullptr; }
+
+            std::vector<std::pair<std::string, int>>    members;    // name, SymbolKind
+            if (auto* st = dynamic_cast<TypeStruct*>(t))
+            {
+                sym.kind = 23;                      // Struct
+                sym.detail = "struct";
+                for (auto const& m : st->members) members.emplace_back(m.name, 8 /*Field*/);
+            }
+            else if (auto* en = dynamic_cast<TypeEnum*>(t))
+            {
+                sym.kind = 10;                      // Enum
+                sym.detail = "enum";
+                for (auto const& c : en->items)   members.emplace_back(c, 22 /*EnumMember*/);
+            }
+            else if (t)
+            {
+                sym.detail = renderType(t, named, true);
+            }
+            else if (lines[r].find("struct") != std::string::npos) sym.kind = 23;   // no parse: peek
+            else if (lines[r].find("enum")   != std::string::npos) sym.kind = 10;
+
+            //  Locate each member inside the type's declaration body.
+            unsigned    curRow = static_cast<unsigned>(r);
+            std::size_t curCol = sym.endCol;
+            for (auto const& [mname, mkind] : members)
+            {
+                auto pos = findWordAfter(lines, curRow, curCol, mname);
+                if (!pos) continue;
+
+                Symbol  child;
+                child.name     = mname;
+                child.kind     = mkind;
+                child.line     = pos->first;
+                child.startCol = static_cast<unsigned>(pos->second);
+                child.endCol   = static_cast<unsigned>(pos->second + mname.size());
+                child.endLine  = child.line;
+                child.endChar  = child.endCol;
+                sym.children.push_back(child);
+
+                curRow = pos->first;
+                curCol = pos->second + mname.size();
+            }
+            if (!sym.children.empty())
+            {
+                sym.endLine = sym.children.back().line;
+                sym.endChar = std::max(sym.children.back().endCol, sym.endCol);
+            }
+        }
+
+        out.push_back(std::move(sym));
+    }
+
+    return out;
+}
+
 // ── Schema lifetime helpers (out-of-line for the same forward-decl reasons
 //    as Compiled). ────────────────────────────────────────────────────────────
 Referee::Schema::Schema()                                       = default;

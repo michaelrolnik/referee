@@ -221,6 +221,52 @@ void handleDefinition(const llvm::json::Value& id, llvm::json::Object* params)
         }}});
 }
 
+// ── Document symbols: the outline (declarations, with members nested). ────────
+llvm::json::Value symbolToJson(Referee::Symbol const& s)
+{
+    llvm::json::Array children;
+    for (auto const& c : s.children)
+        children.push_back(symbolToJson(c));
+
+    llvm::json::Object o{
+        {"name", s.name},
+        {"kind", s.kind},
+        {"range", llvm::json::Object{
+            {"start", llvm::json::Object{{"line", s.line},    {"character", s.startCol}}},
+            {"end",   llvm::json::Object{{"line", s.endLine}, {"character", s.endChar}}},
+        }},
+        {"selectionRange", llvm::json::Object{
+            {"start", llvm::json::Object{{"line", s.line}, {"character", s.startCol}}},
+            {"end",   llvm::json::Object{{"line", s.line}, {"character", s.endCol}}},
+        }},
+        {"children", std::move(children)},
+    };
+    if (!s.detail.empty())
+        o["detail"] = s.detail;
+    return o;
+}
+
+void handleDocumentSymbol(const llvm::json::Value& id, llvm::json::Object* params)
+{
+    llvm::json::Array out;
+    if (params)
+        if (auto* doc = params->getObject("textDocument"))
+        {
+            std::string uri = doc->getString("uri").value_or("").str();
+            auto it = g_docs.find(uri);
+            if (it != g_docs.end())
+            {
+                std::vector<Referee::Symbol> syms;
+                try   { std::istringstream is(it->second);
+                        syms = Referee::symbols(is, uriToPath(uri), /*includePaths*/ {}); }
+                catch (...) { /* never let the outline crash the server */ }
+                for (auto const& s : syms)
+                    out.push_back(symbolToJson(s));
+            }
+        }
+    reply(id, std::move(out));
+}
+
 } // namespace
 
 int main()
@@ -248,6 +294,7 @@ int main()
                     }},
                     {"hoverProvider", true},
                     {"definitionProvider", true},
+                    {"documentSymbolProvider", true},
                 }},
                 {"serverInfo", llvm::json::Object{{"name", "referee-lsp"}, {"version", "0.2.0"}}},
             });
@@ -298,6 +345,10 @@ int main()
         else if (method == "textDocument/definition")
         {
             handleDefinition(*id, msg->getObject("params"));
+        }
+        else if (method == "textDocument/documentSymbol")
+        {
+            handleDocumentSymbol(*id, msg->getObject("params"));
         }
         else if (method == "textDocument/didClose")
         {

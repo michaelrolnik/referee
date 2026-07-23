@@ -855,3 +855,78 @@ TEST(Definition, NotFoundOffToken)
     unsigned    col = static_cast<unsigned>(L[1].find('>'));
     EXPECT_FALSE(defineAt(L, 1, col, "gotonone").found);
 }
+
+// ── Document symbols (outline) ───────────────────────────────────────────────
+
+namespace
+{
+
+std::string const   symFixture =
+    "type SymPoint : struct { spx : integer; spy : integer; };\n"
+    "type SymMode : enum { SA, SB };\n"
+    "data sym_pt : SymPoint;\n"
+    "data sym_avg = sym_pt.spx + 1;\n"
+    "conf sym_lim : number;\n"
+    "func sym_area : (SymPoint) -> number;\n"
+    "G(sym_pt.spx < sym_lim);\n";
+
+std::vector<Referee::Symbol>    symbolsOf(std::string const& src, std::string const& tag)
+{
+    std::istringstream  is(src);
+    return Referee::symbols(is, "<" + tag + ">", {});
+}
+
+Referee::Symbol const*  bySym(std::vector<Referee::Symbol> const& v, std::string const& n)
+{
+    for (auto const& s : v) if (s.name == n) return &s;
+    return nullptr;
+}
+
+} // namespace
+
+// Every top-level declaration is listed, in source order, with its LSP kind.
+TEST(Symbols, ListsDeclarationsWithKinds)
+{
+    auto    syms = symbolsOf(symFixture, "symkinds");
+    ASSERT_EQ(syms.size(), 6u);
+    EXPECT_EQ(syms[0].name, "SymPoint"); EXPECT_EQ(syms[0].kind, 23);   // Struct
+    EXPECT_EQ(syms[1].name, "SymMode");  EXPECT_EQ(syms[1].kind, 10);   // Enum
+    EXPECT_EQ(syms[2].name, "sym_pt");   EXPECT_EQ(syms[2].kind, 13);   // Variable
+    EXPECT_EQ(syms[3].name, "sym_avg");  EXPECT_EQ(syms[3].kind, 13);
+    EXPECT_EQ(syms[4].name, "sym_lim");  EXPECT_EQ(syms[4].kind, 14);   // Constant
+    EXPECT_EQ(syms[5].name, "sym_area"); EXPECT_EQ(syms[5].kind, 12);   // Function
+}
+
+// A struct's fields nest under it.
+TEST(Symbols, StructFieldsAsChildren)
+{
+    auto        syms = symbolsOf(symFixture, "symstruct");
+    auto const* p    = bySym(syms, "SymPoint");
+    ASSERT_TRUE(p);
+    ASSERT_EQ(p->children.size(), 2u);
+    EXPECT_EQ(p->children[0].name, "spx"); EXPECT_EQ(p->children[0].kind, 8);   // Field
+    EXPECT_EQ(p->children[1].name, "spy");
+}
+
+// An enum's cases nest under it.
+TEST(Symbols, EnumCasesAsChildren)
+{
+    auto        syms = symbolsOf(symFixture, "symenum");
+    auto const* m    = bySym(syms, "SymMode");
+    ASSERT_TRUE(m);
+    ASSERT_EQ(m->children.size(), 2u);
+    EXPECT_EQ(m->children[0].name, "SA"); EXPECT_EQ(m->children[0].kind, 22);   // EnumMember
+    EXPECT_EQ(m->children[1].name, "SB");
+}
+
+// Signals carry their type as detail; a computed one is marked.
+TEST(Symbols, DetailShowsTypeAndComputed)
+{
+    auto        syms = symbolsOf(symFixture, "symdetail");
+    auto const* pt   = bySym(syms, "sym_pt");
+    auto const* avg  = bySym(syms, "sym_avg");
+    ASSERT_TRUE(pt);
+    ASSERT_TRUE(avg);
+    EXPECT_EQ(pt->detail, "SymPoint");
+    EXPECT_TRUE(contains(avg->detail, "computed")) << avg->detail;
+}
