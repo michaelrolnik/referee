@@ -28,7 +28,6 @@
 #include "visitors/printer.hpp"     //  TODO: remove
 #include "visitors/rewrite.hpp"     //  TODO: remove
 #include "visitors/canonic.hpp"     //  TODO: remove
-#include "colormod.hpp"             //  TODO: remove
 #include "module.hpp"
 #include "utils.hpp"
 #include "strings.hpp"
@@ -1173,14 +1172,6 @@ std::any Antlr2AST::visitStatement(     referee::refereeParser::StatementContext
         TypeCalc::make(module, expr);
 
         module->addExpr(expr, reqName);
-/*
-        std::cout << Color::Modifier(Color::FG_GREEN);
-        Printer::output(std::cout, expr) << std::endl;
-        std::cout << Color::Modifier(Color::FG_DEFAULT);
-
-        auto    temp    = Rewrite::make(Canonic::make(expr));
-        Printer::output(std::cout, temp) << std::endl;
-*/
     }
 
     //  declaraion covers declImport too, and the base visitor walks into
@@ -1197,11 +1188,6 @@ std::any Antlr2AST::visitStatement(     referee::refereeParser::StatementContext
         TypeCalc::make(module, spec);
 
         module->addSpec(spec, reqName);
-#if 0      
-        std::cout << Color::Modifier(Color::FG_GREEN);
-        Printer::output(std::cout, spec) << std::endl;
-        std::cout << Color::Modifier(Color::FG_DEFAULT);
-#endif
     }
 
     return nullptr;
