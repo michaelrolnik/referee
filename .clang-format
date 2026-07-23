@@ -1,4 +1,20 @@
-﻿---
+# Tuned to match the style already in the tree as closely as clang-format can.
+#
+# What clang-format CANNOT reproduce, so running it will still change these --
+# it is a limitation of the tool, not a style decision:
+#   - aligned return types: `void    Module::addType(...)` collapses to one
+#     space. clang aligns only *consecutive* declarations, and function
+#     definitions are separated by their bodies, so nothing keeps the columns.
+#   - hand-aligned lone assignments: `m_name2data[name]   = type;` -> one space.
+#   - leading-comma template lists (`Visitor< A , B , C >` written one-per-line
+#     with the comma leading) become trailing-comma.
+# These are pervasive here (~3000 lines), which is why the tree is NOT bulk
+# formatted: run clang-format on new code, not over the whole codebase.
+#
+# The three keys that make this fit the existing style are near the bottom:
+# SortIncludes / IncludeBlocks (leave include order alone) and ReflowComments
+# (leave prose alone). InsertBraces adds the { } every if/while/for now carries.
+---
 AccessModifierOffset: '-2'
 AlignAfterOpenBracket: Align
 AlignConsecutiveMacros: 'true'
@@ -30,16 +46,18 @@ CompactNamespaces: 'true'
 ConstructorInitializerAllOnOneLineOrOnePerLine: 'true'
 Cpp11BracedListStyle: 'true'
 FixNamespaceComments: 'true'
-IncludeBlocks: Regroup
 IndentPPDirectives: BeforeHash
 IndentWidth: '4'
 IndentWrappedFunctionNames: 'true'
+InsertBraces: 'true'
 KeepEmptyLinesAtTheStartOfBlocks: 'false'
 Language: Cpp
 MaxEmptyLinesToKeep: '1'
 NamespaceIndentation: None
 PointerAlignment: Left
-SortIncludes: 'true'
+ReflowComments: 'false'
+SortIncludes: Never
+IncludeBlocks: Preserve
 SpaceAfterCStyleCast: 'false'
 SpaceAfterLogicalNot: 'false'
 SpaceAfterTemplateKeyword: 'false'
@@ -57,5 +75,4 @@ SpacesInParentheses: 'false'
 SpacesInSquareBrackets: 'false'
 TabWidth: '4'
 UseTab: Never
-
 ...
