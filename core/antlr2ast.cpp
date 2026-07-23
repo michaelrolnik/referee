@@ -47,6 +47,7 @@ void    ParseErrors::syntaxError(antlr4::Recognizer*    /*recognizer*/,
 {
     m_messages.push_back(
         std::to_string(line) + ":" + std::to_string(charPositionInLine) + ": " + msg);
+    m_items.push_back({static_cast<unsigned>(line), static_cast<unsigned>(charPositionInLine), msg});
 }
 
 std::string ParseErrors::summary(std::string const& name) const

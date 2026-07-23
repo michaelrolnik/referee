@@ -248,50 +248,6 @@ Type*   decodeType(uint8_t const*& cur, uint8_t const* end,
     return raw;
 }
 
-void    encodeSchema(std::vector<uint8_t>&             out,
-                     std::vector<PropDecl> const&      props,
-                     std::vector<ConfDecl> const&      confs)
-{
-    appendBytes<uint32_t>(out, static_cast<uint32_t>(props.size()));
-    for (auto const& p : props)
-    {
-        appendString(out, p.name);
-        encodeType(out, p.type);
-    }
-    appendBytes<uint32_t>(out, static_cast<uint32_t>(confs.size()));
-    for (auto const& c : confs)
-    {
-        appendString(out, c.name);
-        encodeType(out, c.type);
-    }
-}
-
-void    decodeSchema(uint8_t const*&                         cur,
-                     uint8_t const*                          end,
-                     std::vector<PropDecl>&                  props,
-                     std::vector<ConfDecl>&                  confs,
-                     std::vector<std::unique_ptr<Type>>&     sink)
-{
-    auto    np = readBytes<uint32_t>(cur, end);
-    props.reserve(np);
-    for (uint32_t i = 0; i < np; i++)
-    {
-        PropDecl    d;
-        d.name = readString(cur, end);
-        d.type = decodeType(cur, end, sink);
-        props.push_back(std::move(d));
-    }
-    auto    nc = readBytes<uint32_t>(cur, end);
-    confs.reserve(nc);
-    for (uint32_t i = 0; i < nc; i++)
-    {
-        ConfDecl    d;
-        d.name = readString(cur, end);
-        d.type = decodeType(cur, end, sink);
-        confs.push_back(std::move(d));
-    }
-}
-
 class BlobWalker
     : public Visitor<TypeBoolean, TypeByte, TypeInteger, TypeNumber, TypeString,
                      TypeEnum, TypeStruct, TypeArray>
@@ -486,6 +442,50 @@ private:
 };
 
 } // namespace
+
+void    encodeSchema(std::vector<uint8_t>&             out,
+                     std::vector<PropDecl> const&      props,
+                     std::vector<ConfDecl> const&      confs)
+{
+    appendBytes<uint32_t>(out, static_cast<uint32_t>(props.size()));
+    for (auto const& p : props)
+    {
+        appendString(out, p.name);
+        encodeType(out, p.type);
+    }
+    appendBytes<uint32_t>(out, static_cast<uint32_t>(confs.size()));
+    for (auto const& c : confs)
+    {
+        appendString(out, c.name);
+        encodeType(out, c.type);
+    }
+}
+
+void    decodeSchema(uint8_t const*&                         cur,
+                     uint8_t const*                          end,
+                     std::vector<PropDecl>&                  props,
+                     std::vector<ConfDecl>&                  confs,
+                     std::vector<std::unique_ptr<Type>>&     sink)
+{
+    auto    np = readBytes<uint32_t>(cur, end);
+    props.reserve(np);
+    for (uint32_t i = 0; i < np; i++)
+    {
+        PropDecl    d;
+        d.name = readString(cur, end);
+        d.type = decodeType(cur, end, sink);
+        props.push_back(std::move(d));
+    }
+    auto    nc = readBytes<uint32_t>(cur, end);
+    confs.reserve(nc);
+    for (uint32_t i = 0; i < nc; i++)
+    {
+        ConfDecl    d;
+        d.name = readString(cur, end);
+        d.type = decodeType(cur, end, sink);
+        confs.push_back(std::move(d));
+    }
+}
 
 // ============================================================================
 //  Writer

@@ -68,8 +68,15 @@ public:
     bool                        any() const     {return !m_messages.empty();}
     std::string                 summary(std::string const& name) const;
 
+    //  Structured form for consumers that need positions rather than a printed
+    //  summary (the language server maps these to LSP diagnostics). `line` is
+    //  1-based (ANTLR's convention), `col` is 0-based.
+    struct Item { unsigned line; unsigned col; std::string msg; };
+    std::vector<Item> const&    items() const   {return m_items;}
+
 private:
     std::vector<std::string>    m_messages;
+    std::vector<Item>           m_items;
 };
 
 class Antlr2AST

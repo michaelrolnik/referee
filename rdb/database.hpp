@@ -170,6 +170,23 @@ private:
     std::unique_ptr<Impl>   m_impl;
 };
 
+/// Encode a schema (the `data` / `conf` types) into the same tagged-binary
+/// form a `.rdb` embeds, so an ahead-of-time checker can carry it and reject a
+/// trace it was not built for. Decodable by the same `decodeSchema` the Reader
+/// uses.
+void    encodeSchema(std::vector<uint8_t>&        out,
+                     std::vector<PropDecl> const& props,
+                     std::vector<ConfDecl> const& confs);
+
+/// Decode a schema produced by `encodeSchema` (or embedded in a `.rdb`). The
+/// `Type*`s it builds are owned by `sink` -- keep it alive as long as they are
+/// used.
+void    decodeSchema(uint8_t const*&                      cur,
+                     uint8_t const*                       end,
+                     std::vector<PropDecl>&               props,
+                     std::vector<ConfDecl>&               confs,
+                     std::vector<std::unique_ptr<Type>>&  sink);
+
 /// Pretty-print the contents of `path` to `os`, decoding each prop/conf blob
 /// using the schema embedded in the file.
 void    dump(std::string const& path, std::ostream& os);

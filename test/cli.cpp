@@ -310,6 +310,66 @@ TEST(Cli, BuildEmitsAnObjectExportingRefereeModule)
     std::remove(obj.c_str());
 }
 
+// `build --shared` links a .so, and `execute --checker` drives it with no
+// .ref and no compilation. The verdicts must match `execute`, including string
+// comparison -- which is a pointer compare over interned strings, so the
+// checker re-interns its literals at load (they were interned in a different
+// process at build time). This exercises ==, !=, and the schema check.
+TEST(Cli, CheckerRunsAgainstRdbAndMatchesExecute)
+{
+    auto    dir = tmpPath("chk", "");
+    auto    ref = dir + ".ref";
+    auto    okc = dir + ".ok.csv";
+    auto    bad = dir + ".bad.csv";
+    auto    so  = dir + ".so";
+    auto    okr = dir + ".ok.rdb";
+    auto    badr= dir + ".bad.rdb";
+
+    {
+        std::ofstream f(ref);
+        f << "data n : integer;\n"
+             "data s : string;\n"
+             "@pos\nG(n >= 0);\n"
+             "@is_alpha\nG(s == \"alpha\");\n"
+             "@not_beta\nG(s != \"beta\");\n";
+    }
+    { std::ofstream f(okc); f << "__time__,n,s\n0,1,alpha\n1000,2,alpha\n"; }
+    { std::ofstream f(bad); f << "__time__,n,s\n0,1,gamma\n1000,2,alpha\n"; }
+
+    ASSERT_EQ(run(quote(REFEREE_BIN) + " build --shared " + quote(ref) + " -o " + quote(so)).status, 0);
+    ASSERT_EQ(run(quote(RDB_BIN) + " build " + quote(ref) + " " + quote(okc) + " -o " + quote(okr)).status, 0);
+    ASSERT_EQ(run(quote(RDB_BIN) + " build " + quote(ref) + " " + quote(bad) + " -o " + quote(badr)).status, 0);
+
+    //  All pass on the good trace.
+    auto    ok = run(quote(REFEREE_BIN) + " execute --checker " + quote(so) + " " + quote(okr));
+    EXPECT_EQ(ok.status, 0) << ok.output;
+    EXPECT_NE(ok.output.find("is_alpha"), std::string::npos) << ok.output;
+    EXPECT_EQ(ok.output.find("FAIL"), std::string::npos) << ok.output;
+
+    //  The string requirement fails on the bad trace, and the checker's output
+    //  matches `execute`'s verdicts (order aside).
+    auto    chk = run(quote(REFEREE_BIN) + " execute --checker " + quote(so) + " " + quote(badr));
+    EXPECT_NE(chk.status, 0) << chk.output;
+    EXPECT_NE(chk.output.find("is_alpha"), std::string::npos);
+    EXPECT_NE(chk.output.find("FAIL"), std::string::npos) << chk.output;
+
+    auto    exe = run(quote(REFEREE_BIN) + " execute " + quote(ref) + " " + quote(badr));
+    //  Same verdict for the string requirement in both.
+    EXPECT_NE(exe.output.find("is_alpha"), std::string::npos);
+
+    //  A checker refuses a trace whose schema differs from the one it carries.
+    auto    other = dir + ".other.ref";
+    auto    otherSo = dir + ".other.so";
+    { std::ofstream f(other); f << "data x : number;\nG(x >= 0);\n"; }
+    ASSERT_EQ(run(quote(REFEREE_BIN) + " build --shared " + quote(other) + " -o " + quote(otherSo)).status, 0);
+    auto    mism = run(quote(REFEREE_BIN) + " execute --checker " + quote(otherSo) + " " + quote(okr));
+    EXPECT_NE(mism.status, 0);
+    EXPECT_NE(mism.output.find("different schema"), std::string::npos) << mism.output;
+
+    for (auto* p : {&ref, &okc, &bad, &so, &okr, &badr, &other, &otherSo, &dir})
+        std::remove(p->c_str());
+}
+
 // A specification with an unbounded array needs no trace to build -- `T[]` is a
 // runtime descriptor, so its extent is not resolved at compile time. This is
 // the doc's open question #3, which ragged arrays settled.

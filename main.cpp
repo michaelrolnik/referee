@@ -192,9 +192,12 @@ int main(int argc, char * argv[])
     build->add_option("reffile", buildRef, "REF specification file")
         ->required()
         ->check(CLI::ExistingFile);
-    build->add_option("-o,--output", buildOut, "Output object (.o) path")->required();
+    build->add_option("-o,--output", buildOut, "Output path (.o, or .so with --shared)")->required();
     build->add_option("--target", buildTriple,
         "Target triple to cross-emit for (default: the host)");
+    bool        buildShared = false;
+    build->add_flag("--shared", buildShared,
+        "Link a shared object instead of emitting a plain object (needs a C compiler)");
     addIncludeOption(build);
 
     // execute subcommand
@@ -207,7 +210,14 @@ int main(int argc, char * argv[])
         "Execute compiled REF specs against a CSV / YAML / RDB trace");
     execute
         ->add_option("reffile", runRef, "REF specification file")
-        ->required()
+        ->check(CLI::ExistingFile);
+    //  Run a prebuilt checker instead of a .ref: no compilation, no LLVM. The
+    //  reffile positional then becomes optional -- one of the two is required,
+    //  checked below.
+    std::string runChecker;
+    execute
+        ->add_option("--checker", runChecker,
+            "Run an ahead-of-time checker .so (from `referee build --shared`) instead of a .ref")
         ->check(CLI::ExistingFile);
     // Traces given bare are expected to satisfy the specification, which is
     // what `referee execute spec.ref trace.csv` has always meant.
@@ -260,7 +270,10 @@ int main(int argc, char * argv[])
         }
         else if(app.got_subcommand("build"))
         {
-            Referee::emitObject(buildRef, buildOut, buildTriple, includePaths);
+            if (buildShared)
+                Referee::emitShared(buildRef, buildOut, buildTriple, includePaths);
+            else
+                Referee::emitObject(buildRef, buildOut, buildTriple, includePaths);
         }
         else if(app.got_subcommand("header"))
         {
@@ -287,6 +300,10 @@ int main(int argc, char * argv[])
             std::vector<Referee::Trace>     traces;
             if (!runSuite.empty())
                 traces = Referee::readSuite(runSuite);
+            //  In checker mode there is no reffile, so the first positional is
+            //  a trace rather than a specification.
+            if (!runChecker.empty() && !runRef.empty())
+                traces.push_back({runRef, false});
             for (auto const& p : runData)    traces.push_back({p, false});
             for (auto const& p : runSuccess) traces.push_back({p, false});
             for (auto const& p : runFailure) traces.push_back({p, true});
@@ -305,11 +322,25 @@ int main(int argc, char * argv[])
                            : (traces.size() == 1 ? Referee::Detail::Requirements
                                                  : Referee::Detail::Traces);
 
-            std::ifstream   refStream(runRef, std::ios_base::in);
-            bool            allPass = Referee::executeAll(
-                                refStream, runRef, traces, runConf,
-                                std::cout, detail, includePaths, libraryPaths, runExplain);
-            if (!allPass) return 1;
+            if (!runChecker.empty())
+            {
+                //  A prebuilt checker: drive its table, no .ref, no compile.
+                bool    allPass = Referee::executeChecker(runChecker, traces, std::cout, detail);
+                if (!allPass) return 1;
+            }
+            else if (runRef.empty())
+            {
+                std::cerr << "referee: give a reffile or --checker\n";
+                return 1;
+            }
+            else
+            {
+                std::ifstream   refStream(runRef, std::ios_base::in);
+                bool            allPass = Referee::executeAll(
+                                    refStream, runRef, traces, runConf,
+                                    std::cout, detail, includePaths, libraryPaths, runExplain);
+                if (!allPass) return 1;
+            }
         }
     }
     catch (const CLI::ParseError &e)

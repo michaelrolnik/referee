@@ -85,7 +85,8 @@ public:
     static Compiled compile(std::istream& is, std::string name,
                             llvm::DataLayout const* dataLayout = nullptr,
                             std::vector<std::string> const& includePaths = {},
-                            Sizes const& sizes = {});
+                            Sizes const& sizes = {},
+                            bool embedSchema = false);
 
     /// Compile `refPath` and emit a native object file to `outPath`, ready to
     /// be linked into an ahead-of-time checker. The object exports one symbol,
@@ -95,6 +96,15 @@ public:
     /// for. An unsized (`T[]`) array needs no trace: it is a runtime
     /// descriptor, so a specification compiles without one.
     static void     emitObject(std::string const& refPath,
+                               std::string const& outPath,
+                               std::string const& triple = {},
+                               std::vector<std::string> const& includePaths = {});
+
+    /// Emit a shared object: `emitObject` followed by a `cc -shared` link, so
+    /// the result is `dlopen`-able and exports `referee_module`. The embeddable
+    /// form -- a host loads it and drives the table, no LLVM on either side.
+    /// Needs a C compiler on the build machine (not the checking one).
+    static void     emitShared(std::string const& refPath,
                                std::string const& outPath,
                                std::string const& triple = {},
                                std::vector<std::string> const& includePaths = {});
@@ -224,6 +234,15 @@ public:
                                std::vector<std::string> const& includePaths = {},
                                std::vector<std::string> const& libraryPaths = {},
                                std::string const& explainPath = {});
+
+    /// Run an already-built checker `.so` against traces, reporting exactly as
+    /// `execute` does. Loads the object, checks each trace's schema against the
+    /// one the checker carries, and drives the requirement table -- no
+    /// compilation, no `.ref`. `.rdb` traces only for now.
+    static bool     executeChecker(std::string const& soPath,
+                                   std::vector<Trace> const& traces,
+                                   std::ostream& os,
+                                   Detail detail = Detail::Requirements);
 
     /// Compile REF source, JIT it, and evaluate every requirement against
     /// a packed `.rdb` trace whose state buffer is *already* the layout the

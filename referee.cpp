@@ -152,9 +152,11 @@ void lowerMinMaxIntrinsics(llvm::Module& M)
 } // namespace
 
 #include <memory>
+#include <cstdlib>
 #include <iomanip>
 
 #include "antlr2ast.hpp"
+#include "strings.hpp"
 #include "visitors/compile.hpp"
 #include "utils.hpp"
 
@@ -204,7 +206,8 @@ Referee::Compiled::~Compiled()                                      = default;
 Referee::Compiled   Referee::compile(std::istream& is, std::string name,
                                      llvm::DataLayout const* dataLayout,
                                      std::vector<std::string> const& includePaths,
-                                     Sizes const& sizes)
+                                     Sizes const& sizes,
+                                     bool embedSchema)
 {
     Compiled    out;
 
@@ -281,7 +284,24 @@ Referee::Compiled   Referee::compile(std::istream& is, std::string name,
         throw std::runtime_error(errors.summary(name));
     out.ast         = std::any_cast<::Module*>(out.astOwner->visitProgram(tree));
 
-    Compile::make(out.ctx.get(), out.mod.get(), out.ast);
+    //  For an ahead-of-time checker, embed the schema so the object can reject
+    //  a trace it was not built for. The trace-backed signals only -- a
+    //  computed prop is recomputed from the spec, so it is not part of the
+    //  data layout a trace has to match, exactly as it is left out of a .rdb.
+    std::vector<std::uint8_t>   schema;
+    if (embedSchema)
+    {
+        std::vector<referee::db::PropDecl>  props;
+        std::vector<referee::db::ConfDecl>  confs;
+        for (auto const& n : out.ast->getPropNames())
+            if (!out.ast->isExprData(n))
+                props.push_back({n, out.ast->getProp(n)});
+        for (auto const& n : out.ast->getConfNames())
+            confs.push_back({n, out.ast->getConf(n)});
+        referee::db::encodeSchema(schema, props, confs);
+    }
+
+    Compile::make(out.ctx.get(), out.mod.get(), out.ast, embedSchema ? &schema : nullptr);
 
     optimizeModuleO2(*out.mod);
 
@@ -712,6 +732,45 @@ JitWithSpecs    buildJitFromRef(std::istream& refStream, std::string const& refN
 
     return out;
 }
+
+//  The checker ABI, matching runtime/referee_checker.h. Declared here rather
+//  than included so referee stays independent of the runtime header's location.
+namespace
+{
+extern "C"
+{
+struct referee_requirement_v1
+{
+    char const* label;
+    bool      (*eval)(void const*, void const*, void const*);
+};
+struct referee_module_v1
+{
+    std::uint32_t                       version;
+    std::uint32_t                       count;
+    referee_requirement_v1 const*       requirements;
+    void                              (*prepare)(void*, void*, void const*);
+    std::uint8_t const*                 schema;
+    std::uint64_t                       schemaBytes;
+    char const***                       strings;    // each strings[i] is a slot's address
+    std::uint64_t                       stringCount;
+};
+}
+
+//  Re-intern the module's string literals through this process's `Strings`, so
+//  a literal and a trace string of equal content share one pointer and string
+//  equality stays a pointer compare. Runs before any requirement, in both the
+//  JIT setup (the module was compiled in-process, but the slots still start at
+//  their raw bytes) and the checker (a different process compiled them).
+void    internModuleStrings(referee_module_v1 const* m)
+{
+    for (std::uint64_t i = 0; i < m->stringCount; i++)
+    {
+        char const**    slot = m->strings[i];       // the literal's slot
+        *slot = Strings::instance()->getString(*slot);
+    }
+}
+} // namespace
 
 bool    runAllSpecs(llvm::orc::LLJIT& jit,
                     std::vector<std::string> const& funcNames,
@@ -1287,6 +1346,19 @@ bool    runOneTrace(JitWithSpecs&            js,
         }
     }
 
+    //  String literals are slots interned at run time, not baked pointers, so
+    //  the JIT must run the same fixup the checker does -- the module was
+    //  compiled in this process, but the slots still start at their raw bytes.
+    //  Looked up once; a spec with no literals has no `referee_module` string
+    //  table to walk, and the fixup is a no-op.
+    if (auto modSym = js.jit->lookup("referee_module"))
+    {
+        auto    get = modSym->toPtr<referee_module_v1 const* (*)()>();
+        internModuleStrings(get());
+    }
+    else
+        llvm::consumeError(modSym.takeError());
+
     auto prepSymOrErr = js.jit->lookup("__prepare__");
     if (!prepSymOrErr)
         throw std::runtime_error("JIT: failed to locate __prepare__ function");
@@ -1734,7 +1806,7 @@ void    Referee::emitObject(std::string const&               refPath,
         throw std::runtime_error("emit object: cannot open '" + refPath + "'");
 
     auto    dl       = tm->createDataLayout();
-    auto    compiled = compile(in, refPath, &dl, includePaths);
+    auto    compiled = compile(in, refPath, &dl, includePaths, {}, /*embedSchema*/ true);
     compiled.mod->setDataLayout(dl);
     compiled.mod->setTargetTriple(tripleStr);
 
@@ -1751,6 +1823,114 @@ void    Referee::emitObject(std::string const&               refPath,
 
     pm.run(*compiled.mod);
     os.flush();
+}
+
+void    Referee::emitShared(std::string const&               refPath,
+                            std::string const&               outPath,
+                            std::string const&               triple,
+                            std::vector<std::string> const&  includePaths)
+{
+    //  Emit the object to a temporary beside the output, then link it into a
+    //  shared object. The link needs a C compiler on the *build* machine; the
+    //  checking machine needs neither it nor LLVM. The object is
+    //  self-contained -- the table and the compiled requirements -- so the
+    //  link has nothing to resolve unless the spec declares external `func`s,
+    //  which stay undefined and bind at load time exactly as they do in the
+    //  JIT.
+    auto    objPath = outPath + ".o";
+    emitObject(refPath, objPath, triple, includePaths);
+
+    auto const* cc  = std::getenv("CC");
+    std::string cmd = std::string(cc && *cc ? cc : "cc")
+                    + " -shared -fPIC " + objPath + " -o " + outPath;
+
+    int     rc = std::system(cmd.c_str());
+    std::remove(objPath.c_str());
+
+    if (rc != 0)
+        throw std::runtime_error(
+            "emit shared: link failed (" + cmd + ") -- a C compiler is needed on the build machine");
+}
+
+bool    Referee::executeChecker(std::string const&          soPath,
+                                std::vector<Trace> const&   traces,
+                                std::ostream&               os,
+                                Detail                      detail)
+{
+    void*   handle = dlopen(soPath.c_str(), RTLD_NOW | RTLD_LOCAL);
+    if (handle == nullptr)
+        throw std::runtime_error("checker: cannot load '" + soPath + "': "
+                                 + (dlerror() ? dlerror() : "unknown error"));
+
+    auto    get = reinterpret_cast<referee_module_v1 const* (*)()>(dlsym(handle, "referee_module"));
+    if (get == nullptr)
+        throw std::runtime_error("checker: '" + soPath + "' has no referee_module -- not a checker built by `referee build`");
+
+    auto const* mod = get();
+    if (mod == nullptr || mod->version != 1)
+        throw std::runtime_error("checker: unsupported module version");
+
+    //  Re-intern the checker's string literals through this process, before
+    //  any requirement runs, so a literal and a trace string of equal content
+    //  share a pointer again.
+    internModuleStrings(mod);
+
+    //  The schema the checker was built against, decoded once. A trace whose
+    //  own schema differs is rejected rather than read into the wrong shape --
+    //  the same guarantee the .rdb execute path gives, with the checker's
+    //  embedded schema standing in for the .ref's declarations.
+    std::vector<referee::db::PropDecl>          checkerProps, checkerConfs;
+    std::vector<std::unique_ptr<Type>>          typeSink;
+    if (mod->schema != nullptr && mod->schemaBytes > 0)
+    {
+        auto const* cur = mod->schema;
+        auto const* end = mod->schema + mod->schemaBytes;
+        referee::db::decodeSchema(cur, end, checkerProps, checkerConfs, typeSink);
+    }
+
+    bool    everyTraceOk = true;
+
+    for (auto const& trace : traces)
+    {
+        //  `.rdb` only for now: it is already the state buffer, so no ingest
+        //  (and so no schema-derived column layout) is needed. A CSV would
+        //  have to be packed against the embedded schema first.
+        if (trace.path.size() < 4 || trace.path.substr(trace.path.size() - 4) != ".rdb")
+            throw std::runtime_error("checker: '" + trace.path + "' is not a .rdb -- the checker path takes packed traces only for now");
+
+        referee::db::Reader rdb(trace.path);
+
+        //  Structural schema check against what the checker was built for.
+        auto const& rp = rdb.props();
+        auto const& rc = rdb.confs();
+        bool    shapeOk = rp.size() == checkerProps.size() && rc.size() == checkerConfs.size();
+        for (std::size_t i = 0; shapeOk && i < rp.size(); i++)
+            shapeOk = rp[i].name == checkerProps[i].name && typesEqual(rp[i].type, checkerProps[i].type);
+        for (std::size_t i = 0; shapeOk && i < rc.size(); i++)
+            shapeOk = rc[i].name == checkerConfs[i].name && typesEqual(rc[i].type, checkerConfs[i].type);
+
+        if (!shapeOk)
+            throw std::runtime_error("checker: '" + trace.path + "' has a different schema than the checker was built for");
+
+        mod->prepare(const_cast<void*>(rdb.ptrFirst()), const_cast<void*>(rdb.ptrLast()), rdb.confPtr());
+
+        bool    allPass = true;
+        for (std::uint32_t i = 0; i < mod->count; i++)
+        {
+            bool    ok = mod->requirements[i].eval(rdb.ptrFirst(), rdb.ptrLast(), rdb.confPtr());
+            allPass &= ok;
+            if (static_cast<int>(detail) >= static_cast<int>(Detail::Requirements))
+                os << std::left << std::setw(40) << mod->requirements[i].label
+                   << (ok ? " PASS" : " FAIL") << "\n";
+        }
+
+        bool    ok = allPass != trace.expectFailure;
+        everyTraceOk &= ok;
+    }
+
+    //  Deliberately not dlclose(handle): the labels the report printed point
+    //  into the object's rodata, and on some libcs unmapping invalidates them.
+    return everyTraceOk;
 }
 
 void    Referee::emitHeader(std::string const& refPath,

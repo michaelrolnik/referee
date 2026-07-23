@@ -788,9 +788,26 @@ void    CompileExprImpl::visit(ExprConstNumber*  expr)
 
 void    CompileExprImpl::visit(ExprConstString*  expr)
 {
-    auto    value   = llvm::ConstantInt::getSigned(m_builder->getInt64Ty(), reinterpret_cast<int64_t>(Strings::instance()->getString(expr->value)));
+    //  A literal is interned like every other string, so equality stays a
+    //  pointer compare -- but interning has to happen where the code runs, not
+    //  where it was compiled. The old form baked
+    //  `Strings::instance()->getString(...)`, a host pointer valid only in the
+    //  compiling process; the JIT got away with it because it compiles and runs
+    //  in one process, an ahead-of-time object does not.
+    //
+    //  So the literal is a *slot*: a mutable global holding, initially, a
+    //  pointer to the bytes in the object's read-only data. Before any
+    //  requirement runs, `internModuleStrings` walks these slots, re-interns
+    //  each through the running process's `Strings`, and overwrites the slot
+    //  with the interned pointer. Every use then loads the slot, so a literal
+    //  and a trace string of equal content share one address again. The `.str.
+    //  slot` name is how the table of them is found (see `emitCheckerTable`).
+    auto    bytes = m_builder->CreateGlobalStringPtr(expr->value, ".str.data");
+    auto    slot  = new llvm::GlobalVariable(*m_module, m_builder->getPtrTy(),
+                        /*isConstant*/ false, llvm::GlobalValue::PrivateLinkage,
+                        llvm::cast<llvm::Constant>(bytes), ".str.slot");
 
-    m_value = m_builder->CreateIntToPtr(value, m_builder->getPtrTy(), expr->value);
+    m_value = m_builder->CreateLoad(m_builder->getPtrTy(), slot, false, expr->value);
 }
 
 void    CompileExprImpl::visit(ExprContext*      expr)
@@ -925,7 +942,14 @@ void    CompileExprImpl::compare(
     else if(lhsT == Factory<TypeString>::create()
         &&  rhsT == Factory<TypeString>::create())
     {
-        m_value = m_builder->CreateICmp(ipred, lhs, rhs);   //  TODO: check
+        //  By pointer, because strings are interned: equal content is one
+        //  address, so equality is a pointer compare. Both operands were
+        //  interned through the same `Strings` table -- the trace's strings by
+        //  the loader, a literal by the string-fixup pass that runs before any
+        //  requirement (see ExprConstString and `internModuleStrings`), which
+        //  is what re-establishes the shared address in a process that did not
+        //  compile the literals, i.e. an ahead-of-time checker.
+        m_value = m_builder->CreateICmp(ipred, lhs, rhs);
     }
     else if(lhsT == Factory<TypeBoolean>::create()
         &&  rhsT == Factory<TypeBoolean>::create())
@@ -3531,7 +3555,8 @@ llvm::Value*Compile::make(llvm::LLVMContext* context, llvm::Module* module, Expr
 //  and filled by the object-emission stage that has the schema bytes.
 static void     emitCheckerTable(llvm::LLVMContext* context, llvm::Module* module,
                                  std::vector<std::pair<std::string, llvm::Function*>> const& reqs,
-                                 llvm::Function* prepare)
+                                 llvm::Function* prepare,
+                                 std::vector<std::uint8_t> const* schema)
 {
     auto    ptrTy   = llvm::PointerType::get(*context, 0);
     auto    i32     = llvm::Type::getInt32Ty(*context);
@@ -3558,16 +3583,54 @@ static void     emitCheckerTable(llvm::LLVMContext* context, llvm::Module* modul
                         llvm::GlobalValue::PrivateLinkage,
                         llvm::ConstantArray::get(arrTy, entries), "referee_reqs");
 
-    //  referee_module_v1: version, count, requirements, prepare, schema, bytes.
-    auto    modTy   = llvm::StructType::get(*context, {i32, i32, ptrTy, ptrTy, ptrTy, i64});
+    //  The schema, if given: the tagged-binary type encoding, so a checker can
+    //  reject a trace built against a different specification. Emitted as a
+    //  private byte array the table points at.
+    llvm::Constant*     schemaPtr   = llvm::ConstantPointerNull::get(ptrTy);
+    std::uint64_t       schemaLen   = 0;
+    if (schema != nullptr && !schema->empty())
+    {
+        auto    bytes = llvm::ConstantDataArray::get(*context,
+                            llvm::ArrayRef<std::uint8_t>(schema->data(), schema->size()));
+        auto    gv    = new llvm::GlobalVariable(*module, bytes->getType(), true,
+                            llvm::GlobalValue::PrivateLinkage, bytes, "referee_schema");
+        gv->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
+        schemaPtr = gv;
+        schemaLen = schema->size();
+    }
+
+    //  The string-literal slots, so the loader can re-intern them. Each `.str.
+    //  slot` global holds, initially, a pointer to its bytes; the table is the
+    //  addresses of those slots, and `internModuleStrings` rewrites each in
+    //  place. Collected by name rather than threaded through every ExprConst-
+    //  String, so the literal lowering needs no shared module-level state.
+    std::vector<llvm::Constant*>    slots;
+    for (auto& g : module->globals())
+        if (g.getName().starts_with(".str.slot"))
+            slots.push_back(&g);
+
+    llvm::Constant*     stringsPtr  = llvm::ConstantPointerNull::get(ptrTy);
+    if (!slots.empty())
+    {
+        auto    strArrTy = llvm::ArrayType::get(ptrTy, slots.size());
+        stringsPtr = new llvm::GlobalVariable(*module, strArrTy, true,
+                        llvm::GlobalValue::PrivateLinkage,
+                        llvm::ConstantArray::get(strArrTy, slots), "referee_strings");
+    }
+
+    //  referee_module_v1: version, count, requirements, prepare, schema, bytes,
+    //  strings, stringCount.
+    auto    modTy   = llvm::StructType::get(*context, {i32, i32, ptrTy, ptrTy, ptrTy, i64, ptrTy, i64});
     auto    modC    = llvm::ConstantStruct::get(modTy, {
                         llvm::ConstantInt::get(i32, 1),
                         llvm::ConstantInt::get(i32, entries.size()),
                         reqsGV,
                         prepare ? static_cast<llvm::Constant*>(prepare)
                                 : llvm::ConstantPointerNull::get(ptrTy),
-                        llvm::ConstantPointerNull::get(ptrTy),
-                        llvm::ConstantInt::get(i64, 0)});
+                        schemaPtr,
+                        llvm::ConstantInt::get(i64, schemaLen),
+                        stringsPtr,
+                        llvm::ConstantInt::get(i64, slots.size())});
     auto    modGV   = new llvm::GlobalVariable(*module, modTy, true,
                         llvm::GlobalValue::PrivateLinkage, modC, "referee_module_data");
 
@@ -3579,7 +3642,8 @@ static void     emitCheckerTable(llvm::LLVMContext* context, llvm::Module* modul
     b.CreateRet(modGV);
 }
 
-void Compile::make(llvm::LLVMContext* context, llvm::Module* module, Module* refmod)
+void Compile::make(llvm::LLVMContext* context, llvm::Module* module, Module* refmod,
+                   std::vector<std::uint8_t> const* schema)
 {
     auto    builder = std::make_unique<llvm::IRBuilder<>>(*context);
 
@@ -4016,5 +4080,5 @@ void Compile::make(llvm::LLVMContext* context, llvm::Module* module, Module* ref
 
     //  The ahead-of-time checker table: label + function pointer per
     //  requirement, plus __prepare__, behind one exported `referee_module`.
-    emitCheckerTable(context, module, requirements, prepareFn);
+    emitCheckerTable(context, module, requirements, prepareFn, schema);
 }

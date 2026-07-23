@@ -53,6 +53,7 @@ class Exception
 public:
     Exception(Position position, std::string info)
         : position(position)
+        , info(info)
     {
         std::ostringstream  os;
 
@@ -61,13 +62,20 @@ public:
         message     = os.str();
     }
 
-    const char* what() const noexcept override 
+    const char* what() const noexcept override
     {
         return message.c_str();
     }
 
+    //  Structured access for consumers that carry the location themselves (the
+    //  language server puts it in an LSP range and shows [info] without the
+    //  redundant " at [row:col]" suffix that [what] appends).
+    Position            where() const   {return position;}
+    std::string const&  reason() const  {return info;}
+
 private:
     Position    position;
+    std::string info;
     std::string message;
 };
 

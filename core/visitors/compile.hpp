@@ -39,12 +39,18 @@
 #include "llvm/IR/Type.h"
 #include "llvm/IR/Verifier.h"
 
+#include <cstdint>
 #include <iostream>
+#include <vector>
 
 class Compile
 {
 public:
     static llvm::Type*  make(llvm::LLVMContext* context, llvm::Module* module, Type* type, std::string name);
     static llvm::Value* make(llvm::LLVMContext* context, llvm::Module* module, Expr* expr);
-    static void         make(llvm::LLVMContext* context, llvm::Module* module, Module* mod);
+    //  `schema` is opaque bytes embedded into the ahead-of-time checker table
+    //  so the object can reject a trace it was not built for. Null (the JIT
+    //  path) leaves the table's schema fields empty.
+    static void         make(llvm::LLVMContext* context, llvm::Module* module, Module* mod,
+                             std::vector<std::uint8_t> const* schema = nullptr);
 };

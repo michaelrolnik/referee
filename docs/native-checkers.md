@@ -1,28 +1,56 @@
 # Design: ahead-of-time compiled checkers
 
-**Status:** stage 1 built (object emission + requirement table). Stages 2 (`.so`) and 3 (executable) not yet.
+**Status:** stages 1 and 2 built (object, `.so`, embedded schema, `--checker` runner). Stage 3 (standalone executable + JIT-free runtime library) not yet.
 **Scope:** `referee build spec.ref -o checker` producing a native executable that validates traces without compiling anything.
 
-## What is built (stage 1)
+## What is built (stages 1 and 2)
 
-`referee build spec.ref -o spec.o` emits a native ELF object -- the module
-`Referee::compile` already produces, run through `addPassesToEmitFile` at PIC.
-It exports one symbol, `referee_module`, returning the `referee_module_v1`
-table (`runtime/referee_checker.h`): version, the requirements as `{label,
-eval}` pairs in report order, and `__prepare__`. The requirement functions keep
-their source-position names internally; the human label rides as data, so an
-ELF symbol never has to hold a space or a colon.
+```bash
+referee build          spec.ref -o spec.o     # a native object
+referee build --shared spec.ref -o spec.so    # a shared object, dlopen-able
+referee execute --checker spec.so trace.rdb   # run it -- no .ref, no compile
+```
 
-A host links the object and walks the table -- proved end to end: a driver
-calling `referee_module()->requirements[i].eval(...)` against a `.rdb` prints
-verdicts byte-identical to `referee execute`, with no JIT. The schema fields are
-still null (stage 2 fills them), and the object still carries the `--explain`
-companions as dead weight (an AOT-lean mode would drop them).
+`referee build` compiles the module `Referee::compile` already produces and
+runs it through `addPassesToEmitFile` at PIC. The object exports one symbol,
+`referee_module`, returning the `referee_module_v1` table
+(`runtime/referee_checker.h`): version, the requirements as `{label, eval}`
+pairs, `__prepare__`, the embedded schema, and the string-literal table. The
+requirement functions keep their source-position names internally; the human
+label rides as data, so an ELF symbol never holds a space or a colon.
+`--shared` adds a `cc -shared` link.
 
-One open question the original design flagged has since resolved itself:
+`referee execute --checker spec.so trace.rdb` `dlopen`s the object, checks the
+trace's schema against the one the checker carries (decoded from the same
+tagged-binary form a `.rdb` embeds), and drives the table -- no `.ref`, no
+LLVM, no compile. Verdicts match `referee execute` (proved on `pass.ref`,
+including a string requirement).
+
+Two things were load-bearing and are worth recording:
+
+**Strings stay a pointer compare.** A literal is interned, like every string,
+so equality is a pointer compare -- but interning has to happen where the code
+*runs*, not where it was *compiled*. A literal compiles to a mutable slot
+holding, at first, a pointer to its own bytes; before any requirement runs,
+`internModuleStrings` re-interns each slot through the running process's
+`Strings` table. The JIT does this too (the slots start raw there as well), so
+one mechanism serves both and equality never became a `strcmp`.
+
+**The return type is one byte.** A requirement returns `i1`, which lives in
+`AL`; the ABI struct declares `eval` returning `bool`, not `int`, because
+reading four bytes would see undefined high bits and turn a `false` into a
+pass.
+
 `referee build` needs **no trace**, because `T[]` is now a runtime descriptor
-(ragged arrays) rather than a per-run fixed extent, so an unsized array no
-longer has to be resolved at compile time.
+(ragged arrays) rather than a per-run fixed extent -- the doc's open question 3,
+moot.
+
+**Not yet (stage 3):** a standalone executable and a JIT-free runtime library
+(`libreferee_rt.a`) so a third-party host needs no referee binary; CSV/YAML
+through `--checker` (which needs ingest driven by the embedded schema rather
+than a `.ref`); dropping the `--explain` companions from the object as dead
+weight; and matching `execute`'s report *order* (the checker walks the table in
+compile order, so verdicts match but line order can differ).
 
 ---
 

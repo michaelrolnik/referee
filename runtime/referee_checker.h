@@ -34,6 +34,7 @@
 #ifndef REFEREE_CHECKER_H
 #define REFEREE_CHECKER_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -60,7 +61,10 @@ typedef void referee_conf;
 typedef struct referee_requirement_v1
 {
     const char* label;
-    int       (*eval)(const referee_state* frst,
+    /*  Returns non-zero iff the trace satisfies the requirement. It is one
+     *  byte (the compiled function returns i1), so it is `bool` rather than
+     *  `int` -- reading it as a 4-byte int would see undefined high bits.  */
+    bool      (*eval)(const referee_state* frst,
                       const referee_state* last,
                       const referee_conf*  conf);
 } referee_requirement_v1;
@@ -76,6 +80,19 @@ typedef struct referee_module_v1
                                                     /* fills computed signals; call once first */
     const uint8_t*                  schema;         /* .rdb type encoding, or NULL */
     uint64_t                        schemaBytes;    /* 0 when schema is NULL */
+
+    /*
+     *  String literals are interned, so equality is a pointer compare. A
+     *  literal compiled here holds a pointer to its own bytes until a host
+     *  re-interns it through the running process's string table -- necessary
+     *  because the object was compiled in a different process. `strings[i]` is
+     *  the address of one literal's slot; a host must, before calling any
+     *  `eval`, do for each: `*strings[i] = intern(*strings[i])` (strings[i] is a slot address), where `intern`
+     *  returns a canonical pointer for equal content. `referee execute
+     *  --checker` does this with referee's own string table.
+     */
+    char const***                   strings;        /* stringCount slot addresses */
+    uint64_t                        stringCount;
 } referee_module_v1;
 
 /*  The one exported symbol. Everything else in the object is internal. */
