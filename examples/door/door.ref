@@ -50,3 +50,10 @@ globally, if door.OPENED holds, then it must have been the case that lock.ON has
 # And an unlock must be preceded by a press -- the lock does not open itself.
 @no_unlocking_without_button
 globally, if lock.ON holds, then it must have been the case that button.DEPRESSED has occurred before it;
+
+data xyz: struct {
+    a: integer;
+    b: integer;
+};
+
+globally, if xyz.

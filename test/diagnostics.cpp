@@ -1082,6 +1082,79 @@ TEST(References, CrossFileImport)
     ::rmdir(dir);
 }
 
+// A signal shares a name with a struct field. References to the signal are its
+// bare uses only — not the field's declaration, nor a `.field` access.
+TEST(References, SignalDisambiguatedFromField)
+{
+    std::vector<std::string>    L = {
+        "type DP : struct { dx : integer; dy : integer; };",   // 0: field dx
+        "data dp : DP;",                                        // 1
+        "data dx : integer;",                                  // 2: signal dx
+        "G(dx > 0 && dp.dx < 9);",                             // 3: bare dx + member dp.dx
+    };
+    unsigned            col = static_cast<unsigned>(L[2].find("dx")) + 1;
+    std::istringstream  is(joinLines(L));
+    auto                r = Referee::references(is, "<da1>", {}, 2, col, /*includeDeclaration*/ true);
+
+    EXPECT_EQ(r.size(), 2u);                                     // signal decl + bare use
+    unsigned    memberCol = static_cast<unsigned>(L[3].find("dp.dx")) + 3;
+    for (auto const& x : r)
+    {
+        EXPECT_NE(x.line, 0u)                                   << "the field declaration must be excluded";
+        EXPECT_FALSE(x.line == 3 && x.startCol == memberCol)   << "the member access must be excluded";
+    }
+}
+
+// References to the field are the access and the field's own declaration — not
+// the bare signal of the same name.
+TEST(References, FieldDisambiguatedFromSignal)
+{
+    std::vector<std::string>    L = {
+        "type DP : struct { dx : integer; dy : integer; };",
+        "data dp : DP;",
+        "data dx : integer;",
+        "G(dx > 0 && dp.dx < 9);",
+    };
+    unsigned            col = static_cast<unsigned>(L[3].find("dp.dx")) + 3;   // the field 'dx'
+    std::istringstream  is(joinLines(L));
+    auto                r = Referee::references(is, "<da2>", {}, 3, col, /*includeDeclaration*/ true);
+
+    EXPECT_EQ(r.size(), 2u);                                     // field decl + the access
+    bool    hasFieldDecl = false, hasAccess = false;
+    for (auto const& x : r)
+    {
+        if (x.line == 0) hasFieldDecl = true;                   // dx inside `type DP`
+        if (x.line == 3 && x.startCol == col) hasAccess = true;
+        EXPECT_NE(x.line, 2u) << "the bare signal declaration must be excluded";
+    }
+    EXPECT_TRUE(hasFieldDecl);
+    EXPECT_TRUE(hasAccess);
+}
+
+// Two structs share a field name. References to one field exclude the other's,
+// disambiguated by the type of the accessed value.
+TEST(References, FieldDisambiguatedByOwningType)
+{
+    std::vector<std::string>    L = {
+        "type DA : struct { dv : integer; };",     // 0: DA.dv
+        "type DB : struct { dv : integer; };",     // 1: DB.dv
+        "data da : DA;",                           // 2
+        "data db : DB;",                           // 3
+        "G(da.dv > 0 && db.dv < 9);",              // 4: da.dv (DA), db.dv (DB)
+    };
+    unsigned            col = static_cast<unsigned>(L[4].find("da.dv")) + 3;
+    std::istringstream  is(joinLines(L));
+    auto                r = Referee::references(is, "<da3>", {}, 4, col, /*includeDeclaration*/ true);
+
+    EXPECT_EQ(r.size(), 2u);                                     // DA.dv decl + da.dv access
+    unsigned    dbCol = static_cast<unsigned>(L[4].find("db.dv")) + 3;
+    for (auto const& x : r)
+    {
+        EXPECT_NE(x.line, 1u)                                   << "B's field declaration must be excluded";
+        EXPECT_FALSE(x.line == 4 && x.startCol == dbCol)       << "b.dv must be excluded";
+    }
+}
+
 // ── Rename ───────────────────────────────────────────────────────────────────
 
 // An illegal identifier is rejected before any edit is produced.

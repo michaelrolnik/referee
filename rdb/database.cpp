@@ -1233,7 +1233,7 @@ void    toCsv(Reader const& rdb, std::ostream& os)
 
             if (blob != nullptr)
                 for (auto const& [_, value] : leaves)
-                    os << "," << value;
+                    os << "," << csvQuote(value);
             else
                 for (std::size_t k = 0; k < widthOfProp; k++)
                     os << ",";

@@ -23,6 +23,7 @@
  */
 
 #include "merge.hpp"
+#include "database.hpp"
 
 #include <algorithm>
 #include <map>
@@ -156,9 +157,9 @@ std::string     mergeTraces(std::vector<loader::Row*> const&   docs,
                 cur++;
 
             if (!ev.empty() && ev[cur].time <= t)
-                out << "," << ev[cur].value;                //  forward-filled real value
+                out << "," << csvQuote(ev[cur].value);      //  forward-filled real value
             else if (leading == LeadingGap::Backfill && !ev.empty())
-                out << "," << ev.front().value;             //  earliest real value
+                out << "," << csvQuote(ev.front().value);   //  earliest real value
             else
                 out << ",";                                 //  zero: REF reads the empty cell as 0
         }

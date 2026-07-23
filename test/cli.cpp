@@ -294,17 +294,34 @@ TEST(Cli, BuildEmitsAnObjectExportingRefereeModule)
     auto    b = run(quote(REFEREE_BIN) + " build " + quote(ref) + " -o " + quote(obj));
     ASSERT_EQ(b.status, 0) << b.output;
 
-    //  A defined `referee_module` (and `__prepare__`) is the ABI a driver binds
-    //  to; `nm` marks a defined symbol with a capital type letter.
-    auto    syms = run("nm " + quote(obj));
+    //  The object's contract is ONE external symbol: `referee_module`.
+    //  Everything else -- requirements, __prepare__, the fault globals -- is
+    //  internal and reached through the table by pointer, so two spec objects
+    //  can be linked into one host and no requirement name (which may contain
+    //  spaces) leaks into the dynamic symbol table.
+    auto    syms = run("nm " + quote(obj) + " | grep ' [A-TV-Z] ' ");
     ASSERT_EQ(syms.status, 0) << syms.output;
     EXPECT_NE(syms.output.find("referee_module"), std::string::npos) << syms.output;
-    EXPECT_NE(syms.output.find("__prepare__"),    std::string::npos) << syms.output;
+    {
+        std::istringstream  lines(syms.output);
+        std::string         line;
+        int                 externals = 0;
+        while (std::getline(lines, line))
+            if (!line.empty()) externals++;
+        EXPECT_EQ(externals, 1) << syms.output;
+    }
 
-    //  The requirement labels ride as data, not as symbols.
-    auto    str = run("strings " + quote(obj));
+    //  The requirement labels ride as data, not as symbols. Two-character
+    //  labels sit below `strings`' default threshold, hence -n 2.
+    auto    str = run("strings -n 2 " + quote(obj));
     EXPECT_NE(str.output.find("r1"), std::string::npos) << str.output;
     EXPECT_NE(str.output.find("r2"), std::string::npos) << str.output;
+
+    //  And the --explain companions are dead weight a checker never calls, so
+    //  they are dropped from the object entirely.
+    auto    all = run("nm " + quote(obj));
+    EXPECT_EQ(all.output.find("__col__"), std::string::npos) << all.output;
+    EXPECT_EQ(all.output.find("__sub__"), std::string::npos) << all.output;
 
     std::remove(ref.c_str());
     std::remove(obj.c_str());

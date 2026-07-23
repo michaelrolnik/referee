@@ -49,29 +49,10 @@
 #include <string>
 #include <vector>
 
-//  The checker ABI (runtime/referee_checker.h), redeclared so this file needs
-//  no include path into the header's directory. `referee_module` resolves to
-//  the compiled specification linked beside this driver.
-extern "C"
-{
-struct referee_requirement_v1
-{
-    char const* label;
-    bool      (*eval)(void const*, void const*, void const*);
-};
-struct referee_module_v1
-{
-    std::uint32_t                       version;
-    std::uint32_t                       count;
-    referee_requirement_v1 const*       requirements;
-    void                              (*prepare)(void*, void*, void const*);
-    std::uint8_t const*                 schema;
-    std::uint64_t                       schemaBytes;
-    char const***                       strings;
-    std::uint64_t                       stringCount;
-};
-const referee_module_v1*    referee_module(void);
-}
+//  The checker ABI. One header serves the emitter, both drivers and the test
+//  harness, so the struct cannot drift between them -- the drift is exactly
+//  how an i1 return came to be read as a 4-byte int once.
+#include "referee_checker.h"
 
 int     main(int argc, char** argv)
 {
@@ -171,7 +152,13 @@ int     main(int argc, char** argv)
 
         std::ifstream       conf;
         if (!confPath.empty())
+        {
             conf.open(confPath);
+            //  Refuse rather than zero-fill: verdicts against thresholds
+            //  nobody set are worse than no verdicts.
+            if (!conf)
+                throw std::runtime_error("cannot open conf '" + confPath + "'");
+        }
 
         std::ostringstream  packed;
         referee::db::ingestWithModule(data, path,
@@ -217,12 +204,41 @@ int     main(int argc, char** argv)
             mod->prepare(const_cast<void*>(rdb.ptrFirst()),
                          const_cast<void*>(rdb.ptrLast()), rdb.confPtr());
 
+            //  Drain the out-of-bounds channel after each eval: an index
+            //  outside its array answered from a zeroed buffer and raised the
+            //  flag, and it is this driver's job to turn that into a failure
+            //  -- same policy as `referee execute`.
+            auto    faulted = [&]() -> bool
+            {
+                if (mod->oobFlag == nullptr || *mod->oobFlag == 0)
+                    return false;
+                *mod->oobFlag = 0;
+                return true;
+            };
+
+            if (faulted())
+                std::printf("%-40s FAIL  index %lld is outside an array of %lld\n",
+                            "<computed signal>",
+                            (long long)(mod->oobIndx ? *mod->oobIndx : 0),
+                            (long long)(mod->oobCnt  ? *mod->oobCnt  : 0));
+
             bool    allPass = true;
             for (std::uint32_t i = 0; i < mod->count; i++)
             {
-                bool    ok = mod->requirements[i].eval(rdb.ptrFirst(), rdb.ptrLast(), rdb.confPtr());
+                bool        ok = mod->requirements[i].eval(rdb.ptrFirst(), rdb.ptrLast(), rdb.confPtr());
+                long long   ix = mod->oobIndx ? *mod->oobIndx : 0;
+                long long   ct = mod->oobCnt  ? *mod->oobCnt  : 0;
+
+                if (faulted())
+                {
+                    ok = false;
+                    std::printf("%-40s FAIL  index %lld is outside an array of %lld\n",
+                                mod->requirements[i].label, ix, ct);
+                }
+                else
+                    std::printf("%-40s %s\n", mod->requirements[i].label, ok ? "PASS" : "FAIL");
+
                 allPass &= ok;
-                std::printf("%-40s %s\n", mod->requirements[i].label, ok ? "PASS" : "FAIL");
             }
 
             everyTraceOk &= allPass;

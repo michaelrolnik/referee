@@ -93,6 +93,19 @@ typedef struct referee_module_v1
      */
     char const***                   strings;        /* stringCount slot addresses */
     uint64_t                        stringCount;
+
+    /*
+     *  The out-of-bounds fault channel. An index outside its array cannot be
+     *  turned into a verdict inside the generated code (a requirement returns
+     *  one boolean and the host decides what it means), so the code raises
+     *  `*oobFlag`, answers the read from a zeroed buffer, and finishes. After
+     *  each `eval` a driver must check `oobFlag` and, if set, treat the
+     *  requirement as FAILED (reporting `*oobIndx` / `*oobCnt`) and clear the
+     *  flag. All three are NULL when the specification indexes nothing.
+     */
+    uint8_t*                        oobFlag;
+    int64_t*                        oobIndx;
+    int64_t*                        oobCnt;
 } referee_module_v1;
 
 /*  The one exported symbol. Everything else in the object is internal. */

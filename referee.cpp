@@ -158,6 +158,7 @@ void lowerMinMaxIntrinsics(llvm::Module& M)
 
 #include "antlr2ast.hpp"
 #include "strings.hpp"
+#include "runtime/referee_checker.h"
 #include "builtins.hpp"
 
 using referee::db::typesEqual;
@@ -871,6 +872,153 @@ std::vector<SourceFile>     gatherFiles(std::string const& rootPath, std::string
     return files;
 }
 
+//  Is the identifier starting at `idx` a member access — i.e. is the previous
+//  non-space character a `.`? (`x` in `pt.x` is; `pt` and a bare `x` are not.)
+bool    isMemberAccess(std::string const& line, std::size_t idx)
+{
+    std::size_t j = idx;
+    while (j > 0 && std::isspace(static_cast<unsigned char>(line[j - 1]))) --j;
+    return j > 0 && line[j - 1] == '.';
+}
+
+//  Split a dotted chain string ("a.b.c") into its parts.
+std::vector<std::string>    dottedParts(std::string const& chain)
+{
+    std::vector<std::string>    parts;
+    std::string p;
+    for (char c : chain)
+    {
+        if (c == '.') { if (!p.empty()) { parts.push_back(p); p.clear(); } }
+        else            p.push_back(c);
+    }
+    if (!p.empty()) parts.push_back(p);
+    return parts;
+}
+
+//  Resolve a signal-rooted dotted chain to the type it denotes (head is a data
+//  or conf signal; the rest walk through composite members). Null if it can't.
+Type*   resolveChainType(::Module* module, std::vector<std::string> const& parts)
+{
+    if (module == nullptr || parts.empty())
+        return nullptr;
+    Type*   t = nullptr;
+    try { t = module->getProp(parts[0]); } catch (...) { t = nullptr; }
+    if (!t)
+        try { t = module->getConf(parts[0]); } catch (...) { t = nullptr; }
+    for (std::size_t i = 1; i < parts.size() && t != nullptr; ++i)
+    {
+        auto* comp = dynamic_cast<TypeComposite*>(t);
+        t = comp ? comp->member(parts[i]) : nullptr;
+    }
+    return t;
+}
+
+//  The dotted chain immediately to the left of the `.` that precedes the
+//  identifier at `idx`. Empty if the left-hand side is not a plain name chain
+//  (e.g. it ends in `)` or `]`, a complex expression we do not try to type).
+std::vector<std::string>    lhsChain(std::string const& line, std::size_t idx)
+{
+    std::size_t d = idx;
+    while (d > 0 && std::isspace(static_cast<unsigned char>(line[d - 1]))) --d;
+    if (d == 0 || line[d - 1] != '.') return {};        // not a member access
+    std::size_t dot = d - 1;
+    std::size_t e = dot;
+    while (e > 0 && std::isspace(static_cast<unsigned char>(line[e - 1]))) --e;
+    if (e > 0 && (line[e - 1] == ')' || line[e - 1] == ']')) return {};   // complex LHS
+    std::size_t cbeg = dot;
+    while (cbeg > 0 && (isWordChar(line[cbeg - 1]) || line[cbeg - 1] == '.')) --cbeg;
+    return dottedParts(line.substr(cbeg, dot - cbeg));
+}
+
+//  Position of the member `field` inside the body of `type ownerName`, searched
+//  across the gathered files. Reused for a member's declaration site.
+struct MemberDecl { bool found = false; std::string file; unsigned line = 0, col = 0; };
+MemberDecl  findTypeMemberDecl(std::vector<SourceFile> const& files,
+                               std::string const& ownerName, std::string const& field)
+{
+    for (auto const& f : files)
+        for (std::size_t r = 0; r < f.lines.size(); ++r)
+        {
+            std::size_t oc = declCol(f.lines[r], ownerName, "type");
+            if (oc == std::string::npos) continue;
+
+            for (std::size_t rr = r; rr < f.lines.size(); ++rr)
+            {
+                if (rr > r && startsDecl(f.lines[rr])) break;
+                std::size_t from = (rr == r) ? oc + ownerName.size() : 0;
+                for (std::size_t i = from; i < f.lines[rr].size(); ++i)
+                    if (wordAt(f.lines[rr], i, field))
+                        return {true, f.path, static_cast<unsigned>(rr), static_cast<unsigned>(i)};
+            }
+            return {};
+        }
+    return {};
+}
+
+//  A `{ … }` body and whether it belongs to a `struct` or an `enum`. In REF,
+//  braces appear only in type definitions, so this classifies every brace.
+struct BodyRegion { char kind; unsigned begLine, begCol, endLine, endCol; };   // kind 's' | 'e'
+
+std::vector<BodyRegion>     scanBodies(std::vector<std::string> const& lines)
+{
+    std::vector<BodyRegion>                                     regions;
+    std::vector<std::pair<char, std::pair<unsigned, unsigned>>> stack;   // kind, (line,col) of '{'
+    char    pending = 0;                        // 's'/'e' seen since the last '{' or ';'
+
+    for (unsigned r = 0; r < lines.size(); ++r)
+    {
+        std::string const&  L  = lines[r];
+        std::size_t const   cs = commentStart(L);
+        for (std::size_t i = 0; i < L.size() && i < cs; )
+        {
+            char c = L[i];
+            if (isWordChar(c))
+            {
+                std::size_t j = i;
+                while (j < L.size() && isWordChar(L[j])) ++j;
+                std::string w = L.substr(i, j - i);
+                if      (w == "struct") pending = 's';
+                else if (w == "enum")   pending = 'e';
+                i = j;
+                continue;
+            }
+            if      (c == '{') { stack.push_back({pending, {r, static_cast<unsigned>(i)}}); pending = 0; }
+            else if (c == '}')
+            {
+                if (!stack.empty())
+                {
+                    auto top = stack.back(); stack.pop_back();
+                    regions.push_back({top.first, top.second.first, top.second.second,
+                                       r, static_cast<unsigned>(i)});
+                }
+            }
+            else if (c == ';') pending = 0;
+            ++i;
+        }
+    }
+    return regions;
+}
+
+bool    insideBody(std::vector<BodyRegion> const& regions, char kind, unsigned line, unsigned col)
+{
+    for (auto const& rg : regions)
+    {
+        if (rg.kind != kind) continue;
+        bool afterBeg  = (line > rg.begLine) || (line == rg.begLine && col > rg.begCol);
+        bool beforeEnd = (line < rg.endLine) || (line == rg.endLine && col < rg.endCol);
+        if (afterBeg && beforeEnd) return true;
+    }
+    return false;
+}
+
+//  Is the next non-space character after `end` a `:` (a field-name declaration)?
+bool    followedByColon(std::string const& line, std::size_t end)
+{
+    std::size_t i = end;
+    while (i < line.size() && std::isspace(static_cast<unsigned char>(line[i]))) ++i;
+    return i < line.size() && line[i] == ':';
+}
+
 } // namespace
 
 // ── Language-server go-to-definition: the declaration of the name under caret. ─
@@ -1237,7 +1385,7 @@ std::vector<Referee::Reference> Referee::references(
     if (line >= lines.size())
         return out;
 
-    //  The bare identifier the caret sits on (expand both ways over word chars).
+    //  The identifier the caret sits on, and whether it is a member access.
     std::string const&  lineText = lines[line];
     std::size_t         nchar    = lineText.size();
     std::size_t         col      = std::min<std::size_t>(character, nchar);
@@ -1247,12 +1395,57 @@ std::vector<Referee::Reference> Referee::references(
     while (wbeg > 0 && isWordChar(lineText[wbeg - 1])) --wbeg;
     if (wbeg == wend)
         return out;                                     // not on an identifier
-    std::string word = lineText.substr(wbeg, wend - wbeg);
+    std::string word          = lineText.substr(wbeg, wend - wbeg);
+    bool        targetIsMember = isMemberAccess(lineText, wbeg);
+    std::vector<std::string>    targetLhs = targetIsMember ? lhsChain(lineText, wbeg)
+                                                           : std::vector<std::string>{};
 
-    //  Whole-word matches across the document and everything it imports, minus
-    //  matches inside comments (and the declaration, when not requested).
     std::vector<SourceFile> files = gatherFiles(name, text, includePaths);
+
+    //  Parse for type-aware disambiguation: the field/enum-case namespace is
+    //  distinct from the signal/type/func one, and two structs may share a field
+    //  name. Textual matching alone conflates them. If the parse fails we keep the
+    //  member/bare split (which needs no types) and skip the finer type check.
+    std::istringstream          pis(text);
+    antlr4::ANTLRInputStream     input(pis);
+    referee::refereeLexer        lexer(&input);
+    antlr4::CommonTokenStream    tokens(&lexer);
+    referee::refereeParser       parser(&tokens);
+    ParseErrors                  errors;
+    errors.attach(lexer, parser);
+
+    static std::atomic<unsigned>    s_uniq{0};
+    auto    uniqName = name + "#references:" + std::to_string(s_uniq.fetch_add(1));
+    auto    astOwner = std::make_unique<Antlr2AST>(uniqName, name, includePaths, Sizes{}, /*allowUnsized*/ true);
+    Arena::Scope    arenaScope(astOwner->arena);
+
+    auto*       tree   = parser.program();
+    ::Module*   module = nullptr;
+    try         { module = std::any_cast<::Module*>(astOwner->visitProgram(tree)); }
+    catch (...) { module = nullptr; }
+
+    //  For a member target: the owning type (so `.field` on other types is not a
+    //  match) and its declared name (to locate the field's own declaration).
+    Type*       ownerType = targetIsMember ? resolveChainType(module, targetLhs) : nullptr;
+    std::string ownerName;
+    if (ownerType)
+    {
+        for (auto const& tn : module->getTypeNames())
+        {
+            Type* tt = nullptr;
+            try { tt = module->getType(tn); } catch (...) { tt = nullptr; }
+            if (tt == ownerType) { ownerName = tn; break; }
+        }
+    }
+
+    auto add = [&](std::string const& file, std::size_t r, std::size_t i) {
+        out.push_back({file, static_cast<unsigned>(r),
+                       static_cast<unsigned>(i), static_cast<unsigned>(i + word.size())});
+    };
+
     for (auto const& f : files)
+    {
+        std::vector<BodyRegion> const   bodies = scanBodies(f.lines);
         for (std::size_t r = 0; r < f.lines.size(); ++r)
         {
             std::size_t const   cs = commentStart(f.lines[r]);
@@ -1260,12 +1453,51 @@ std::vector<Referee::Reference> Referee::references(
             {
                 if (i >= cs) break;                     // the rest of the line is a comment
                 if (!wordAt(f.lines[r], i, word)) continue;
-                if (!includeDeclaration && declCol(f.lines[r], word, nullptr) == i)
-                    continue;                           // this occurrence is the declaration
-                out.push_back({f.path, static_cast<unsigned>(r),
-                               static_cast<unsigned>(i), static_cast<unsigned>(i + word.size())});
+
+                bool const  occIsMember = isMemberAccess(f.lines[r], i);
+
+                if (!targetIsMember)
+                {
+                    //  A signal / type / func: bare occurrences only, so a struct
+                    //  field or enum case of the same spelling is not swept in.
+                    if (occIsMember) continue;
+                    //  Nor a member *declaration*: an enum case, or a struct field
+                    //  name (an identifier followed by `:` inside a struct body).
+                    unsigned ur = static_cast<unsigned>(r), uc = static_cast<unsigned>(i);
+                    if (insideBody(bodies, 'e', ur, uc)) continue;
+                    if (insideBody(bodies, 's', ur, uc) && followedByColon(f.lines[r], i + word.size()))
+                        continue;
+                    if (!includeDeclaration && declCol(f.lines[r], word, nullptr) == i)
+                        continue;
+                    add(f.path, r, i);
+                }
+                else
+                {
+                    //  A field / enum case: only member accesses, and — when the
+                    //  owning type is known — only those whose left-hand side has
+                    //  that type. A left-hand side we cannot type is kept.
+                    if (!occIsMember) continue;
+                    if (ownerType)
+                    {
+                        Type* lt = resolveChainType(module, lhsChain(f.lines[r], i));
+                        if (lt != nullptr && lt != ownerType)
+                            continue;                   // a same-named field of another type
+                    }
+                    add(f.path, r, i);
+                }
             }
         }
+    }
+
+    //  The declaration of a member is its name inside the owning `type`'s body —
+    //  a bare occurrence, so add it explicitly rather than via the loop above.
+    if (targetIsMember && includeDeclaration && !ownerName.empty())
+    {
+        MemberDecl d = findTypeMemberDecl(files, ownerName, word);
+        if (d.found)
+            out.push_back({d.file, d.line, d.col, static_cast<unsigned>(d.col + word.size())});
+    }
+
     return out;
 }
 
@@ -1872,30 +2104,8 @@ JitWithSpecs    buildJitFromRef(std::istream& refStream, std::string const& refN
     return out;
 }
 
-//  The checker ABI, matching runtime/referee_checker.h. Declared here rather
-//  than included so referee stays independent of the runtime header's location.
 namespace
 {
-extern "C"
-{
-struct referee_requirement_v1
-{
-    char const* label;
-    bool      (*eval)(void const*, void const*, void const*);
-};
-struct referee_module_v1
-{
-    std::uint32_t                       version;
-    std::uint32_t                       count;
-    referee_requirement_v1 const*       requirements;
-    void                              (*prepare)(void*, void*, void const*);
-    std::uint8_t const*                 schema;
-    std::uint64_t                       schemaBytes;
-    char const***                       strings;    // each strings[i] is a slot's address
-    std::uint64_t                       stringCount;
-};
-}
-
 //  Re-intern the module's string literals through this process's `Strings`, so
 //  a literal and a trace string of equal content share one pointer and string
 //  equality stays a pointer compare. Runs before any requirement, in both the
@@ -1908,6 +2118,21 @@ void    internModuleStrings(referee_module_v1 const* m)
         char const**    slot = m->strings[i];       // the literal's slot
         *slot = Strings::instance()->getString(*slot);
     }
+}
+
+//  The out-of-bounds fault channel, drained after each eval: an index outside
+//  its array raised the flag and answered from a zeroed buffer, and the host
+//  turns that into a failure -- same policy as the JIT path's `faulted()`.
+bool    checkerFaulted(referee_module_v1 const* m, std::string& why)
+{
+    if (m->oobFlag == nullptr || *m->oobFlag == 0)
+        return false;
+
+    why = fmt::format("index {} is outside an array of {}",
+                      m->oobIndx ? *m->oobIndx : 0,
+                      m->oobCnt  ? *m->oobCnt  : 0);
+    *m->oobFlag = 0;
+    return true;
 }
 } // namespace
 
@@ -2922,6 +3147,32 @@ void    Referee::emitObject(std::string const&               refPath,
     compiled.mod->setDataLayout(dl);
     compiled.mod->setTargetTriple(tripleStr);
 
+    //  The object's contract is one exported symbol, `referee_module`; every
+    //  requirement and __prepare__ are reached through the table by pointer.
+    //  The JIT path finds them by name, so they compile ExternalLinkage -- but
+    //  in an object that leaks them all into the dynamic symbol table
+    //  (including names with spaces, for unnamed requirements) and makes two
+    //  spec objects unlinkable into one host (duplicate __prepare__). So:
+    //  drop the --explain companions, which nothing in a checker calls, and
+    //  internalise everything else.
+    for (auto it = compiled.mod->begin(); it != compiled.mod->end(); )
+    {
+        auto&   F = *it++;
+        auto    n = F.getName();
+        if ((n.starts_with("__col__") || n.starts_with("__ante__")
+          || n.starts_with("__sub__") || n.starts_with("__scope"))
+         && F.use_empty())
+        {
+            F.eraseFromParent();
+            continue;
+        }
+        if (!F.isDeclaration() && n != "referee_module")
+            F.setLinkage(llvm::GlobalValue::InternalLinkage);
+    }
+    for (auto& G : compiled.mod->globals())
+        if (!G.isDeclaration())
+            G.setLinkage(llvm::GlobalValue::InternalLinkage);
+
     std::error_code         ec;
     llvm::raw_fd_ostream    os(outPath, ec, llvm::sys::fs::OF_None);
     if (ec)
@@ -3091,7 +3342,14 @@ bool    Referee::executeChecker(std::string const&          soPath,
 
             std::ifstream       conf;
             if (!confPath.empty())
+            {
                 conf.open(confPath);
+                //  A missing conf must refuse, not proceed: an unreadable file
+                //  would otherwise zero-fill every conf value and the verdicts
+                //  be computed against thresholds nobody set.
+                if (!conf)
+                    throw std::runtime_error("checker: cannot open '" + confPath + "'");
+            }
 
             std::ostringstream  packed;
             referee::db::ingestWithModule(data, trace.path,
@@ -3117,17 +3375,59 @@ bool    Referee::executeChecker(std::string const&          soPath,
 
         mod->prepare(const_cast<void*>(rdb.ptrFirst()), const_cast<void*>(rdb.ptrLast()), rdb.confPtr());
 
+        //  A __prepare__ fault (a computed signal indexed out of range) is
+        //  reported before any requirement is blamed for it.
+        {
+            std::string why;
+            if (checkerFaulted(mod, why))
+                os << std::left << std::setw(40) << "<computed signal>" << " FAIL  " << why << "\n";
+        }
+
+        //  The report is built per trace so `violates` can be checked against
+        //  it -- the same corpus-honesty rule executeAll applies: a trace that
+        //  names the requirements it must violate has to violate *those*, not
+        //  merely something.
+        std::ostringstream  report;
         bool    allPass = true;
         for (std::uint32_t i = 0; i < mod->count; i++)
         {
-            bool    ok = mod->requirements[i].eval(rdb.ptrFirst(), rdb.ptrLast(), rdb.confPtr());
+            bool        ok = mod->requirements[i].eval(rdb.ptrFirst(), rdb.ptrLast(), rdb.confPtr());
+            std::string why;
+
+            if (checkerFaulted(mod, why))
+                ok = false;
+
             allPass &= ok;
-            if (static_cast<int>(detail) >= static_cast<int>(Detail::Requirements))
-                os << std::left << std::setw(40) << mod->requirements[i].label
-                   << (ok ? " PASS" : " FAIL") << "\n";
+            report << std::left << std::setw(40) << mod->requirements[i].label
+                   << (ok ? " PASS" : " FAIL")
+                   << (why.empty() ? "" : "  " + why) << "\n";
         }
 
-        bool    ok = allPass != trace.expectFailure;
+        if (static_cast<int>(detail) >= static_cast<int>(Detail::Requirements))
+            os << report.str();
+
+        std::vector<std::string>    missing;
+        for (auto const& want : trace.violates)
+        {
+            bool    found = false;
+            std::istringstream  lines(report.str());
+            std::string         line;
+            while (std::getline(lines, line))
+            {
+                if (line.find("FAIL") == std::string::npos) continue;
+                if (line.compare(0, want.size(), want) == 0) { found = true; break; }
+            }
+            if (!found)
+                missing.push_back(want);
+        }
+
+        bool    ok = allPass != trace.expectFailure && missing.empty();
+        if (!missing.empty())
+        {
+            os << trace.path << "  WRONG REQUIREMENT\n";
+            for (auto const& m : missing)
+                os << "    expected to violate " << m << ", but it held\n";
+        }
         everyTraceOk &= ok;
     }
 

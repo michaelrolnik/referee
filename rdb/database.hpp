@@ -187,6 +187,24 @@ void    decodeSchema(uint8_t const*&                      cur,
                      std::vector<ConfDecl>&               confs,
                      std::vector<std::unique_ptr<Type>>&  sink);
 
+/// Quote one CSV cell on emission. A value containing a comma, quote or line
+/// break must be quoted or the row structure corrupts on re-parse -- silently,
+/// which is how a merged string "a,b" once became "a". The reader (rapidcsv)
+/// already parses quoted cells, so this round-trips.
+inline std::string  csvQuote(std::string const& v)
+{
+    if (v.find_first_of(",\"\n\r") == std::string::npos)
+        return v;
+
+    std::string out = "\"";
+    for (char c : v)
+    {
+        if (c == '"') out += "\"\"";
+        else          out += c;
+    }
+    return out + "\"";
+}
+
 /// Structural type equality: same shape, same enum members, same struct member
 /// names and array extents. Used to check a trace's schema against the one a
 /// checker (or a .rdb) was built for.

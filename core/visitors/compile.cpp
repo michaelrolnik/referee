@@ -3638,9 +3638,21 @@ static void     emitCheckerTable(llvm::LLVMContext* context, llvm::Module* modul
                         llvm::ConstantArray::get(strArrTy, slots), "referee_strings");
     }
 
+    //  The out-of-bounds fault channel, if any indexing was compiled: the
+    //  driver reads these after each eval, exactly as the JIT host does by
+    //  symbol lookup. Through the table rather than by name, so the object
+    //  needs no exported symbols beyond `referee_module`.
+    auto    oobGlobal = [&](char const* n) -> llvm::Constant*
+    {
+        if (auto* g = module->getGlobalVariable(n))
+            return g;
+        return llvm::ConstantPointerNull::get(ptrTy);
+    };
+
     //  referee_module_v1: version, count, requirements, prepare, schema, bytes,
-    //  strings, stringCount.
-    auto    modTy   = llvm::StructType::get(*context, {i32, i32, ptrTy, ptrTy, ptrTy, i64, ptrTy, i64});
+    //  strings, stringCount, oobFlag, oobIndx, oobCnt.
+    auto    modTy   = llvm::StructType::get(*context,
+                        {i32, i32, ptrTy, ptrTy, ptrTy, i64, ptrTy, i64, ptrTy, ptrTy, ptrTy});
     auto    modC    = llvm::ConstantStruct::get(modTy, {
                         llvm::ConstantInt::get(i32, 1),
                         llvm::ConstantInt::get(i32, entries.size()),
@@ -3650,7 +3662,10 @@ static void     emitCheckerTable(llvm::LLVMContext* context, llvm::Module* modul
                         schemaPtr,
                         llvm::ConstantInt::get(i64, schemaLen),
                         stringsPtr,
-                        llvm::ConstantInt::get(i64, slots.size())});
+                        llvm::ConstantInt::get(i64, slots.size()),
+                        oobGlobal("__oob_flag__"),
+                        oobGlobal("__oob_indx__"),
+                        oobGlobal("__oob_cnt__")});
     auto    modGV   = newGlobal(*module, modTy, true,
                         llvm::GlobalValue::PrivateLinkage, modC, "referee_module_data");
 

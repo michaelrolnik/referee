@@ -67,6 +67,7 @@
 #include "antlr2ast.hpp"
 #include "strings.hpp"
 #include "visitors/compile.hpp"
+#include "runtime/referee_checker.h"
 
 
 //  LCOV_EXCL_START 
@@ -189,17 +190,11 @@ protected:
             //  before evaluating -- exactly what the real driver does. Without
             //  it a string literal and the trace's interned string are
             //  different pointers and equality fails.
-            struct RefModule {
-                uint32_t v, c; void const* reqs;
-                void (*prep)(void*, void*, void const*);
-                uint8_t const* schema; uint64_t schemaBytes;
-                char const*** strings; uint64_t stringCount;
-            };
             {
                 auto    sym = TheJIT->lookup("referee_module");
                 if (sym)
                 {
-                    auto    get = sym->toPtr<RefModule const* (*)()>();
+                    auto    get = sym->toPtr<referee_module_v1 const* (*)()>();
                     auto const* m = get();
                     for (uint64_t i = 0; i < m->stringCount; i++)
                         *m->strings[i] = Strings::instance()->getString(*m->strings[i]);
