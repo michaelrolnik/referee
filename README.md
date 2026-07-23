@@ -684,6 +684,41 @@ node tokenize.cjs
 
 This tokenizes a sample against the same TextMate engine the editors use and asserts the resulting scopes. It is worth running after any grammar edit, because Oniguruma is stricter than JavaScript's regex engine and an invalid pattern makes the editor drop the grammar **silently** — the file simply renders unhighlighted, with no error reported anywhere.
 
+## Language server (LSP)
+
+`build/referee-lsp` is a Language Server for `.ref`. It speaks LSP — JSON-RPC over stdio, `Content-Length`-framed — and reuses the compiler front-end (`Referee::diagnose`) to publish **live parse and type diagnostics** as you edit: the same errors `referee compile` would report, surfaced inline with no build step. It parses and type-checks only (no LLVM lowering), so it is fast, and since REF specs are small it re-checks the whole document on each change (full-text sync — ANTLR has no incremental parse). Hover, completion and document symbols are natural follow-ups on the same AST; today it publishes diagnostics.
+
+`referee-lsp` is a *server*, not a REPL: an editor's LSP client launches it and talks to it over stdio (run bare in a terminal it just waits for a framed message). Point any LSP client at the binary. Neovim, for example:
+
+```lua
+vim.lsp.start({
+  name = 'referee-lsp',
+  cmd  = { vim.fn.getcwd() .. '/build/referee-lsp' },              -- or an absolute path
+  root_dir = vim.fs.dirname(vim.fs.find({ '.git' }, { upward = true })[1]),
+})
+```
+
+The bundled VS Code extension (`editors/vscode/`) is highlighting-only; getting diagnostics there means adding a small [`vscode-languageclient`](https://www.npmjs.com/package/vscode-languageclient) shim that spawns `referee-lsp` for `language: ref`. It is not yet part of the extension.
+
+One note on imports: the server resolves a file's `import`s against the document's own filesystem path, so open a spec by its real path for cross-file imports to resolve. A single self-contained `.ref` needs nothing.
+
+### In Docker
+
+The repository's `Dockerfile` builds `referee`, `rdb`, and `referee-lsp` into a small runtime image:
+
+```bash
+docker build -t referee:lsp .
+```
+
+`referee-lsp` lands at `/usr/local/bin/referee-lsp`. Because it talks over stdio, override the entrypoint (the image defaults to `referee`) and keep stdin open with `-i`; mount the workspace **at the same path** so imports resolve:
+
+```bash
+docker run --rm -i --entrypoint referee-lsp \
+  -v "$PWD":"$PWD" -w "$PWD" referee:lsp
+```
+
+An editor's LSP client can use that whole `docker run …` line as its server `cmd`.
+
 # Running referee
 
 `build/referee` is the main CLI and is driven through two subcommands, `compile` and `execute`. Pass `--help` or `<subcommand> --help` for the full option list:
