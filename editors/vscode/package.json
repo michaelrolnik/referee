@@ -1,8 +1,8 @@
 {
   "name": "referee-ref",
   "displayName": "REF (Referee)",
-  "description": "Syntax highlighting and editing support for REF requirement specifications.",
-  "version": "0.1.0",
+  "description": "Syntax highlighting, snippets, and live diagnostics (language server) for REF requirement specifications.",
+  "version": "0.2.0",
   "publisher": "michaelrolnik",
   "license": "MIT",
   "repository": {
