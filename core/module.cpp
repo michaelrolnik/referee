@@ -278,6 +278,19 @@ std::vector<Spec*> const&   Module::getSpecs()
     return m_specs;
 }
 
+void    Module::addRunRow(std::string const& req, RunRow row)
+{
+    m_runRows[req].push_back(std::move(row));
+}
+
+std::vector<Module::RunRow> const&  Module::runRowsFor(std::string const& req) const
+{
+    static std::vector<RunRow> const    none;
+
+    auto    it = m_runRows.find(req);
+    return  it == m_runRows.end() ? none : it->second;
+}
+
 namespace {
 
 //  A canonical spelling of everything a caller and a callee must agree on.

@@ -25,6 +25,7 @@
 #include "compile.hpp"
 #include "rewrite.hpp"
 #include "typecalc.hpp"
+#include "printer.hpp"
 #include "strings.hpp"
 #include "../factory.hpp"
 #include "../builtins.hpp"
@@ -3569,7 +3570,7 @@ void Compile::make(llvm::LLVMContext* context, llvm::Module* module, Module* ref
         //  `Rewrite::make` canonicalises `a => b` to `!a || b`, so by the time
         //  the requirement is compiled the implication is gone and the
         //  antecedent is buried in a disjunction. The parsed tree still has it.
-        if(auto* anteRaw = antecedentOf(expr))
+        if(auto* anteRaw = antecedentOf(expr); anteRaw != nullptr && !hasFreeContext(anteRaw, {}))
         {
             auto    ante     = Rewrite::make(anteRaw);
             TypeCalc::make(refmod, ante);
@@ -3614,6 +3615,105 @@ void Compile::make(llvm::LLVMContext* context, llvm::Module* module, Module* ref
             col.compileTemporalLoops(temp);
             builder->CreateRet(col.make(temp));
             llvm::verifyFunction(*colBody, &llvm::outs());
+        }
+
+        //  The operands of the outermost operator, each its own column. A
+        //  requirement's own row says whether it held; these say *why* -- for
+        //  `G(a && b)`, which of `a` and `b` gave way and when. Leaves and
+        //  constants get none: a leaf is its own answer, and a literal draws a
+        //  flat line nobody needs.
+        //
+        //  Read from the raw `expr`, since `Rewrite::make` has already
+        //  rewritten `temp` into a canonical form whose operands are not the
+        //  ones anybody wrote. The label is the source text of the operand the
+        //  author actually put there.
+        {
+            auto    peeled = expr;
+            for(;;)
+            {
+                if(auto* g = dynamic_cast<ExprG*>(peeled)) { peeled = g->arg; continue; }
+                if(auto* f = dynamic_cast<ExprF*>(peeled)) { peeled = f->arg; continue; }
+                if(auto* h = dynamic_cast<ExprH*>(peeled)) { peeled = h->arg; continue; }
+                if(auto* o = dynamic_cast<ExprO*>(peeled)) { peeled = o->arg; continue; }
+                break;
+            }
+
+            std::vector<Expr*>  operands;
+            if(auto* bin = dynamic_cast<ExprBinary*>(peeled))
+            {
+                operands.push_back(bin->lhs);
+                operands.push_back(bin->rhs);
+            }
+            else if(auto* un = dynamic_cast<ExprUnary*>(peeled))
+                operands.push_back(un->arg);
+
+            auto    isConst = [](Expr* e)
+            {
+                return dynamic_cast<ExprConstBoolean*>(e) || dynamic_cast<ExprConstInteger*>(e)
+                    || dynamic_cast<ExprConstNumber*>(e)  || dynamic_cast<ExprConstString*>(e);
+            };
+
+            for(std::size_t k = 0; k < operands.size(); k++)
+            {
+                auto*   operand = operands[k];
+                if(isConst(operand))
+                    continue;
+
+                //  A column has to compile on its own, and an operand that
+                //  reads a state frozen by a `@` further out cannot: the
+                //  binding lives in the requirement it was lifted from, not in
+                //  the operand. Freeze is the case the ordinary lowering
+                //  already treats as expensive and separate, so a run trace
+                //  leaves its operands undrawn rather than compiling something
+                //  that resolves to garbage.
+                if(hasFreeContext(operand, {}))
+                    continue;
+
+                auto    sub     = Rewrite::make(operand);
+                TypeCalc::make(refmod, sub);
+                auto*   ty      = sub->type();
+
+                //  Only the value kinds a run trace draws. A string or an
+                //  aggregate operand has no scalar column, so it is left out
+                //  rather than forced into one.
+                std::string typeStr;
+                if(ty == Factory<TypeBoolean>::create())                        typeStr = "boolean";
+                else if(ty == Factory<TypeInteger>::create()
+                     || ty == Factory<TypeByte>::create())                      typeStr = "integer";
+                else if(ty == Factory<TypeNumber>::create())                    typeStr = "number";
+                else continue;
+
+                auto    subName = "__sub__" + std::to_string(k) + "__" + funcName;
+                auto    subType = llvm::FunctionType::get(builder->getInt64Ty(),
+                                    {propPtrType, propPtrType, propPtrType, confPtrType}, false);
+                auto    subBody = llvm::Function::Create(subType, llvm::Function::ExternalLinkage,
+                                    subName, module);
+                auto    subArg  = subBody->args().begin();
+                subArg->setName("frst"); subArg++;
+                subArg->setName("last"); subArg++;
+                subArg->setName("curr"); subArg++;
+                subArg->setName("conf");
+
+                builder->SetInsertPoint(llvm::BasicBlock::Create(*context, "entry", subBody));
+                CompileExprImpl s(context, module, builder.get(), subBody, refmod, propType, confType);
+                s.compileTemporalLoops(sub);
+                auto*   v = s.make(sub);
+
+                //  One carrier out, an i64, so the host reads every row the
+                //  same way: a boolean widens, an integer passes through, a
+                //  number rides in its own bits and is read back by bit-cast.
+                if(v->getType()->isIntegerTy(1))
+                    v = builder->CreateZExt(v, builder->getInt64Ty());
+                else if(v->getType()->isDoubleTy())
+                    v = builder->CreateBitCast(v, builder->getInt64Ty());
+                builder->CreateRet(v);
+                llvm::verifyFunction(*subBody, &llvm::outs());
+
+                std::ostringstream  label;
+                Printer::output(label, operand);
+                refmod->addRunRow(funcName,
+                    {subName, label.str(), typeStr, operand->is_temporal()});
+            }
         }
 
         if(!llvm::verifyFunction(*funcBody, &llvm::outs()))

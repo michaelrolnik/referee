@@ -1045,6 +1045,41 @@ TEST(Rdb, ExplainMarksAVacuousRequirement)
     EXPECT_NE(realLine.find("\"vacuous\":false"), std::string::npos) << realLine;
 }
 
+// The operands of the outermost operator, each drawn as its own row, so a
+// picture shows which side of a compound requirement gave way and when rather
+// than only that it did. Labels are the operands' source text; a constant
+// operand and a freeze-bound one get no row -- the first draws a flat line, the
+// second cannot compile on its own.
+TEST(Rdb, ExplainCarriesSubexpressionRows)
+{
+    auto    ref = std::string(REFEREE_TEST_DATA_DIR) + "/explain_rows.ref";
+    auto    csv = std::string(REFEREE_TEST_DATA_DIR) + "/explain_rows.csv";
+    auto    out = std::string(REFEREE_TEST_DATA_DIR) + "/explain_sub.ndjson.tmp";
+
+    {
+        std::ifstream       in(ref);
+        std::ostringstream  os;
+        Referee::executeAll(in, ref, {{csv, false}}, "", os,
+                            Referee::Detail::Requirements, {}, {}, out);
+    }
+
+    std::ifstream       f(out);
+    std::string         line, conj;
+    while (std::getline(f, line))
+        if (line.find("which_conjunct") != std::string::npos)
+            conj = line;
+    std::remove(out.c_str());
+
+    ASSERT_FALSE(conj.empty());
+
+    //  a = 1, 0, 3.  `a >= 0` holds throughout; `a < 3` fails at the last
+    //  state.  The whole requirement is drawn, and each conjunct beneath it.
+    EXPECT_NE(conj.find("\"label\":\"a >= 0\""), std::string::npos) << conj;
+    EXPECT_NE(conj.find("[true,true,true]"),     std::string::npos) << conj;
+    EXPECT_NE(conj.find("\"label\":\"a < 3\""),  std::string::npos) << conj;
+    EXPECT_NE(conj.find("[true,true,false]"),    std::string::npos) << conj;
+}
+
 // A whole-state accessor and a function alias share one C namespace, and a
 // specification can put them in the same place: signal `len` generates
 // `referee_state_len`, and `func state_len` aliases to the same spelling. The

@@ -31,3 +31,10 @@ G(a > 100 => a < 0);
 # The same shape with an antecedent that does fire is not vacuous.
 @real_guard_fires
 G(a >= 0 => a >= 0);
+
+# The operands of the outermost operator, each its own row: not whether the
+# requirement held, but which side of it gave way and when. `a >= 0` is false
+# only where a is negative; `a < 3` only where it is not. A viewer draws both
+# beneath the conjunction they compose.
+@which_conjunct
+G(a >= 0 && a < 3);

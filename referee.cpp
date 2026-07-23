@@ -667,6 +667,7 @@ JitWithSpecs    buildJitFromRef(std::istream& refStream, std::string const& refN
         //  dereferences it.
         if (name.rfind("__col__", 0) == 0) continue;
         if (name.rfind("__ante__", 0) == 0) continue;
+        if (name.rfind("__sub__", 0) == 0) continue;
 
         auto        head = name.substr(0, name.find(" .. "));   // "[file:]row:col"
         std::string file;
@@ -713,10 +714,12 @@ bool    runAllSpecs(llvm::orc::LLJIT& jit,
                     std::size_t   stride = 0,
                     std::size_t   firstReal = 0,
                     std::size_t   lastReal = 0,
-                    std::set<std::string> const* temporalReqs = nullptr)
+                    std::set<std::string> const* temporalReqs = nullptr,
+                    ::Module* astModule = nullptr)
 {
     using SpecFn = bool(*)(void*, void*, void*);
     using ColFn  = bool(*)(void*, void*, void*, void*);
+    using SubFn  = std::int64_t(*)(void*, void*, void*, void*);
 
     //  An index outside its array cannot be answered, and it cannot be turned
     //  into a verdict inside the generated code either: a requirement returns
@@ -863,16 +866,59 @@ bool    runAllSpecs(llvm::orc::LLJIT& jit,
                 {
                     w.key("rows");
                     auto    rows = w.array();
-                    auto    row  = w.object();
-                    w.key("id").value("r0");
-                    w.key("label").value(name);
-                    w.key("kind").value(
-                        temporalReqs && temporalReqs->count(name) ? "temporal" : "state");
-                    w.key("type").value("boolean");
-                    w.key("values");
-                    auto    vals = w.array();
-                    for (bool v : column)
-                        w.value(v);
+
+                    //  r0: the requirement's own column.
+                    {
+                        auto    row  = w.object();
+                        w.key("id").value("r0");
+                        w.key("label").value(name);
+                        w.key("kind").value(
+                            temporalReqs && temporalReqs->count(name) ? "temporal" : "state");
+                        w.key("type").value("boolean");
+                        w.key("values");
+                        auto    vals = w.array();
+                        for (bool v : column)
+                            w.value(v);
+                    }
+
+                    //  The operands of the outermost operator, so the picture
+                    //  shows which side of a compound requirement gave way and
+                    //  when. Their functions and labels come from the code
+                    //  generator, the one authority on what it emitted.
+                    if (astModule != nullptr)
+                    {
+                        auto const& subs = astModule->runRowsFor(name);
+                        auto*       base = static_cast<std::uint8_t*>(frst);
+                        int         ri   = 1;
+
+                        for (auto const& sub : subs)
+                        {
+                            auto sym = jit.lookup(sub.func);
+                            if (!sym) { llvm::consumeError(sym.takeError()); continue; }
+                            auto fn = sym->toPtr<SubFn>();
+
+                            auto    row = w.object();
+                            w.key("id").value("r" + std::to_string(ri++));
+                            w.key("label").value(sub.label);
+                            w.key("kind").value(sub.temporal ? "temporal" : "state");
+                            w.key("type").value(sub.type);
+                            w.key("values");
+                            auto    vals = w.array();
+
+                            for (std::size_t si = firstReal; si < lastReal; si++)
+                            {
+                                std::int64_t bits = fn(frst, last, base + si * stride, conf);
+                                if (sub.type == "boolean")   w.value(bits != 0);
+                                else if (sub.type == "number")
+                                {
+                                    double d;
+                                    std::memcpy(&d, &bits, sizeof(d));
+                                    w.value(d);
+                                }
+                                else                         w.value(bits);
+                            }
+                        }
+                    }
                 }
             }
             w.line();
@@ -1263,7 +1309,7 @@ bool    runOneTrace(JitWithSpecs&            js,
                        os, explain,
                        stateStride, std::size_t(1),
                        numStates > 1 ? numStates - 1 : std::size_t(1),
-                       &temporalReqs);
+                       &temporalReqs, js.astModule);
 }
 
 // Compile, then run against a single trace. The original single-trace entry

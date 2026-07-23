@@ -120,6 +120,23 @@ public:
     std::vector<Spec*> const&   getSpecs();
     std::string const&          getSpecName(std::size_t index) const;
 
+    //  A subexpression the code generator compiled its own column function
+    //  for, so `--explain` can draw where a compound requirement went wrong
+    //  without walking the AST a second time and risking a different answer.
+    //  The generator is the one authority on which nodes it emitted and what
+    //  their functions are called; the host reads this rather than
+    //  rediscovering it.
+    struct  RunRow
+    {
+        std::string     func;       //  the `__sub__…` symbol to call per state
+        std::string     label;      //  the subexpression's source text
+        std::string     type;       //  "boolean" | "integer" | "number"
+        bool            temporal;   //  a claim about the suffix, not the instant
+    };
+
+    void                            addRunRow(std::string const& req, RunRow row);
+    std::vector<RunRow> const&      runRowsFor(std::string const& req) const;
+
 private:
     std::map<std::string, Type*>    m_name2type;
     std::map<std::string, Type*>    m_name2data;  // ALL props (CSV + computed) for type lookup
@@ -131,6 +148,7 @@ private:
     std::vector<std::string>        m_exprNames;    //  parallel to m_exprs
     std::vector<std::string>        m_specNames;    //  parallel to m_specs
     std::set<std::string>           m_reqNames;     //  for duplicate detection
+    std::map<std::string, std::vector<RunRow>>  m_runRows;  //  by requirement
 
     void    noteName(std::string const& name);
     std::vector<std::string>        m_context;

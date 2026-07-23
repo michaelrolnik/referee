@@ -186,9 +186,28 @@ one `G` over 20 000 states, against 0.16 s without `--explain`. Affordable for
 one trace, and exactly the waste the bottom-up column evaluator below removes;
 until then, `--explain` is opt-in and single-trace.
 
-**Still not built:** subexpression rows, `scope.active`, and computed vacuity
--- the parts that make a run trace *coverage* rather than a debugger, and the
-half that works in CI.
+**Built since:** subexpression rows and computed vacuity.
+
+Each bare requirement now draws the operands of its outermost operator as
+their own rows -- for `G(a && b)`, `a` and `b` beneath the conjunction, so a
+picture shows which side gave way and when rather than only that the whole
+thing did. The operand functions and their labels come from the code
+generator, recorded on the module as it emits them, so the host draws them
+without walking the AST a second time and risking a different answer. A
+constant operand gets no row (a flat line nobody needs); a freeze-bound one
+gets none either (it cannot compile on its own, which is the case the ordinary
+lowering already treats as separate).
+
+Vacuity is computed for the one case that needs no scope analysis: an
+implication whose antecedent never fires. `G(a => b)` on a trace where `a` is
+never true holds no matter what `b` does, and referee marks it rather than
+leaving a green row to be mistaken for a satisfied one. A `__ante__` companion
+is the antecedent's own column, read from the raw tree before `=>` is
+canonicalised to `!a || b`.
+
+**Still not built:** `scope.active` and `scope_never_opened` vacuity for Dwyer
+patterns -- these need each pattern's scope condition rather than an
+antecedent -- and `quantifier_empty`.
 
 ## Format
 
