@@ -45,8 +45,8 @@ python3 tools/view.py       examples/door/nominal.ndjson -o nominal.html
 python3 tools/view_bokeh.py examples/door/nominal.ndjson -o nominal.bokeh.html
 ```
 
-Both are committed beside the trace: `nominal.html` (35 KB, static) and
-`nominal.bokeh.html` (1.6 MB, hover and zoom, BokehJS inlined so it opens
+Both are committed beside the trace: `nominal.html` (69 KB, static) and
+`nominal.bokeh.html` (1.7 MB, hover and zoom, BokehJS inlined so it opens
 offline).
 
 Every signal comes out **sparse** — a door system changes state a few dozen
@@ -54,21 +54,25 @@ times across 48 states, so `alarm` is a single entry and `door` is two. That is
 the encoding heuristic doing what it is for, and it is visible in the file
 rather than only in a benchmark.
 
-Each requirement draws a **verdict band** — a value over the whole trace, which
-is what a verdict is — and nothing more yet. Two things are still missing, both
-on referee's side rather than the viewers':
+Each requirement draws a **verdict band** and, beside it now, the interval its
+scope was actually open:
 
-**Scope ranges.** `scope.active` would shade where each requirement's scope was
-open, which is the interval you actually want beside a verdict. Referee does
-not emit it, deliberately: an empty `active` means *never opened*, which is the
-vacuity signal, so writing one speculatively would mark everything vacuous.
-Emitting it truthfully needs the pattern's scope kind carried from the AST
-through to where verdicts are computed, which is plumbing rather than
-guesswork.
+**Scope ranges.** `scope.active` is emitted, derived from each pattern's scope
+condition. Here `power_up_locked` (`before button.DEPRESSED`) is open only over
+`[0, 2)` — the states before the first press — while the `globally` requirements
+span the whole `[0, 48)`, and `alarm_after_thirty_seconds` (`while
+door.OPENED`) opens at `[7, 48)` where the door is open. A requirement whose
+`active` came out empty would be marked vacuous with `scope_never_opened`; none
+here is, because the nominal trace exercises every scope. That is the point of
+the ranges beside the verdicts: a requirement that passed over an empty scope
+reads exactly like one that was satisfied, and only the empty band tells them
+apart.
 
-**Per-subexpression rows.** Those wait on the column evaluator. Until then the
-signals section is the picture, and the verdict band says which requirement
-decided what.
+**Per-subexpression rows** are emitted for bare requirements — the operands of
+the outermost operator, so a compound requirement shows which side gave way.
+This spec is written entirely in Dwyer patterns, which quantify over the whole
+trace and so carry the verdict and scope rather than a per-state column; a
+`G(a && b)` written directly would draw `a` and `b` as their own rows.
 
 ## `__time__` is in nanoseconds
 
