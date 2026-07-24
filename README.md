@@ -434,11 +434,13 @@ The generated header is the load-bearing piece: C cannot diagnose a signature mi
 
 Everything resolves before the first trace row is read. See `docs/external-functions.md` for the design, and `examples/extfunc/` for a worked example.
 
-A **freeze variable** `name@(... expression ...)` binds the current state to `name`, so subexpressions can reference data at that frozen point — e.g. `x@(F(x.abc.a == 3))` means "there is a future state whose `abc.a` equals the value `abc.a` had at the freeze point". A special `__time__` identifier refers to the current timestamp.
+A **freeze variable** `name@(... expression ...)` binds the current state to `name`, so subexpressions can reference data at that frozen point — e.g. `x@(F(x.abc.a == 3))` means "there is a future state whose `abc.a` equals the value `abc.a` had at the freeze point". A special `__time__` identifier refers to the current timestamp, and the frozen state's timestamp is `name.__time__`.
+
+The elapsed time since a freeze is common enough to have a name: **`name.elapsed`** is a pseudo-property — like `.count` on an array — that desugars to `__time__ - name.__time__`. So a deadline reads as `t.elapsed <= 5` rather than the subtraction spelled out.
 
 ```text
 // A problem must be followed by an alarm within 5 seconds
-G(problem => t@(F(alarm && __time__ - t.__time__ <= 5)));
+G(problem => t@(F(alarm && t.elapsed <= 5)));
 ```
 
 ### Specification Patterns

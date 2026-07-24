@@ -38,3 +38,12 @@ G(t@(Ss(a, b)) == Ss(a, b));
 # that the outer operator still produces the right answer.
 #   inner collapses to b => Us(b, b) == b at every state
 G(Us(t@(Ss(a, t.b)), t@(Ss(a, t.b))) == b);
+
+# ── `t.elapsed`: sugar for `__time__ - t.__time__`, the time since freeze `t` ──
+# It desugars to exactly that, so the two agree at every state.
+G(t@(t.elapsed == __time__ - t.__time__));
+# Zero at the freeze point itself (current state == frozen state).
+G(t@(t.elapsed == 0));
+# One step after a freeze taken at t=0, elapsed is the 1000 ns gap to the next
+# state.  Guarded to the first real state so only that step is asserted.
+G(__time__ == 0 => t@(Xs(t.elapsed == 1000)));

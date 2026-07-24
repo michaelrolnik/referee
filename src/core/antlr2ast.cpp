@@ -923,6 +923,22 @@ std::any Antlr2AST::visitExprMmbr(      referee::refereeParser::ExprMmbrContext*
 
     if(ctxt != nullptr)
     {
+        //  `t.elapsed` is the time since the freeze `t` was taken -- a
+        //  pseudo-property, like `.count` on an array, with no signal behind
+        //  it. It desugars to `__time__ - t.__time__`: the current state's time
+        //  (a fresh `__curr__` reference) minus the frozen state's time.
+        if(name == "elapsed")
+        {
+            auto    curr    = build<ExprContext>(ctx, "__curr__");
+            curr->type(Factory<TypeContext>::create(module));
+            auto    now     = static_cast<Expr*>(build<ExprData>(ctx, curr, "__time__"));
+            now->type(module->getProp("__time__"));
+
+            auto    then    = static_cast<Expr*>(build<ExprData>(ctx, ctxt, "__time__"));
+
+            return static_cast<Expr*>(build<ExprSub>(ctx, now, then));
+        }
+
         if(module->hasData(name))
             return static_cast<Expr*>(build<ExprData>(ctx, ctxt, name));
 

@@ -4,4 +4,4 @@ data problem : boolean;
 data alarm   : boolean;
 
 // A problem must be followed by an alarm within 5 seconds
-G(problem => t@(F(alarm && __time__ - t.__time__ <= 5)));
+G(problem => t@(F(alarm && t.elapsed <= 5)));
