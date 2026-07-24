@@ -1,7 +1,9 @@
 # Design: online monitoring — a verdict as the trace unfolds
 
-**Status:** proposed. Nothing here is built yet; this records the design so it
-can be argued with before any code is written.
+**Status:** phase 1 built — `referee monitor spec.ref` streams CSV states from
+stdin and reports invariant violations as they happen, deferring liveness to
+end of stream (see [monitor-implementation.md](monitor-implementation.md)). The
+rest of this document is the design the later phases build toward.
 
 **Scope:** a `referee monitor spec.ref` that consumes states one at a time from
 a stream and emits a verdict per requirement per step, deciding the instant a

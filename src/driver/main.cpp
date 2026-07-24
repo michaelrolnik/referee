@@ -260,6 +260,20 @@ int main(int argc, char * argv[])
         ->check(CLI::ExistingFile);
     addIncludeOption(execute);
 
+    // monitor subcommand: stream states from stdin, check online
+    std::string monRef;
+    std::string monConf;
+    auto        monitor = app.add_subcommand(
+        "monitor", "Stream states from stdin (CSV) and check requirements online");
+    monitor
+        ->add_option("reffile", monRef, "REF specification file")
+        ->check(CLI::ExistingFile)
+        ->required();
+    monitor
+        ->add_option("--conf", monConf, "Conf file (.csv / .yml / .yaml)")
+        ->check(CLI::ExistingFile);
+    addIncludeOption(monitor);
+
     try {
         app.parse(argc, argv);
 
@@ -346,6 +360,13 @@ int main(int argc, char * argv[])
                                     std::cout, detail, includePaths, libraryPaths, runExplain);
                 if (!allPass) return 1;
             }
+        }
+        else if(app.got_subcommand("monitor"))
+        {
+            std::ifstream   refStream(monRef, std::ios_base::in);
+            bool            allPass = Referee::monitor(
+                                refStream, monRef, std::cin, monConf, std::cout, includePaths);
+            if (!allPass) return 1;
         }
     }
     catch (const CLI::ParseError &e)

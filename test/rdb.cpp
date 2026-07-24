@@ -194,6 +194,35 @@ TEST(Rdb, ExecuteRdbFail)
     std::remove(rdbPath.c_str());
 }
 
+// The monitor streams states one CSV row at a time and reports a safety
+// (invariant) violation the instant it happens, while deferring a liveness
+// obligation to end of stream -- so an `F` that has not been met yet is never
+// mistaken for a mid-stream violation, and is finalised correctly once met.
+TEST(Rdb, MonitorStreamsAndReportsViolations)
+{
+    std::istringstream  ref(
+        "data x : integer;\n"
+        "@safe G(x < 100);\n"       // safety: broken the instant x >= 100
+        "@live F(x == 42);\n");     // liveness: deferred until end of stream
+    std::istringstream  states(
+        "__time__,x\n"
+        "0,10\n"
+        "1000,150\n"                // safety breaks here
+        "2000,42\n");               // liveness met here
+
+    std::ostringstream  out;
+    bool                allPass = Referee::monitor(ref, "<mon>", states, "", out);
+    auto                s       = out.str();
+
+    EXPECT_FALSE(allPass) << s;                                          // safety failed overall
+    EXPECT_NE(s.find("VIOLATION"),        std::string::npos) << s;       // reported mid-stream
+    EXPECT_NE(s.find("__time__=1000"),    std::string::npos) << s;       // at the breaking state
+    EXPECT_NE(s.find("FAIL  safe"),       std::string::npos) << s;       // safety final verdict
+    EXPECT_NE(s.find("PASS  live"),       std::string::npos) << s;       // liveness met by end
+    // The liveness obligation must never have been cried as a mid-stream violation.
+    EXPECT_EQ(s.find("VIOLATION  live"),  std::string::npos) << s;
+}
+
 // Phase 4 — CSV-derived and YAML-derived .rdb files must be byte-identical.
 // Both pipelines walk props in the same declaration order, so string-pool
 // insertion order is identical and the output bytes match exactly.

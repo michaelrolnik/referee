@@ -423,4 +423,15 @@ public:
                                std::string const& rdbPath,
                                std::ostream& os = std::cout,
                                std::vector<std::string> const& includePaths = {});
+
+    /// Online monitoring: read states one CSV row at a time from `states` and
+    /// evaluate every requirement as the trace grows, reporting a violation the
+    /// instant an invariant breaks rather than after the run. `refStream` is
+    /// the specification, `confPath` the fixed configuration (may be empty).
+    /// Returns whether every requirement held at end of stream. See
+    /// docs/monitor.md; this is the phase-1 evaluator.
+    static bool     monitor(std::istream& refStream, std::string refName,
+                            std::istream& states, std::string const& confPath,
+                            std::ostream& os = std::cout,
+                            std::vector<std::string> const& includePaths = {});
 };

@@ -1,9 +1,22 @@
 # Building the monitor — an implementation plan
 
-**Status:** proposed. Companion to [monitor.md](monitor.md), which is the design
-— the semantics, the verdict domain, and why the pieces are shaped as they are.
-This is the *how*: what to reuse, what to write, and in what order. Nothing here
-is built.
+**Status:** phase 1 built; the rest proposed. Companion to
+[monitor.md](monitor.md), which is the design — the semantics, the verdict
+domain, and why the pieces are shaped as they are. This is the *how*: what to
+reuse, what to write, and in what order.
+
+Phase 1 (`Referee::monitor`, `src/driver/referee.cpp`; the `monitor` subcommand)
+took the pragmatic route over the phased build below: rather than the incremental
+frame-and-atom evaluator, it reuses the whole offline path per prefix — build the
+JIT once with `buildJitFromRef`, then for each streamed row re-ingest the
+accumulated CSV (`ingestWithModule` → `Reader`) and run `runOneTrace`, diffing
+the per-requirement verdicts. That is O(N²), not single-pass, but correct and
+tiny, and it de-risked the front end exactly as intended. A requirement with an
+eventually operator (`hasEventually` walks for `F`/until/release) is finalised at
+end of stream so a pessimistic prefix is never cried as a violation; everything
+else is reported the instant its prefix verdict turns false. The incremental
+evaluator, projection, segments, `wait`/`yield`/`refresh` and scopes remain the
+proposed work below.
 
 ## What it reuses, and what is new
 

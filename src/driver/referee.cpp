@@ -4131,3 +4131,172 @@ bool    Referee::executeRdb(std::istream& refStream, std::string refName,
     referee::db::Reader     rdb(rdbPath);
     return runAgainstRdb(refStream, refName, rdb, os, includePaths);
 }
+
+// ── referee monitor: online, one state at a time ────────────────────────────
+//
+//  Phase 1 (docs/monitor-implementation.md). It reuses the whole offline path
+//  per prefix: the JIT is built once, then for each new row the accumulated CSV
+//  is re-ingested and the specs run over the prefix. That is O(N^2), not the
+//  single-pass incremental evaluator the design describes, but it is correct
+//  and reuses every existing piece; the incremental evaluator is a later phase.
+//
+//  A prefix verdict is exact for safety -- an invariant broken on a prefix
+//  stays broken -- and pessimistic for liveness, where an `F`/until obligation
+//  reads unmet until it is satisfied. So a mid-stream violation is reported
+//  only for requirements with no eventually operator; the rest are finalised at
+//  end of stream, where the prefix is the whole trace and every verdict final.
+
+//  Does the requirement carry an eventually-flavoured operator (`F`, strong or
+//  weak until, release), whose prefix verdict can climb from false back to
+//  true?  Such requirements are deferred to end of stream rather than reported
+//  mid-stream, so a pessimistic prefix is never mistaken for a violation.  The
+//  walk covers the operator spine and quantifier bodies, where temporal
+//  operators actually appear.
+static bool hasEventually(Expr* e)
+{
+    if (e == nullptr)                                                   return false;
+    if (dynamic_cast<ExprF*>(e)  || dynamic_cast<ExprUs*>(e) ||
+        dynamic_cast<ExprUw*>(e) || dynamic_cast<ExprRs*>(e) ||
+        dynamic_cast<ExprRw*>(e))                                       return true;
+    if (auto* u = dynamic_cast<ExprUnary*>(e))   return hasEventually(u->arg);
+    if (auto* b = dynamic_cast<ExprBinary*>(e))  return hasEventually(b->lhs) || hasEventually(b->rhs);
+    if (auto* t = dynamic_cast<ExprTernary*>(e)) return hasEventually(t->lhs) || hasEventually(t->mhs) || hasEventually(t->rhs);
+    if (auto* c = dynamic_cast<ExprCount*>(e))   return hasEventually(c->arg) || hasEventually(c->body);
+    return false;
+}
+
+//  Parse `name … PASS/FAIL …` verdict lines from a runOneTrace capture into a
+//  label -> passed map.  The name is left-justified in a fixed column, so it is
+//  everything before the first ` PASS`/` FAIL`, trailing padding trimmed.
+static std::map<std::string, bool>  parseVerdicts(std::string const& text)
+{
+    std::map<std::string, bool> out;
+    std::istringstream          in(text);
+    std::string                 line;
+    while (std::getline(in, line))
+    {
+        auto    p = line.find(" PASS");
+        auto    f = line.find(" FAIL");
+        if (p == std::string::npos && f == std::string::npos)   continue;
+
+        bool        pass = p != std::string::npos && (f == std::string::npos || p < f);
+        std::string name = line.substr(0, pass ? p : f);
+        while (!name.empty() && name.back() == ' ')             name.pop_back();
+        if (!name.empty())                                      out[name] = pass;
+    }
+    return out;
+}
+
+bool    Referee::monitor(std::istream& refStream, std::string refName,
+                         std::istream& states, std::string const& confPath,
+                         std::ostream& os, std::vector<std::string> const& includePaths)
+{
+    std::string         refSrc((std::istreambuf_iterator<char>(refStream)),
+                                std::istreambuf_iterator<char>());
+    std::istringstream  refForJit(refSrc);
+    auto                js = buildJitFromRef(refForJit, refName, includePaths, Referee::Sizes{});
+
+    //  Which requirements are finalised only at end of stream (see above), keyed
+    //  by the same label runOneTrace prints.  Dwyer specs all defer in phase 1.
+    std::set<std::string>   deferred;
+    {
+        auto&   exprs = js.astModule->getExprs();
+        for (std::size_t i = 0; i < exprs.size(); i++)
+        {
+            auto    label = js.astModule->getExprName(i);
+            if (label.empty())              label = exprs[i]->where().text();
+            if (hasEventually(exprs[i]))    deferred.insert(label);
+        }
+        auto&   specs = js.astModule->getSpecs();
+        for (std::size_t i = 0; i < specs.size(); i++)
+        {
+            auto    label = js.astModule->getSpecName(i);
+            if (label.empty())  label = specs[i]->where().text();
+            deferred.insert(label);
+        }
+    }
+
+    std::string     confContents;
+    if (!confPath.empty())
+    {
+        std::ifstream   cf(confPath);
+        confContents.assign(std::istreambuf_iterator<char>(cf),
+                            std::istreambuf_iterator<char>());
+    }
+
+    Color::Modifier const   green (Color::FG_GREEN);
+    Color::Modifier const   red   (Color::FG_RED);
+    Color::Modifier const   yellow(Color::FG_YELLOW);
+    Color::Modifier const   reset (Color::FG_DEFAULT);
+
+    std::string     header;
+    if (!std::getline(states, header))  return true;    //  empty stream
+
+    std::string                     csv = header;
+    std::map<std::string, bool>     prev;
+    std::string                     lastCapture;
+    std::string                     line;
+
+    while (std::getline(states, line))
+    {
+        if (line.empty())   continue;
+        csv += "\n";
+        csv += line;
+
+        std::istringstream                      csvIn(csv);
+        std::unique_ptr<std::istringstream>     confIn;
+        if (!confContents.empty())
+            confIn = std::make_unique<std::istringstream>(confContents);
+
+        std::stringstream   rdbBuf(std::ios::in | std::ios::out | std::ios::binary);
+        try
+        {
+            referee::db::ingestWithModule(csvIn, "stdin.csv", confIn.get(), "conf",
+                                          js.astModule, rdbBuf);
+        }
+        catch (std::exception const& e)
+        {
+            os << red << "error" << reset << ": " << e.what() << "\n";
+            return false;
+        }
+
+        auto                        str = std::move(rdbBuf).str();
+        std::vector<std::uint8_t>   bytes(str.begin(), str.end());
+        referee::db::Reader         rdb(std::move(bytes), "stdin.csv");
+
+        std::ostringstream          capture;
+        runOneTrace(js, rdb, capture);
+        lastCapture = capture.str();
+
+        auto            verdicts = parseVerdicts(lastCapture);
+        auto            comma    = line.find(',');
+        std::string     now      = comma == std::string::npos ? line : line.substr(0, comma);
+
+        for (auto const& [label, pass] : verdicts)
+        {
+            bool    was = prev.count(label) ? prev[label] : true;
+            if (!pass && was && deferred.find(label) == deferred.end())
+                os << red << "VIOLATION" << reset << "  "
+                   << yellow << label << reset
+                   << "  @ __time__=" << now << "  " << line << "\n";
+            prev[label] = pass;
+        }
+    }
+
+    //  End of stream: the last prefix is the whole trace, so every verdict --
+    //  the deferred liveness ones included -- is now final.
+    os << "-- end of stream --\n";
+    bool    allPass = true;
+    for (auto const& [label, pass] : parseVerdicts(lastCapture))
+    {
+        if (pass)
+            os << green << "PASS" << reset << "  " << label << "\n";
+        else
+        {
+            allPass = false;
+            os << red << "FAIL" << reset << "  " << yellow << label << reset
+               << (deferred.count(label) ? "  (unmet at end of stream)" : "") << "\n";
+        }
+    }
+    return allPass;
+}
