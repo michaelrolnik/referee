@@ -223,6 +223,42 @@ TEST(Rdb, MonitorStreamsAndReportsViolations)
     EXPECT_EQ(s.find("VIOLATION  live"),  std::string::npos) << s;
 }
 
+// The monitor's end-of-stream verdict must equal the offline checker's on the
+// same trace -- the agreement property the design rests on. Streaming the CSV
+// row by row and re-ingesting the prefix has to land on the same final result
+// as a single batch ingest, over a real fixture, both when it passes and when
+// it fails.
+TEST(Rdb, MonitorAgreesWithOfflineAtEndOfStream)
+{
+    auto    confPath = std::string(REFEREE_TEST_DATA_DIR) + "/conf.csv";
+    auto    csvPath  = std::string(REFEREE_TEST_DATA_DIR) + "/data.csv";
+
+    for (auto const* leaf : {"/pass.ref", "/fail.ref"})
+    {
+        auto    refPath = std::string(REFEREE_TEST_DATA_DIR) + leaf;
+
+        //  Offline: ingest to a .rdb and execute.
+        auto    rdbPath = tmpFile("agree");
+        referee::db::ingest(refPath, csvPath, confPath, rdbPath);
+        std::ifstream       refA(refPath);
+        std::ostringstream  offOut;
+        bool                offline = Referee::executeRdb(refA, refPath, rdbPath, offOut);
+        std::remove(rdbPath.c_str());
+
+        //  Online: feed the same CSV as a stream to the monitor.
+        std::ifstream       csvIn(csvPath);
+        std::stringstream   csvBuf;
+        csvBuf << csvIn.rdbuf();
+        std::istringstream  states(csvBuf.str());
+        std::ifstream       refB(refPath);
+        std::ostringstream  monOut;
+        bool                online = Referee::monitor(refB, refPath, states, confPath, monOut);
+
+        EXPECT_EQ(offline, online) << leaf
+            << "\noffline:\n" << offOut.str() << "\nmonitor:\n" << monOut.str();
+    }
+}
+
 // Phase 4 — CSV-derived and YAML-derived .rdb files must be byte-identical.
 // Both pipelines walk props in the same declaration order, so string-pool
 // insertion order is identical and the output bytes match exactly.

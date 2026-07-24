@@ -4251,7 +4251,9 @@ bool    Referee::monitor(std::istream& refStream, std::string refName,
         std::stringstream   rdbBuf(std::ios::in | std::ios::out | std::ios::binary);
         try
         {
-            referee::db::ingestWithModule(csvIn, "stdin.csv", confIn.get(), "conf",
+            //  ingestWithModule picks the CSV vs YAML loader by the name's
+            //  extension, so the conf name must carry its real one (the path).
+            referee::db::ingestWithModule(csvIn, "stdin.csv", confIn.get(), confPath,
                                           js.astModule, rdbBuf);
         }
         catch (std::exception const& e)
