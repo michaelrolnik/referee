@@ -4189,7 +4189,8 @@ static std::map<std::string, bool>  parseVerdicts(std::string const& text)
 
 bool    Referee::monitor(std::istream& refStream, std::string refName,
                          std::istream& states, std::string const& confPath,
-                         std::ostream& os, std::vector<std::string> const& includePaths)
+                         std::ostream& os, bool stopAtFirst,
+                         std::vector<std::string> const& includePaths)
 {
     std::string         refSrc((std::istreambuf_iterator<char>(refStream)),
                                 std::istreambuf_iterator<char>());
@@ -4198,7 +4199,8 @@ bool    Referee::monitor(std::istream& refStream, std::string refName,
 
     //  Which requirements are finalised only at end of stream (see above), keyed
     //  by the same label runOneTrace prints.  Dwyer specs all defer in phase 1.
-    std::set<std::string>   deferred;
+    std::set<std::string>       deferred;
+    std::vector<std::string>    order;      //  requirement labels, source order
     {
         auto&   exprs = js.astModule->getExprs();
         for (std::size_t i = 0; i < exprs.size(); i++)
@@ -4206,6 +4208,7 @@ bool    Referee::monitor(std::istream& refStream, std::string refName,
             auto    label = js.astModule->getExprName(i);
             if (label.empty())              label = exprs[i]->where().text();
             if (hasEventually(exprs[i]))    deferred.insert(label);
+            order.push_back(label);
         }
         auto&   specs = js.astModule->getSpecs();
         for (std::size_t i = 0; i < specs.size(); i++)
@@ -4213,6 +4216,7 @@ bool    Referee::monitor(std::istream& refStream, std::string refName,
             auto    label = js.astModule->getSpecName(i);
             if (label.empty())  label = specs[i]->where().text();
             deferred.insert(label);
+            order.push_back(label);
         }
     }
 
@@ -4274,15 +4278,41 @@ bool    Referee::monitor(std::istream& refStream, std::string refName,
         auto            comma    = line.find(',');
         std::string     now      = comma == std::string::npos ? line : line.substr(0, comma);
 
+        bool    violatedNow = false;
         for (auto const& [label, pass] : verdicts)
         {
             bool    was = prev.count(label) ? prev[label] : true;
             if (!pass && was && deferred.find(label) == deferred.end())
+            {
                 os << red << "VIOLATION" << reset << "  "
                    << yellow << label << reset
                    << "  @ __time__=" << now << "  " << line << "\n";
+                violatedNow = true;
+            }
             prev[label] = pass;
         }
+
+        //  One verdict line per state -- the three-valued LTL3 view. A safety
+        //  requirement is `?` while it holds (it could still break) and FAIL
+        //  once broken; a liveness one is `?` until it is met and PASS once
+        //  settled true. The line is flushed so a live producer sees each state
+        //  as it arrives rather than at some buffer boundary.
+        os << yellow << "__time__=" << now << reset;
+        for (auto const& label : order)
+        {
+            auto    it = verdicts.find(label);
+            os << "  " << label << '=';
+            if (it == verdicts.end())               os << '?';
+            else if (deferred.count(label))
+                it->second ? (os << green << "PASS" << reset) : (os << '?');
+            else
+                it->second ? (os << '?') : (os << red << "FAIL" << reset);
+        }
+        os << "\n";
+        os.flush();
+
+        if (stopAtFirst && violatedNow)
+            return false;
     }
 
     //  End of stream: the last prefix is the whole trace, so every verdict --

@@ -433,5 +433,6 @@ public:
     static bool     monitor(std::istream& refStream, std::string refName,
                             std::istream& states, std::string const& confPath,
                             std::ostream& os = std::cout,
+                            bool stopAtFirst = false,
                             std::vector<std::string> const& includePaths = {});
 };

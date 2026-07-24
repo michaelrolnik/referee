@@ -223,6 +223,44 @@ TEST(Rdb, MonitorStreamsAndReportsViolations)
     EXPECT_EQ(s.find("VIOLATION  live"),  std::string::npos) << s;
 }
 
+// The per-state line is the three-valued LTL3 view, and --stop-at-first cuts
+// the stream off at the first violation. A safety requirement reads `?` while
+// it holds and FAIL once broken; a liveness one reads `?` until met and PASS
+// once settled. stopAtFirst returns false and stops before later states.
+TEST(Rdb, MonitorPerStateAndStopAtFirst)
+{
+    auto    spec = std::string(
+        "data x : integer;\n"
+        "@safe G(x < 100);\n"
+        "@live F(x == 42);\n");
+    auto    feed = std::string(
+        "__time__,x\n"
+        "0,10\n"        // safe holds (?), live unmet (?)
+        "1000,42\n"     // live met -> PASS
+        "2000,150\n"    // safe broken -> FAIL, violation
+        "3000,10\n");   // never reached under --stop-at-first
+
+    {   //  full run: three-valued columns evolve as expected
+        std::istringstream  ref(spec), states(feed);
+        std::ostringstream  out;
+        Referee::monitor(ref, "<mon>", states, "", out, /*stopAtFirst=*/false);
+        auto    s = out.str();
+        EXPECT_NE(s.find("safe=?"),    std::string::npos) << s;   // safety unknown while holding
+        EXPECT_NE(s.find("live=PASS"), std::string::npos) << s;   // liveness settles true
+        EXPECT_NE(s.find("safe=FAIL"), std::string::npos) << s;   // safety settles false
+        EXPECT_NE(s.find("__time__=3000"), std::string::npos) << s; // ran to the end
+    }
+    {   //  --stop-at-first: stops at the 2000 violation, never sees 3000
+        std::istringstream  ref(spec), states(feed);
+        std::ostringstream  out;
+        bool    allPass = Referee::monitor(ref, "<mon>", states, "", out, /*stopAtFirst=*/true);
+        auto    s = out.str();
+        EXPECT_FALSE(allPass) << s;
+        EXPECT_NE(s.find("VIOLATION"),     std::string::npos) << s;
+        EXPECT_EQ(s.find("__time__=3000"), std::string::npos) << s;  // stopped before it
+    }
+}
+
 // The monitor's end-of-stream verdict must equal the offline checker's on the
 // same trace -- the agreement property the design rests on. Streaming the CSV
 // row by row and re-ingesting the prefix has to land on the same final result

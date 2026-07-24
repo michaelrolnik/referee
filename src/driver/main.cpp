@@ -272,6 +272,10 @@ int main(int argc, char * argv[])
     monitor
         ->add_option("--conf", monConf, "Conf file (.csv / .yml / .yaml)")
         ->check(CLI::ExistingFile);
+    bool    monStopAtFirst = false;
+    monitor
+        ->add_flag("--stop-at-first", monStopAtFirst,
+            "Exit non-zero on the first violation instead of running to end of stream");
     addIncludeOption(monitor);
 
     try {
@@ -365,7 +369,8 @@ int main(int argc, char * argv[])
         {
             std::ifstream   refStream(monRef, std::ios_base::in);
             bool            allPass = Referee::monitor(
-                                refStream, monRef, std::cin, monConf, std::cout, includePaths);
+                                refStream, monRef, std::cin, monConf, std::cout,
+                                monStopAtFirst, includePaths);
             if (!allPass) return 1;
         }
     }
