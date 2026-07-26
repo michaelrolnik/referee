@@ -563,6 +563,78 @@ TEST(Rdb, MonitorReleaseAgreesAtEveryPrefix)
     }
 }
 
+// The general residual evaluator (LTL3 progression) tracks nested and compound
+// future formulas the single-fold and one-bit latches cannot -- recurrence
+// `G(F a)`, persistence `F(G a)`, a conjunction of eventualities `F a && F b`,
+// a nested until under a response `G(a => Us(b, c))`, a disjunction mixing a
+// safety and a liveness `G(a) || F(b)`. Each carries a residual formula
+// progressed per state and closed over the empty suffix at end of stream. This
+// is the mechanism the response/until/release cases are now instances of, so it
+// must meet the same bar: agreement with the offline checker at EVERY prefix,
+// over a trace exercising every proposition. Offline is the oracle -- if the
+// finite-trace finalisation were wrong, some prefix would disagree.
+TEST(Rdb, MonitorGeneralResidualAgreesAtEveryPrefix)
+{
+    constexpr int   N = 32;
+
+    std::string                 header = "__time__,a,b,c";
+    std::vector<std::string>    rows;
+    for (int k = 0; k < N; k++)
+    {
+        bool    a = (k % 3) == 0;
+        bool    b = (k % 4) == 1;
+        bool    c = (k % 5) == 2;
+        rows.push_back(std::to_string(k * 1000)
+                     + "," + (a ? "true" : "false")
+                     + "," + (b ? "true" : "false")
+                     + "," + (c ? "true" : "false"));
+    }
+
+    char const* specs[] = {
+        "data a:boolean;\ndata b:boolean;\ndata c:boolean;\n@r G(F(a));\n",            // recurrence
+        "data a:boolean;\ndata b:boolean;\ndata c:boolean;\n@r F(G(a));\n",            // persistence
+        "data a:boolean;\ndata b:boolean;\ndata c:boolean;\n@r F(a) && F(b);\n",       // eventualities
+        "data a:boolean;\ndata b:boolean;\ndata c:boolean;\n@r G(a => Us(b, c));\n",   // nested until
+        "data a:boolean;\ndata b:boolean;\ndata c:boolean;\n@r G(a) || F(b);\n",       // safety or liveness
+        "data a:boolean;\ndata b:boolean;\ndata c:boolean;\n@r G(F(a) => F(b));\n",    // nested both sides
+    };
+
+    for (auto const* spec : specs)
+    {
+        auto    refPath = tmpFile("resid") + ".ref";
+        { std::ofstream f(refPath); f << spec; }
+
+        for (int k = 1; k <= N; k++)
+        {
+            std::string     csv = header;
+            for (int j = 0; j < k; j++)  csv += "\n" + rows[j];
+
+            auto            csvPath = tmpFile("resid-csv") + ".csv";
+            { std::ofstream f(csvPath); f << csv << "\n"; }
+
+            auto                rdbPath = tmpFile("resid-rdb");
+            referee::db::ingest(refPath, csvPath, /*conf=*/"", rdbPath);
+            std::ifstream       refA(refPath);
+            std::ostringstream  offOut;
+            bool                offline = Referee::executeRdb(refA, refPath, rdbPath, offOut);
+
+            std::istringstream  states(csv);
+            std::ifstream       refB(refPath);
+            std::ostringstream  monOut;
+            bool                online = Referee::monitor(refB, refPath, states, "", monOut);
+
+            std::remove(rdbPath.c_str());
+            std::remove(csvPath.c_str());
+
+            ASSERT_EQ(offline, online)
+                << "residual disagree at prefix " << k << " of " << N
+                << "\nspec:\n" << spec
+                << "\noffline:\n" << offOut.str() << "\nmonitor:\n" << monOut.str();
+        }
+        std::remove(refPath.c_str());
+    }
+}
+
 // The atom fast path (all requirements single-state atoms: invariants and an
 // eventually) must agree with the offline checker. This exercises the O(1)
 // per-state route -- ingest one row, call `__atom__`, fold a latch -- rather

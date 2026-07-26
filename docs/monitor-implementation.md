@@ -122,83 +122,53 @@ option only if nested future formulas make the hand-threaded form the hard part.
 ### Nested future formulas: explicit-state progression
 
 The atom fast path covers a requirement whose whole verdict is one fold — `G(P)`,
-`F(P)`, a bare predicate. A *nested* future formula — `G(a ⇒ F b)` (response),
-`G(F p)`, `p U q` — is not one fold. The chosen route to make it incremental is
-**LTL₃ formula progression** (the formula-derivative technique), with explicit
-per-requirement state — not compiled coroutines, which stay deferred: progression
-has small residuals, so the hand-written state machine is not the hard part the
-coroutines were reserved for.
+`F(P)`, a bare predicate. A *nested* or *compound* future formula — `G(a ⇒ F b)`
+(response), `G(F p)`, `F(G p)`, `F a ∧ F b`, `p U q`, `p R q` — is not one fold.
+The route to make these incremental is **LTL₃ formula progression** (the
+formula-derivative technique), with explicit per-requirement state — not compiled
+coroutines, which stay deferred: progression has small residuals, so the
+hand-written state machine is not the hard part the coroutines were reserved for.
 
-The first nested formula is **built**: the unbounded response `G(a ⇒ F b)`. Its
-progression residual is a single *pending* bit — an outstanding `a` awaiting a
-`b` — so the monitor carries one latch per response and joins them to the atom
-fast path (`Referee::monitor`, the incremental block): a `b` discharges the
-obligation, a fresh `a` with none pending arms one and remembers its `__time__`.
-An unbounded response cannot fail mid-stream, so its per-state verdict is always
-`?`; at end of stream a still-pending obligation is a `FAIL` reported with the
-trigger's time, otherwise `PASS`. The detector `isResponse` matches the exact
-shape — `G` and `F` both unbounded, `a`/`b` state predicates — and the two atomic
-propositions bind to the `__ap__0`/`__ap__1` companions (piece 1).
+**Built: a general residual evaluator** (`Referee::monitor`, the `RNode` /
+`progress` / `finalize` machinery). One mechanism, of which response, until and
+release are special cases — it replaced the three hand-written one-bit latches
+they were first prototyped as. Each requirement it accepts carries a *residual
+formula*, a small boolean-plus-temporal tree over the requirement's atomic
+propositions:
 
-The second nested formula is **built**: the unbounded until `Us(p, q)` /
-`Uw(p, q)` over two state predicates. Its residual is also one bit — an
-obligation live from state 0 while `p` holds and `q` has not yet come. `q`
-settles it PASS; `p` keeps it waiting; `p` breaking before `q` is a mid-stream
-FAIL, for both strong and weak (`isUntil` detects the shape, `p`=`__ap__0`,
-`q`=`__ap__1`). The two differ only when the stream ends with the obligation
-still live: strong FAILs (`q` was required), weak PASSes (`p` forever suffices).
-`MonitorUntilAgreesAtEveryPrefix` pins both against `executeRdb` at every prefix
-across traces that cross every outcome — satisfied, broken, and held-forever.
+- **Template.** `buildResidual` walks the AST once, turning each maximal
+  state-predicate subexpression into a leaf `Ap(k)` and each `¬`/`∧`/`∨`/`⇒`/
+  `G`/`F`/`Us`/`Uw`/`Rs`/`Rw` into a node. It numbers the leaves in the *same*
+  pre-order the code generator's `collectAPs` used, so leaf `k` is exactly the
+  compiled `__ap__k__<label>` (piece 1). Any operator progression does not yet
+  handle — a bounded window, freeze, next, past, xor, iff — makes it return null,
+  and the requirement drops to the prefix path.
+- **Progress.** Per state, `progress` evaluates every `Ap` against the current
+  state (via its `__ap__k` function) and unfolds each temporal one step —
+  `progress(G φ) = progress(φ) ∧ G φ`, `progress(F φ) = progress(φ) ∨ F φ`,
+  `progress(φ U ψ) = progress(ψ) ∨ (progress(φ) ∧ φUψ)`, release dually — then
+  simplifies. Smart constructors fold constants and apply idempotence
+  (`G φ ∧ G φ → G φ`) with structural equality, so the residual stays bounded: it
+  is always a boolean combination of the formula's finitely many subformulas.
+- **Settle / finalise.** A residual that folds to `TRUE` is a definitive PASS; to
+  `FALSE`, a definitive violation (a safety breach — `G` broken, an until's `p`
+  failed before `q`, a release's `q` failed) reported the instant it happens.
+  A liveness obligation never settles mid-stream and shows `?`; at end of stream
+  `finalize` closes it over the empty suffix — `G` (safety) holds, `F` (liveness)
+  fails, weak/strong until and release split by their flag.
 
-The third nested formula is **built**: the unbounded release `Rs(p, q)` /
-`Rw(p, q)`, the dual of until. `q` must hold at every state until `p` releases
-it — so `q` failing is a mid-stream FAIL, `q` with `p` releases it PASS, `q`
-without `p` stays pending; strong vs weak again splits only at end of stream
-(`p` was required, or `q` forever suffices). It shares the until's end-of-stream
-finaliser and the same `__ap__0`/`__ap__1` (p/q) companions; `isRelease` matches
-`Rs`/`Rw`. `MonitorReleaseAgreesAtEveryPrefix` holds both against `executeRdb`
-across satisfied / broken / held-forever traces.
-
-Anything else — `G(F p)`, `F(G p)`, bounded windows, freeze — still takes the
-prefix path. Remaining: the general residual evaluator over arbitrary nesting.
-Each of the three wired shapes is pinned to `executeRdb` at every prefix, the
-discipline the atom path is held to (`MonitorResponsePatternAgreesAtEveryPrefix`
-likewise, across a trace that crosses both a met response and one left dangling
-at end of stream).
-
-Progression rewrites a requirement's *residual* formula against the current
-state's atoms and emits `true` / `false` / `unknown`:
-
-```
-progress(a,      s) = TRUE if s ⊨ a else FALSE          # an atomic proposition
-progress(φ ∧ ψ,  s) = progress(φ,s) ∧ progress(ψ,s)     # (∨, ¬ likewise)
-progress(X φ,    s) = φ                                  # next: owe φ next step
-progress(G φ,    s) = progress(φ,s) ∧ G φ               # always: check now, keep owing
-progress(F φ,    s) = progress(φ,s) ∨ F φ               # eventually: met, or keep owing
-progress(φ U ψ,  s) = progress(ψ,s) ∨ (progress(φ,s) ∧ φ U ψ)
-```
-
-with the residual simplified to `TRUE`/`FALSE`/`unknown` each step and finalised
-by the finite-trace rule at end of stream (`F φ` still owed → `false`, `G φ`
-never broken → `true`). This is exactly the LTL₃ latch generalised from one bit
-to a residual formula, and the memory story still holds: the residual of a
-non-data formula is bounded, and only a matched freeze grows it.
-
-The **dependency** this needs that the atom path did not: progression evaluates
-a requirement's *atomic propositions* per state (`a` and `b` in `G(a ⇒ F b)`),
-so the code generator must emit a single-state companion **per atom**, not just
-one `__atom__` for a whole reducible requirement. That is a small generalisation
-of the `__atom__` work — the same `(curr, conf)` shape, one per leaf predicate —
-and it was the first commit of this piece. Then the monitor carries a residual
-per requirement, progresses it per state, and reports a settled `false` as a
-violation. Build order: (1) per-atom companions + IR test *(done)*; (2) the
-residual evaluator, with the finite-trace finaliser — the response `G(a ⇒ F b)`
-the unbounded until `Us`/`Uw` and the unbounded release `Rs`/`Rw` are wired
-*(done)*, arbitrary nesting remains; (3) agreement against `executeRdb` at every
-prefix, the same discipline the atom path is held to *(done for response, until,
-and release)*. Bounded
-operators and freeze stay on the prefix path until their windows/obligations are
-modelled.
+This subsumes the earlier latches exactly: `G(a ⇒ F b)` progresses to
+`G(…) ∧ F b` while a trigger is outstanding and back once `b` arrives (the old
+`pending` bit); `Us(p, q)` settles the moment `q` holds or `p` breaks. And it
+reaches what they could not — recurrence `G(F a)` (PASS iff `a` at the last
+state), persistence `F(G a)`, `F a ∧ F b`, `G(a ⇒ Us(b, c))`, `G(a) ∨ F(b)`,
+`G(F a ⇒ F b)`. `MonitorGeneralResidualAgreesAtEveryPrefix` pins all of these
+against `executeRdb` at every prefix, and the response/until/release agreement
+tests now run *through* this evaluator, unchanged. Build order: (1) per-atom
+companions + IR test *(done)*; (2) the residual evaluator with the finite-trace
+finaliser *(done)*; (3) agreement against `executeRdb` at every prefix *(done)*.
+Bounded operators, freeze, next and past stay on the prefix path until their
+windows/obligations are modelled.
 
 **4. Stream front end.** Read rows from stdin, build a `state_t` per row via the
 loader, then for each requirement project to its footprint and change-collapse to

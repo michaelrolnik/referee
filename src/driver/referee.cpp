@@ -4186,52 +4186,180 @@ static bool isStatePredicate(Expr* e)
     return true;
 }
 
-//  The unbounded response `G(a => F b)` -- the canonical nested future formula.
-//  Its progression residual is one bit (an outstanding `a` awaiting `b`), so the
-//  monitor evaluates it incrementally. Recognise the exact shape with `a`, `b`
-//  state predicates (the requirement's two atomic propositions, __ap__0/__ap__1)
-//  and the `F` unbounded; anything else takes the prefix path.
-static bool isResponse(Expr* e)
+//  ---------------------------------------------------------------------------
+//  General residual evaluator -- LTL3 formula progression.
+//
+//  A nested future formula (`G(a => F b)`, `G(F p)`, `F(G p)`, `Fa && Fb`,
+//  `p U q`, `p R q`, ...) is not a single fold, but its verdict can still be
+//  tracked incrementally by carrying a *residual* formula and rewriting it
+//  against each state -- the formula-derivative technique. This one mechanism
+//  subsumes the response/until/release latches: each is a special case.
+//
+//  The residual is a small boolean-plus-temporal tree over the requirement's
+//  atomic propositions. `progress` evaluates every AP at the current state and
+//  unfolds one step; `finalize` closes an unsettled residual over the empty
+//  suffix at end of stream (G safety holds, F liveness fails, weak/strong until
+//  and release split). Aggressive constant folding and idempotence keep the
+//  residual bounded -- it is always a boolean combination of the formula's
+//  finitely many subformulas.
+struct  RNode;
+using   RPtr = std::shared_ptr<RNode const>;
+struct  RNode
 {
-    auto* g = dynamic_cast<ExprG*>(e);
-    if (g == nullptr) return false;
-    if (auto* gt = dynamic_cast<Temporal<ExprUnary>*>(g); gt && gt->time) return false;   // bounded G
-    auto* imp = dynamic_cast<ExprImp*>(g->arg);
-    if (imp == nullptr) return false;
-    auto* f = dynamic_cast<ExprF*>(imp->rhs);
-    if (f == nullptr) return false;
-    if (auto* ft = dynamic_cast<Temporal<ExprUnary>*>(f); ft && ft->time) return false;   // bounded F
-    return isStatePredicate(imp->lhs) && isStatePredicate(f->arg);
+    enum Kind { True, False, Ap, Not, And, Or, Glob, Finl, Until, Release }    kind;
+    int     ap   = -1;      //  Ap
+    bool    weak = false;   //  Until / Release
+    RPtr    a, b;           //  children
+};
+
+static RPtr rTrue()                 { static RPtr t = std::make_shared<RNode>(RNode{RNode::True});  return t; }
+static RPtr rFalse()                { static RPtr f = std::make_shared<RNode>(RNode{RNode::False}); return f; }
+static bool isT(RPtr const& r)      { return r->kind == RNode::True;  }
+static bool isF(RPtr const& r)      { return r->kind == RNode::False; }
+
+//  Structural equality -- pointer identity fast-paths the shared temporal leaves
+//  (the template nodes threaded through unchanged), so idempotent folding is
+//  cheap. It is what collapses `G phi && G phi` back to `G phi`.
+static bool rEq(RPtr const& x, RPtr const& y)
+{
+    if (x == y)                     return true;
+    if (x->kind != y->kind)         return false;
+    switch (x->kind)
+    {
+        case RNode::Ap:                             return x->ap == y->ap;
+        case RNode::Not: case RNode::Glob: case RNode::Finl:    return rEq(x->a, y->a);
+        case RNode::And: case RNode::Or:            return rEq(x->a, y->a) && rEq(x->b, y->b);
+        case RNode::Until: case RNode::Release:     return x->weak == y->weak && rEq(x->a, y->a) && rEq(x->b, y->b);
+        default:                                    return true;    //  True / False
+    }
 }
 
-//  A top-level unbounded until `Us(p, q)` / `Uw(p, q)` over two state predicates
-//  -- the other nested future the monitor progresses. Its residual, like the
-//  response's, is one bit: an obligation that stays live while `p` holds and `q`
-//  has not yet come. `weak` distinguishes the two only at end of stream. Bounded
-//  `Us[a:b]` and non-predicate arms take the prefix path.
-static bool isUntil(Expr* e, bool& weak)
+static RPtr mkAp(int k)     { auto n = std::make_shared<RNode>(); n->kind = RNode::Ap; n->ap = k; return n; }
+static RPtr mkNot(RPtr a)
 {
-    Temporal<ExprBinary>*   u = nullptr;
-    if (auto* s = dynamic_cast<ExprUs*>(e)) { u = s; weak = false; }
-    else if (auto* w = dynamic_cast<ExprUw*>(e)) { u = w; weak = true; }
-    else return false;
-    if (u->time) return false;                                              // bounded until
-    return isStatePredicate(u->lhs) && isStatePredicate(u->rhs);
+    if (isT(a))                     return rFalse();
+    if (isF(a))                     return rTrue();
+    if (a->kind == RNode::Not)      return a->a;                    //  double negation
+    auto n = std::make_shared<RNode>(); n->kind = RNode::Not; n->a = a; return n;
+}
+static RPtr mkAnd(RPtr a, RPtr b)
+{
+    if (isF(a) || isF(b))           return rFalse();
+    if (isT(a))                     return b;
+    if (isT(b))                     return a;
+    if (rEq(a, b))                  return a;
+    auto n = std::make_shared<RNode>(); n->kind = RNode::And; n->a = a; n->b = b; return n;
+}
+static RPtr mkOr(RPtr a, RPtr b)
+{
+    if (isT(a) || isT(b))           return rTrue();
+    if (isF(a))                     return b;
+    if (isF(b))                     return a;
+    if (rEq(a, b))                  return a;
+    auto n = std::make_shared<RNode>(); n->kind = RNode::Or; n->a = a; n->b = b; return n;
+}
+static RPtr mkGlob(RPtr a)              { auto n = std::make_shared<RNode>(); n->kind = RNode::Glob; n->a = a; return n; }
+static RPtr mkFinl(RPtr a)              { auto n = std::make_shared<RNode>(); n->kind = RNode::Finl; n->a = a; return n; }
+static RPtr mkUntil(RPtr a, RPtr b, bool w)   { auto n = std::make_shared<RNode>(); n->kind = RNode::Until;   n->a = a; n->b = b; n->weak = w; return n; }
+static RPtr mkRelease(RPtr a, RPtr b, bool w) { auto n = std::make_shared<RNode>(); n->kind = RNode::Release; n->a = a; n->b = b; n->weak = w; return n; }
+
+//  Build the residual template from the AST, numbering atomic propositions in
+//  the SAME pre-order the code generator's `collectAPs` uses -- so leaf k here
+//  is the compiled `__ap__k__<label>`. `isStatePredicate` is the AP boundary,
+//  exactly the generator's `readsOnlyCurrent`. Returns null on any operator not
+//  yet progressed (bounded, freeze, next, past, xor, iff, ternary, ...), which
+//  routes the requirement to the prefix path. Children are sequenced left before
+//  right so AP indices match. `apc` counts the leaves.
+static RPtr buildResidual(Expr* e, int& apc)
+{
+    if (e == nullptr)                       return nullptr;
+    if (isStatePredicate(e))                return mkAp(apc++);
+
+    if (auto* n = dynamic_cast<ExprNot*>(e))
+    {
+        auto    x = buildResidual(n->arg, apc);
+        return x ? mkNot(x) : nullptr;
+    }
+    if (auto* a = dynamic_cast<ExprAnd*>(e))
+    {
+        auto    l = buildResidual(a->lhs, apc);
+        auto    r = buildResidual(a->rhs, apc);
+        return (l && r) ? mkAnd(l, r) : nullptr;
+    }
+    if (auto* o = dynamic_cast<ExprOr*>(e))
+    {
+        auto    l = buildResidual(o->lhs, apc);
+        auto    r = buildResidual(o->rhs, apc);
+        return (l && r) ? mkOr(l, r) : nullptr;
+    }
+    if (auto* i = dynamic_cast<ExprImp*>(e))    //  a => b  ==  !a || b
+    {
+        auto    l = buildResidual(i->lhs, apc);
+        auto    r = buildResidual(i->rhs, apc);
+        return (l && r) ? mkOr(mkNot(l), r) : nullptr;
+    }
+    if (auto* g = dynamic_cast<ExprG*>(e))
+    {
+        if (g->time)    return nullptr;         //  bounded -> prefix path
+        auto    x = buildResidual(g->arg, apc);
+        return x ? mkGlob(x) : nullptr;
+    }
+    if (auto* f = dynamic_cast<ExprF*>(e))
+    {
+        if (f->time)    return nullptr;
+        auto    x = buildResidual(f->arg, apc);
+        return x ? mkFinl(x) : nullptr;
+    }
+    if (auto* u = dynamic_cast<ExprUs*>(e))     { if (u->time) return nullptr; auto l = buildResidual(u->lhs, apc); auto r = buildResidual(u->rhs, apc); return (l && r) ? mkUntil(l, r, false) : nullptr; }
+    if (auto* u = dynamic_cast<ExprUw*>(e))     { if (u->time) return nullptr; auto l = buildResidual(u->lhs, apc); auto r = buildResidual(u->rhs, apc); return (l && r) ? mkUntil(l, r, true)  : nullptr; }
+    if (auto* r = dynamic_cast<ExprRs*>(e))     { if (r->time) return nullptr; auto l = buildResidual(r->lhs, apc); auto q = buildResidual(r->rhs, apc); return (l && q) ? mkRelease(l, q, false) : nullptr; }
+    if (auto* r = dynamic_cast<ExprRw*>(e))     { if (r->time) return nullptr; auto l = buildResidual(r->lhs, apc); auto q = buildResidual(r->rhs, apc); return (l && q) ? mkRelease(l, q, true)  : nullptr; }
+
+    return nullptr;                             //  unsupported operator
 }
 
-//  A top-level unbounded release `Rs(p, q)` / `Rw(p, q)` -- the dual of until.
-//  `q` must hold at every state until `p` releases it; its residual is one bit
-//  too, the mirror of the until's. `weak` distinguishes at end of stream. Same
-//  __ap__0/__ap__1 (p/q) companions; bounded/non-predicate forms take the prefix
-//  path.
-static bool isRelease(Expr* e, bool& weak)
+//  Rewrite the residual against one state: evaluate every AP (via `ev`), unfold
+//  each temporal one step, and simplify. The temporal nodes are threaded through
+//  unchanged (the `r` on the right), which the smart constructors' idempotence
+//  folds back together.
+static RPtr progress(RPtr const& r, std::function<bool(int)> const& ev)
 {
-    Temporal<ExprBinary>*   r = nullptr;
-    if (auto* s = dynamic_cast<ExprRs*>(e)) { r = s; weak = false; }
-    else if (auto* w = dynamic_cast<ExprRw*>(e)) { r = w; weak = true; }
-    else return false;
-    if (r->time) return false;                                              // bounded release
-    return isStatePredicate(r->lhs) && isStatePredicate(r->rhs);
+    switch (r->kind)
+    {
+        case RNode::True:
+        case RNode::False:      return r;
+        case RNode::Ap:         return ev(r->ap) ? rTrue() : rFalse();
+        case RNode::Not:        return mkNot(progress(r->a, ev));
+        case RNode::And:        return mkAnd(progress(r->a, ev), progress(r->b, ev));
+        case RNode::Or:         return mkOr (progress(r->a, ev), progress(r->b, ev));
+        case RNode::Glob:       return mkAnd(progress(r->a, ev), r);                     //  G x = x' & G x
+        case RNode::Finl:       return mkOr (progress(r->a, ev), r);                     //  F x = x' | F x
+        case RNode::Until:      return mkOr (progress(r->b, ev), mkAnd(progress(r->a, ev), r));   //  a U b = b' | (a' & aUb)
+        case RNode::Release:    return mkAnd(progress(r->b, ev), mkOr (progress(r->a, ev), r));   //  a R b = b' & (a' | aRb)
+    }
+    return r;
+}
+
+//  Close an unsettled residual over the empty suffix at end of stream: G (safety)
+//  vacuously holds, F (liveness) is unmet, a still-live until/release resolves by
+//  its weak/strong flag. No AP survives here -- every one is evaluated the step
+//  it is met -- so the recursion only meets boolean and temporal nodes.
+static bool finalize(RPtr const& r)
+{
+    switch (r->kind)
+    {
+        case RNode::True:       return true;
+        case RNode::False:      return false;
+        case RNode::Not:        return !finalize(r->a);
+        case RNode::And:        return finalize(r->a) && finalize(r->b);
+        case RNode::Or:         return finalize(r->a) || finalize(r->b);
+        case RNode::Glob:       return true;
+        case RNode::Finl:       return false;
+        case RNode::Until:      return r->weak;
+        case RNode::Release:    return r->weak;
+        case RNode::Ap:         return false;   //  unreachable
+    }
+    return false;
 }
 
 //  Parse `name … PASS/FAIL …` verdict lines from a runOneTrace capture into a
@@ -4315,8 +4443,19 @@ bool    Referee::monitor(std::istream& refStream, std::string refName,
     //  a spec with any falls through to the exact prefix path below.
     {
         using AtomFn = bool(*)(void*, void*);
-        enum    Fold { FoldAll, FoldAny, FoldFirst, Response, Until, Release };
-        struct  AtomReq { std::string label; Fold fold; AtomFn fn; AtomFn fn2 = nullptr; bool weak = false; };
+        //  Two evaluators share the incremental fast path. A single-fold atom
+        //  (an invariant, an eventually, a bare predicate) is one latch -- fn +
+        //  a fold. Anything richer that progression handles carries a residual
+        //  formula and its atomic-proposition functions instead.
+        enum    Fold { FoldAll, FoldAny, FoldFirst, Residual };
+        struct  AtomReq
+        {
+            std::string         label;
+            Fold                fold;
+            AtomFn              fn  = nullptr;   //  atom folds
+            RPtr                templ;          //  Residual: the progression template
+            std::vector<AtomFn> aps;            //  Residual: __ap__0..k
+        };
 
         bool    allAtoms = js.astModule->getSpecs().empty();
         for (auto const& name : js.astModule->getPropNames())
@@ -4344,35 +4483,33 @@ bool    Referee::monitor(std::istream& refStream, std::string refName,
                 auto    fold = (dynamic_cast<ExprG*>(e) || dynamic_cast<ExprH*>(e)) ? FoldAll
                              : (dynamic_cast<ExprF*>(e) || dynamic_cast<ExprO*>(e)) ? FoldAny
                              :                                                        FoldFirst;
-                atomReqs.push_back({label, fold, (*atomSym).toPtr<AtomFn>(), nullptr});
+                atomReqs.push_back({label, fold, (*atomSym).toPtr<AtomFn>()});
                 continue;
             }
             llvm::consumeError(atomSym.takeError());
 
-            //  Not a single-fold atom. Three nested formulas progress with a
-            //  one-bit residual: the unbounded response `G(a => F b)`, the
-            //  unbounded until `Us/Uw(p, q)`, and its dual, the unbounded release
-            //  `Rs/Rw(p, q)`. Each binds its two state predicates to the
-            //  __ap__0/__ap__1 companions (piece 1); anything else -> prefix path.
-            bool    weak    = false;
-            bool    matched = true;
-            Fold    kind    = Response;
-            if      (isResponse(e))         kind = Response;
-            else if (isUntil(e, weak))      kind = Until;
-            else if (isRelease(e, weak))    kind = Release;
-            else                            matched = false;
-
-            if (matched)
+            //  Not a single-fold atom. If progression can represent it -- a
+            //  boolean/temporal formula over `G`/`F`/`U`/`R` and state predicates,
+            //  no bounded window, freeze, next or past -- carry it as a residual.
+            //  `buildResidual` numbers the atoms exactly as the code generator's
+            //  `collectAPs` did, so leaf k binds to `__ap__k__<label>` (piece 1).
+            int     apc  = 0;
+            RPtr    tmpl = buildResidual(e, apc);
+            if (tmpl)
             {
-                auto    ap0 = js.jit->lookup("__ap__0__" + label);
-                auto    ap1 = js.jit->lookup("__ap__1__" + label);
-                if (ap0 && ap1)
+                std::vector<AtomFn>     aps;
+                bool                    ok = true;
+                for (int k = 0; k < apc; k++)
                 {
-                    atomReqs.push_back({label, kind, (*ap0).toPtr<AtomFn>(), (*ap1).toPtr<AtomFn>(), weak});
+                    auto    sym = js.jit->lookup("__ap__" + std::to_string(k) + "__" + label);
+                    if (!sym)   { llvm::consumeError(sym.takeError()); ok = false; break; }
+                    aps.push_back((*sym).toPtr<AtomFn>());
+                }
+                if (ok)
+                {
+                    atomReqs.push_back({label, Residual, nullptr, tmpl, std::move(aps)});
                     continue;
                 }
-                if (!ap0)   llvm::consumeError(ap0.takeError());
-                if (!ap1)   llvm::consumeError(ap1.takeError());
             }
             allAtoms = false;
             break;
@@ -4392,11 +4529,14 @@ bool    Referee::monitor(std::istream& refStream, std::string refName,
             std::string     header;
             if (!std::getline(states, header))  return true;
 
-            std::vector<char>           value  (atomReqs.size());     //  all: ok / any: met / first: verdict / response: pending
-            std::vector<char>           done   (atomReqs.size(), 0);  //  first: decided yet
-            std::vector<std::string>    witness(atomReqs.size());     //  response: __time__ of the unmet trigger
+            std::vector<char>   value(atomReqs.size());     //  all: ok / any: met / first & residual: verdict once done
+            std::vector<char>   done (atomReqs.size(), 0);  //  first & residual: decided yet
+            std::vector<RPtr>   resid(atomReqs.size());     //  residual: the current progression formula
             for (std::size_t i = 0; i < atomReqs.size(); i++)
-                value[i] = (atomReqs[i].fold == FoldAll) ? 1 : 0;     //  response starts un-pending (0)
+            {
+                value[i] = (atomReqs[i].fold == FoldAll) ? 1 : 0;
+                resid[i] = atomReqs[i].templ;               //  null for atom folds
+            }
 
             std::string     line;
             while (std::getline(states, line))
@@ -4438,68 +4578,25 @@ bool    Referee::monitor(std::istream& refStream, std::string refName,
                 bool    violatedNow = false;
                 for (std::size_t i = 0; i < atomReqs.size(); i++)
                 {
-                    if (atomReqs[i].fold == Response)
+                    if (atomReqs[i].fold == Residual)
                     {
-                        //  G(a => F b): progress the one pending bit. A `b`
-                        //  discharges any outstanding obligation; a fresh `a`
-                        //  with none outstanding arms one, remembering when. An
-                        //  unbounded response cannot fail mid-stream -- a still
-                        //  pending obligation is only a violation at end of
-                        //  stream -- so no VIOLATION is reported here.
-                        if (atomReqs[i].fn2(curr, conf))            //  b: obligation met
-                            value[i] = 0;
-                        else if (atomReqs[i].fn(curr, conf) && !value[i])   //  a with none pending
-                        {
-                            value[i]   = 1;
-                            witness[i] = now;
-                        }
-                        continue;
-                    }
-
-                    if (atomReqs[i].fold == Until)
-                    {
-                        //  Us/Uw(p, q): progress the one obligation from state 0.
-                        //  q settles it TRUE now; else while p holds it stays
-                        //  pending; else p broke before q -- FALSE, a mid-stream
-                        //  violation for both strong and weak. Weak vs strong
-                        //  differ only at end of stream (below).
+                        //  Progress the residual formula against this state. It
+                        //  settles the instant the residual folds to a constant:
+                        //  TRUE is a definitive PASS, FALSE a definitive violation
+                        //  (a safety breach -- G broken, until's p failed, release's
+                        //  q failed). A liveness obligation never settles here; it
+                        //  stays `unknown` and is closed at end of stream.
                         if (done[i])    continue;
-                        if (atomReqs[i].fn2(curr, conf))            //  q: satisfied
-                        {
-                            value[i] = 1;
-                            done[i]  = 1;
-                        }
-                        else if (!atomReqs[i].fn(curr, conf))       //  neither q nor p: broken
+                        auto&   aps = atomReqs[i].aps;
+                        resid[i] = progress(resid[i], [&](int k){ return aps[k](curr, conf); });
+                        if (isT(resid[i]))          { value[i] = 1; done[i] = 1; }
+                        else if (isF(resid[i]))
                         {
                             value[i] = 0;
                             done[i]  = 1;
                             os << red << "VIOLATION" << reset << "  " << yellow << atomReqs[i].label << reset
                                << "  @ __time__=" << now << "  " << line << "\n";
                             violatedNow = true;
-                        }
-                        continue;
-                    }
-
-                    if (atomReqs[i].fold == Release)
-                    {
-                        //  Rs/Rw(p, q), dual of until: q must hold at every state
-                        //  until p releases it. q failing now is a violation (for
-                        //  both strong and weak); q with p releases it TRUE; q
-                        //  without p stays pending. End of stream resolves a still
-                        //  pending release like an until (below).
-                        if (done[i])    continue;
-                        if (!atomReqs[i].fn2(curr, conf))           //  q broke: release violated
-                        {
-                            value[i] = 0;
-                            done[i]  = 1;
-                            os << red << "VIOLATION" << reset << "  " << yellow << atomReqs[i].label << reset
-                               << "  @ __time__=" << now << "  " << line << "\n";
-                            violatedNow = true;
-                        }
-                        else if (atomReqs[i].fn(curr, conf))        //  p releases the obligation
-                        {
-                            value[i] = 1;
-                            done[i]  = 1;
                         }
                         continue;
                     }
@@ -4534,8 +4631,7 @@ bool    Referee::monitor(std::istream& refStream, std::string refName,
                     bool    v = value[i];
                     if      (atomReqs[i].fold == FoldAll)    v ? (os << '?')                    : (os << red << "FAIL" << reset);
                     else if (atomReqs[i].fold == FoldAny)    v ? (os << green << "PASS" << reset) : (os << '?');
-                    else if (atomReqs[i].fold == Response)   os << '?';   //  liveness: undecided until end of stream
-                    else                                     done[i] ? (v ? (os << green << "PASS" << reset) : (os << red << "FAIL" << reset)) : (os << '?');   //  first / until
+                    else                                     done[i] ? (v ? (os << green << "PASS" << reset) : (os << red << "FAIL" << reset)) : (os << '?');   //  first / residual
                 }
                 os << "\n";
                 os.flush();
@@ -4548,24 +4644,18 @@ bool    Referee::monitor(std::istream& refStream, std::string refName,
             bool    allPass = true;
             for (std::size_t i = 0; i < atomReqs.size(); i++)
             {
-                //  For a response `value` is the pending bit -- an obligation
-                //  still owed at end of stream is a FAIL, so its verdict inverts.
-                //  A still-pending until (p held, q never came) or release (q
-                //  held, p never released) is a FAIL if strong (the eventuality
-                //  was required) and a PASS if weak (holding forever suffices).
+                //  A residual still unsettled at end of stream is closed over the
+                //  empty suffix by `finalize` (G holds, F fails, weak/strong until
+                //  and release split); a settled one keeps its verdict.
                 bool    pass;
-                if      (atomReqs[i].fold == Response)                                       pass = !value[i];
-                else if ((atomReqs[i].fold == Until || atomReqs[i].fold == Release) && !done[i])  pass = atomReqs[i].weak;
-                else                                                                        pass = value[i];
+                if (atomReqs[i].fold == Residual && !done[i])    pass = finalize(resid[i]);
+                else                                             pass = value[i];
                 if (pass)
                     os << green << "PASS" << reset << "  " << atomReqs[i].label << "\n";
                 else
                 {
                     allPass = false;
-                    os << red << "FAIL" << reset << "  " << yellow << atomReqs[i].label << reset;
-                    if (atomReqs[i].fold == Response)
-                        os << "  (unmet response, trigger @ __time__=" << witness[i] << ")";
-                    os << "\n";
+                    os << red << "FAIL" << reset << "  " << yellow << atomReqs[i].label << reset << "\n";
                 }
             }
             return allPass;
