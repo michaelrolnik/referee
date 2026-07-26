@@ -1052,6 +1052,70 @@ TEST(Rdb, MonitorMultiIntervalScopeAgreesAtEveryPrefix)
     }
 }
 
+// Two progression cleanups: logical xor (`^^`) and iff (`<=>`) over temporal
+// subformulas -- which desugar into and/or/not, since progression distributes --
+// and multi-step previous `Ys(k, phi)`/`Yw(k, phi)`, which is `phi` k states back,
+// built as k nested one-bit `Prev` machines. Both must agree with the offline
+// checker at every prefix.
+TEST(Rdb, MonitorXorIffMultiStepAgreesAtEveryPrefix)
+{
+    constexpr int   N = 24;
+
+    std::string                 header = "__time__,a,b";
+    std::vector<std::string>    rows;
+    for (int k = 0; k < N; k++)
+    {
+        bool    a = (k % 3) == 0;
+        bool    b = (k % 4) == 2;
+        rows.push_back(std::to_string(k * 1000) + "," + (a ? "true" : "false")
+                     + "," + (b ? "true" : "false"));
+    }
+
+    char const* specs[] = {
+        "data a:boolean;\ndata b:boolean;\n@r F(a) ^^ F(b);\n",
+        "data a:boolean;\ndata b:boolean;\n@r G(a) <=> F(b);\n",
+        "data a:boolean;\ndata b:boolean;\n@r G(a => (Xs(b) ^^ b));\n",
+        "data a:boolean;\ndata b:boolean;\n@r G(a => Ys(2, b));\n",
+        "data a:boolean;\ndata b:boolean;\n@r G(a => Ys(3, b));\n",
+        "data a:boolean;\ndata b:boolean;\n@r G(a => Yw(2, b));\n",
+    };
+
+    for (auto const* spec : specs)
+    {
+        auto    refPath = tmpFile("xi") + ".ref";
+        { std::ofstream f(refPath); f << spec; }
+
+        for (int k = 1; k <= N; k++)
+        {
+            std::string     csv = header;
+            for (int j = 0; j < k; j++)  csv += "\n" + rows[j];
+
+            auto            csvPath = tmpFile("xi-csv") + ".csv";
+            { std::ofstream f(csvPath); f << csv << "\n"; }
+
+            auto                rdbPath = tmpFile("xi-rdb");
+            referee::db::ingest(refPath, csvPath, /*conf=*/"", rdbPath);
+            std::ifstream       refA(refPath);
+            std::ostringstream  offOut;
+            bool                offline = Referee::executeRdb(refA, refPath, rdbPath, offOut);
+
+            std::istringstream  states(csv);
+            std::ifstream       refB(refPath);
+            std::ostringstream  monOut;
+            bool                online = Referee::monitor(refB, refPath, states, "", monOut);
+
+            std::remove(rdbPath.c_str());
+            std::remove(csvPath.c_str());
+
+            ASSERT_EQ(offline, online)
+                << "xor/iff/multi-step disagree at prefix " << k << " of " << N
+                << "\nspec:\n" << spec
+                << "\noffline:\n" << offOut.str() << "\nmonitor:\n" << monOut.str();
+        }
+        std::remove(refPath.c_str());
+    }
+}
+
 // The atom fast path (all requirements single-state atoms: invariants and an
 // eventually) must agree with the offline checker. This exercises the O(1)
 // per-state route -- ingest one row, call `__atom__`, fold a latch -- rather

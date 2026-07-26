@@ -4375,12 +4375,15 @@ static PPtr buildPast(Expr* e, int& apc, int& pslots)
     if (auto* a = dynamic_cast<ExprAnd*>(e))    { auto l = buildPast(a->lhs, apc, pslots); auto r = buildPast(a->rhs, apc, pslots); return (l && r) ? binary(PNode::And, l, r) : nullptr; }
     if (auto* o = dynamic_cast<ExprOr*>(e))     { auto l = buildPast(o->lhs, apc, pslots); auto r = buildPast(o->rhs, apc, pslots); return (l && r) ? binary(PNode::Or,  l, r) : nullptr; }
     if (auto* i = dynamic_cast<ExprImp*>(e))    { auto l = buildPast(i->lhs, apc, pslots); auto r = buildPast(i->rhs, apc, pslots); return (l && r) ? binary(PNode::Or, unary(PNode::Not, l), r) : nullptr; }
+    if (auto* x = dynamic_cast<ExprXor*>(e))    { auto l = buildPast(x->lhs, apc, pslots); auto r = buildPast(x->rhs, apc, pslots); return (l && r) ? binary(PNode::Or, binary(PNode::And, l, unary(PNode::Not, r)), binary(PNode::And, unary(PNode::Not, l), r)) : nullptr; }
+    if (auto* q = dynamic_cast<ExprEqu*>(e))    { auto l = buildPast(q->lhs, apc, pslots); auto r = buildPast(q->rhs, apc, pslots); return (l && r) ? binary(PNode::Or, binary(PNode::And, l, r), binary(PNode::And, unary(PNode::Not, l), unary(PNode::Not, r))) : nullptr; }
     if (auto* o = dynamic_cast<ExprO*>(e))      { if (o->time) return nullptr; auto a = buildPast(o->arg, apc, pslots); return a ? stateful(PNode::Once, a, false) : nullptr; }
     if (auto* h = dynamic_cast<ExprH*>(e))      { if (h->time) return nullptr; auto a = buildPast(h->arg, apc, pslots); return a ? stateful(PNode::Hist, a, false) : nullptr; }
-    //  `Ys`/`Yw` shift `lhs` is a literal that `collectAPs` counts as an AP;
+    //  `Ys(k, phi)` = `phi` k states back = `Ys(1)` nested k deep, each a one-bit
+    //  `Prev`. The shift `lhs` is a literal `collectAPs` counts as an AP, so
     //  consume one `apc` slot for it (before the body) to stay in step.
-    if (auto* y = dynamic_cast<ExprYs*>(e))     { auto* k = dynamic_cast<ExprConstInteger*>(y->lhs); if (!k || k->value != 1) return nullptr; apc++; auto a = buildPast(y->rhs, apc, pslots); return a ? stateful(PNode::Prev, a, false) : nullptr; }
-    if (auto* y = dynamic_cast<ExprYw*>(e))     { auto* k = dynamic_cast<ExprConstInteger*>(y->lhs); if (!k || k->value != 1) return nullptr; apc++; auto a = buildPast(y->rhs, apc, pslots); return a ? stateful(PNode::Prev, a, true)  : nullptr; }
+    if (auto* y = dynamic_cast<ExprYs*>(e))     { auto* k = dynamic_cast<ExprConstInteger*>(y->lhs); if (!k || k->value < 1) return nullptr; apc++; auto a = buildPast(y->rhs, apc, pslots); if (!a) return nullptr; for (std::int64_t s = 0; s < k->value; s++) a = stateful(PNode::Prev, a, false); return a; }
+    if (auto* y = dynamic_cast<ExprYw*>(e))     { auto* k = dynamic_cast<ExprConstInteger*>(y->lhs); if (!k || k->value < 1) return nullptr; apc++; auto a = buildPast(y->rhs, apc, pslots); if (!a) return nullptr; for (std::int64_t s = 0; s < k->value; s++) a = stateful(PNode::Prev, a, true);  return a; }
     //  Since `Ss`/`Sw` and trigger `Ts`/`Tw` -- the past duals of until/release.
     //  lhs = p, rhs = q; unbounded only (a bounded window bails to the prefix path).
     if (auto* s = dynamic_cast<ExprSs*>(e))     { if (s->time) return nullptr; auto p = buildPast(s->lhs, apc, pslots); auto q = buildPast(s->rhs, apc, pslots); return (p && q) ? statefulBin(PNode::Since, p, q, false) : nullptr; }
@@ -4427,6 +4430,18 @@ static RPtr buildResidual(Expr* e, int& apc, int& pslots, std::vector<PPtr>& pas
         auto    l = buildResidual(i->lhs, apc, pslots, pasts);
         auto    r = buildResidual(i->rhs, apc, pslots, pasts);
         return (l && r) ? mkOr(mkNot(l), r) : nullptr;
+    }
+    if (auto* x = dynamic_cast<ExprXor*>(e))    //  a ^^ b  ==  (a & !b) | (!a & b)
+    {
+        auto    l = buildResidual(x->lhs, apc, pslots, pasts);
+        auto    r = buildResidual(x->rhs, apc, pslots, pasts);
+        return (l && r) ? mkOr(mkAnd(l, mkNot(r)), mkAnd(mkNot(l), r)) : nullptr;
+    }
+    if (auto* q = dynamic_cast<ExprEqu*>(e))    //  a <=> b  ==  (a & b) | (!a & !b)
+    {
+        auto    l = buildResidual(q->lhs, apc, pslots, pasts);
+        auto    r = buildResidual(q->rhs, apc, pslots, pasts);
+        return (l && r) ? mkOr(mkAnd(l, r), mkAnd(mkNot(l), mkNot(r))) : nullptr;
     }
     if (auto* g = dynamic_cast<ExprG*>(e))
     {

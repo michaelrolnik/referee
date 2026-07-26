@@ -190,7 +190,14 @@ complete the past family — two more forward-DP machines with the recurrences
 weak/strong flag the base value at the start, exactly as `O φ = true Ss φ` and
 `H φ = false Tw φ`). `MonitorSinceTriggerAgreesAtEveryPrefix` pins all four,
 nested under a `G` and as an antecedent, against `executeRdb` at every prefix.
-Still deferred: multi-step `Ys`, and bounded past.
+
+Two smaller shapes round out the fragment. **Xor and iff** over temporals (`a ^^ b`,
+`a <=> b`) desugar to `(a ∧ ¬b) ∨ (¬a ∧ b)` and `(a ∧ b) ∨ (¬a ∧ ¬b)` — progression
+distributes over any boolean combination, so no new node is needed (in both the
+residual and a past machine). **Multi-step previous** `Ys(k, φ)`/`Yw(k, φ)` is `φ`
+`k` states back, built as `k` nested one-bit `Prev` machines (`Ys(k) = Ys(1, Ys(1,
+… φ))`), so it needs no k-deep buffer. `MonitorXorIffMultiStepAgreesAtEveryPrefix`
+pins both against `executeRdb` at every prefix. Still deferred: bounded past.
 
 **Dwyer scopes — `globally`.** A pattern spec is a Dwyer *pattern* (universality,
 absence, existence, response, until, precedence, ...) under a *scope*
