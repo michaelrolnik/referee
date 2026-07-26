@@ -182,8 +182,15 @@ step count as a literal `lhs`, which `collectAPs` counts as a (constant) atomic
 proposition, so `buildResidual`/`buildPast` consume one AP slot for it to stay in
 step with the compiled `__ap__k`. `MonitorNextPastAgreesAtEveryPrefix` pins
 `G(a ⇒ O b)`, `G(a ⇒ H c)`, `Ys`/`Yw`, `Xs`/`Xw`, a two-step `Xs(2, b)` and a
-past-antecedent/future-consequent mix against `executeRdb` at every prefix. Still
-deferred: since/trigger (`Ss`/`Sw`/`Ts`/`Tw`), multi-step `Ys`, and bounded past.
+past-antecedent/future-consequent mix against `executeRdb` at every prefix.
+
+Since (`Ss`/`Sw`) and trigger (`Ts`/`Tw`), the past duals of until and release,
+complete the past family — two more forward-DP machines with the recurrences
+`S_i = q ∨ (p ∧ S_{i-1})` and `T_i = q ∧ (p ∨ T_{i-1})` (`p` = lhs, `q` = rhs, the
+weak/strong flag the base value at the start, exactly as `O φ = true Ss φ` and
+`H φ = false Tw φ`). `MonitorSinceTriggerAgreesAtEveryPrefix` pins all four,
+nested under a `G` and as an antecedent, against `executeRdb` at every prefix.
+Still deferred: multi-step `Ys`, and bounded past.
 
 **Bounded operators.** A *top-level* bounded `F[lo:hi]` / `G[lo:hi]` over a state
 predicate is **built** on the fast path (`Referee::monitor`, the `BoundedF` /

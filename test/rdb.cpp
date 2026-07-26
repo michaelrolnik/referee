@@ -777,6 +777,74 @@ TEST(Rdb, MonitorNextPastAgreesAtEveryPrefix)
     }
 }
 
+// Since (`Ss`/`Sw`) and trigger (`Ts`/`Tw`) are the past duals of until and
+// release, and complete the past family in the residual evaluator -- another pair
+// of forward-DP past machines (`S_i = q || (p && S_{i-1})`, `T_i = q && (p ||
+// T_{i-1})`, weak/strong base at the start). Nested inside a requirement they
+// must agree with the offline checker at EVERY prefix, over a trace where `q`
+// occurs, `p` both holds and breaks, so both strong and weak base cases and the
+// held/broken transitions are exercised. Offline is the oracle.
+TEST(Rdb, MonitorSinceTriggerAgreesAtEveryPrefix)
+{
+    constexpr int   N = 28;
+
+    std::string                 header = "__time__,p,q,a";
+    std::vector<std::string>    rows;
+    for (int k = 0; k < N; k++)
+    {
+        bool    p = (k % 6) != 4;               // mostly holds, breaks every 6th
+        bool    q = (k % 5) == 2;               // occurs periodically
+        bool    a = (k % 3) == 0;               // the trigger to check against
+        rows.push_back(std::to_string(k * 1000)
+                     + "," + (p ? "true" : "false")
+                     + "," + (q ? "true" : "false")
+                     + "," + (a ? "true" : "false"));
+    }
+
+    char const* specs[] = {
+        "data p:boolean;\ndata q:boolean;\ndata a:boolean;\n@r G(a => Ss(p, q));\n",   // strong since
+        "data p:boolean;\ndata q:boolean;\ndata a:boolean;\n@r G(a => Sw(p, q));\n",   // weak since (back-to)
+        "data p:boolean;\ndata q:boolean;\ndata a:boolean;\n@r G(a => Ts(p, q));\n",   // strong trigger
+        "data p:boolean;\ndata q:boolean;\ndata a:boolean;\n@r G(a => Tw(p, q));\n",   // weak trigger
+        "data p:boolean;\ndata q:boolean;\ndata a:boolean;\n@r G(Ss(p, q) => a);\n",   // since as an antecedent
+    };
+
+    for (auto const* spec : specs)
+    {
+        auto    refPath = tmpFile("st") + ".ref";
+        { std::ofstream f(refPath); f << spec; }
+
+        for (int k = 1; k <= N; k++)
+        {
+            std::string     csv = header;
+            for (int j = 0; j < k; j++)  csv += "\n" + rows[j];
+
+            auto            csvPath = tmpFile("st-csv") + ".csv";
+            { std::ofstream f(csvPath); f << csv << "\n"; }
+
+            auto                rdbPath = tmpFile("st-rdb");
+            referee::db::ingest(refPath, csvPath, /*conf=*/"", rdbPath);
+            std::ifstream       refA(refPath);
+            std::ostringstream  offOut;
+            bool                offline = Referee::executeRdb(refA, refPath, rdbPath, offOut);
+
+            std::istringstream  states(csv);
+            std::ifstream       refB(refPath);
+            std::ostringstream  monOut;
+            bool                online = Referee::monitor(refB, refPath, states, "", monOut);
+
+            std::remove(rdbPath.c_str());
+            std::remove(csvPath.c_str());
+
+            ASSERT_EQ(offline, online)
+                << "since/trigger disagree at prefix " << k << " of " << N
+                << "\nspec:\n" << spec
+                << "\noffline:\n" << offOut.str() << "\nmonitor:\n" << monOut.str();
+        }
+        std::remove(refPath.c_str());
+    }
+}
+
 // The atom fast path (all requirements single-state atoms: invariants and an
 // eventually) must agree with the offline checker. This exercises the O(1)
 // per-state route -- ingest one row, call `__atom__`, fold a latch -- rather

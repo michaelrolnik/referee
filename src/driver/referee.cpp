@@ -4288,11 +4288,11 @@ struct  PNode;
 using   PPtr = std::shared_ptr<PNode const>;
 struct  PNode
 {
-    enum Kind { Ap, Not, And, Or, Once, Hist, Prev }    kind;
+    enum Kind { Ap, Not, And, Or, Once, Hist, Prev, Since, Trig }    kind;
     int     ap   = -1;      //  Ap: __ap__ index
-    bool    weak = false;   //  Prev: value before the first state
-    int     slot = -1;      //  Once / Hist / Prev: index into pmem
-    PPtr    a, b;
+    bool    weak = false;   //  Prev / Since / Trig: base value before the first state
+    int     slot = -1;      //  stateful nodes: index into pmem
+    PPtr    a, b;           //  Since / Trig: a = p (lhs), b = q (rhs)
 };
 
 //  Evaluate the past subtree at the current state, updating memory. `evalAp`
@@ -4328,6 +4328,24 @@ static bool stepPast(PPtr const& p, std::function<bool(int)> const& evalAp, std:
             pmem[p->slot] = child ? 1 : 0;
             return result;
         }
+        case PNode::Since:  //  p Ss/Sw q:  S_i = q_i || (p_i && S_{i-1})
+        {
+            bool    pv   = stepPast(p->a, evalAp, pmem);
+            bool    qv   = stepPast(p->b, evalAp, pmem);
+            bool    prev = pmem[p->slot] == -1 ? p->weak : pmem[p->slot] == 1;
+            bool    cur  = qv || (pv && prev);
+            pmem[p->slot] = cur;
+            return cur;
+        }
+        case PNode::Trig:   //  p Ts/Tw q:  T_i = q_i && (p_i || T_{i-1})
+        {
+            bool    pv   = stepPast(p->a, evalAp, pmem);
+            bool    qv   = stepPast(p->b, evalAp, pmem);
+            bool    prev = pmem[p->slot] == -1 ? p->weak : pmem[p->slot] == 1;
+            bool    cur  = qv && (pv || prev);
+            pmem[p->slot] = cur;
+            return cur;
+        }
     }
     return false;
 }
@@ -4349,6 +4367,8 @@ static PPtr buildPast(Expr* e, int& apc, int& pslots)
 
     auto    stateful = [&](PNode::Kind k, PPtr a, bool w) -> PPtr
     { auto n = std::make_shared<PNode>(); n->kind = k; n->a = a; n->weak = w; n->slot = pslots++; return n; };
+    auto    statefulBin = [&](PNode::Kind k, PPtr a, PPtr b, bool w) -> PPtr
+    { auto n = std::make_shared<PNode>(); n->kind = k; n->a = a; n->b = b; n->weak = w; n->slot = pslots++; return n; };
 
     if (auto* n = dynamic_cast<ExprNot*>(e))    { auto a = buildPast(n->arg, apc, pslots); return a ? unary(PNode::Not, a) : nullptr; }
     if (auto* a = dynamic_cast<ExprAnd*>(e))    { auto l = buildPast(a->lhs, apc, pslots); auto r = buildPast(a->rhs, apc, pslots); return (l && r) ? binary(PNode::And, l, r) : nullptr; }
@@ -4360,6 +4380,12 @@ static PPtr buildPast(Expr* e, int& apc, int& pslots)
     //  consume one `apc` slot for it (before the body) to stay in step.
     if (auto* y = dynamic_cast<ExprYs*>(e))     { auto* k = dynamic_cast<ExprConstInteger*>(y->lhs); if (!k || k->value != 1) return nullptr; apc++; auto a = buildPast(y->rhs, apc, pslots); return a ? stateful(PNode::Prev, a, false) : nullptr; }
     if (auto* y = dynamic_cast<ExprYw*>(e))     { auto* k = dynamic_cast<ExprConstInteger*>(y->lhs); if (!k || k->value != 1) return nullptr; apc++; auto a = buildPast(y->rhs, apc, pslots); return a ? stateful(PNode::Prev, a, true)  : nullptr; }
+    //  Since `Ss`/`Sw` and trigger `Ts`/`Tw` -- the past duals of until/release.
+    //  lhs = p, rhs = q; unbounded only (a bounded window bails to the prefix path).
+    if (auto* s = dynamic_cast<ExprSs*>(e))     { if (s->time) return nullptr; auto p = buildPast(s->lhs, apc, pslots); auto q = buildPast(s->rhs, apc, pslots); return (p && q) ? statefulBin(PNode::Since, p, q, false) : nullptr; }
+    if (auto* s = dynamic_cast<ExprSw*>(e))     { if (s->time) return nullptr; auto p = buildPast(s->lhs, apc, pslots); auto q = buildPast(s->rhs, apc, pslots); return (p && q) ? statefulBin(PNode::Since, p, q, true)  : nullptr; }
+    if (auto* t = dynamic_cast<ExprTs*>(e))     { if (t->time) return nullptr; auto p = buildPast(t->lhs, apc, pslots); auto q = buildPast(t->rhs, apc, pslots); return (p && q) ? statefulBin(PNode::Trig,  p, q, false) : nullptr; }
+    if (auto* t = dynamic_cast<ExprTw*>(e))     { if (t->time) return nullptr; auto p = buildPast(t->lhs, apc, pslots); auto q = buildPast(t->rhs, apc, pslots); return (p && q) ? statefulBin(PNode::Trig,  p, q, true)  : nullptr; }
 
     return nullptr;                             //  future/next/bounded-past/etc. inside a past formula
 }
@@ -4424,10 +4450,13 @@ static RPtr buildResidual(Expr* e, int& apc, int& pslots, std::vector<PPtr>& pas
     if (auto* x = dynamic_cast<ExprXs*>(e))     { auto* k = dynamic_cast<ExprConstInteger*>(x->lhs); if (!k || k->value < 1) return nullptr; apc++; auto b = buildResidual(x->rhs, apc, pslots, pasts); return b ? mkNext((int)k->value, false, b) : nullptr; }
     if (auto* x = dynamic_cast<ExprXw*>(e))     { auto* k = dynamic_cast<ExprConstInteger*>(x->lhs); if (!k || k->value < 1) return nullptr; apc++; auto b = buildResidual(x->rhs, apc, pslots, pasts); return b ? mkNext((int)k->value, true,  b) : nullptr; }
 
-    //  Past `O`/`H`/`Ys`/`Yw`: history-determined, built as a past machine and
-    //  referenced by a `PastRef` leaf. `buildPast` shares the `apc` counter.
+    //  Past operators -- `O`/`H`/`Ys`/`Yw` and since/trigger `Ss`/`Sw`/`Ts`/`Tw`:
+    //  history-determined, built as a past machine and referenced by a `PastRef`
+    //  leaf. `buildPast` shares the `apc` counter.
     if (dynamic_cast<ExprO*>(e) || dynamic_cast<ExprH*>(e) ||
-        dynamic_cast<ExprYs*>(e) || dynamic_cast<ExprYw*>(e))
+        dynamic_cast<ExprYs*>(e) || dynamic_cast<ExprYw*>(e) ||
+        dynamic_cast<ExprSs*>(e) || dynamic_cast<ExprSw*>(e) ||
+        dynamic_cast<ExprTs*>(e) || dynamic_cast<ExprTw*>(e))
     {
         auto    p = buildPast(e, apc, pslots);
         if (!p) return nullptr;
