@@ -4202,13 +4202,22 @@ static bool isStatePredicate(Expr* e)
 //  and release split). Aggressive constant folding and idempotence keep the
 //  residual bounded -- it is always a boolean combination of the formula's
 //  finitely many subformulas.
+//  Two leaf kinds beyond the plain atomic proposition (`Ap`):
+//    - `PastRef` references one of the requirement's *past* subformulas
+//      (`O`, `H`, `Ys`/`Yw`, ...). A past formula is history-determined, so it is
+//      not progressed: a little forward-DP machine (see `PNode`) evaluates it to a
+//      boolean each state, and the residual just reads that value like an atom.
+//    - `Next` (`Xs`/`Xw`) owes its body `shift` states ahead; progression counts
+//      it down and, once the target state arrives, progresses the body there. At
+//      end of stream an unresolved `Next` yields its weak/strong end value.
 struct  RNode;
 using   RPtr = std::shared_ptr<RNode const>;
 struct  RNode
 {
-    enum Kind { True, False, Ap, Not, And, Or, Glob, Finl, Until, Release }    kind;
-    int     ap   = -1;      //  Ap
-    bool    weak = false;   //  Until / Release
+    enum Kind { True, False, Ap, PastRef, Not, And, Or, Glob, Finl, Until, Release, Next }    kind;
+    int     ap    = -1;     //  Ap / PastRef: index
+    bool    weak  = false;  //  Until / Release / Next
+    int     shift = 0;      //  Next: states still to skip
     RPtr    a, b;           //  children
 };
 
@@ -4226,10 +4235,11 @@ static bool rEq(RPtr const& x, RPtr const& y)
     if (x->kind != y->kind)         return false;
     switch (x->kind)
     {
-        case RNode::Ap:                             return x->ap == y->ap;
+        case RNode::Ap: case RNode::PastRef:        return x->ap == y->ap;
         case RNode::Not: case RNode::Glob: case RNode::Finl:    return rEq(x->a, y->a);
         case RNode::And: case RNode::Or:            return rEq(x->a, y->a) && rEq(x->b, y->b);
         case RNode::Until: case RNode::Release:     return x->weak == y->weak && rEq(x->a, y->a) && rEq(x->b, y->b);
+        case RNode::Next:                           return x->weak == y->weak && x->shift == y->shift && rEq(x->a, y->a);
         default:                                    return true;    //  True / False
     }
 }
@@ -4262,80 +4272,195 @@ static RPtr mkGlob(RPtr a)              { auto n = std::make_shared<RNode>(); n-
 static RPtr mkFinl(RPtr a)              { auto n = std::make_shared<RNode>(); n->kind = RNode::Finl; n->a = a; return n; }
 static RPtr mkUntil(RPtr a, RPtr b, bool w)   { auto n = std::make_shared<RNode>(); n->kind = RNode::Until;   n->a = a; n->b = b; n->weak = w; return n; }
 static RPtr mkRelease(RPtr a, RPtr b, bool w) { auto n = std::make_shared<RNode>(); n->kind = RNode::Release; n->a = a; n->b = b; n->weak = w; return n; }
+static RPtr mkPastRef(int k)            { auto n = std::make_shared<RNode>(); n->kind = RNode::PastRef; n->ap = k; return n; }
+static RPtr mkNext(int shift, bool w, RPtr a) { auto n = std::make_shared<RNode>(); n->kind = RNode::Next; n->shift = shift; n->weak = w; n->a = a; return n; }
+
+//  ---------------------------------------------------------------------------
+//  Past machine -- forward DP over a pure-past subformula (`O`, `H`, `Ys`/`Yw`
+//  and boolean combinations of them over state predicates). A past formula's
+//  truth at each state is fixed by the history already seen, so rather than
+//  progress it, the monitor evaluates it bottom-up once per state, threading a
+//  little memory: `O`/`H` keep their running value, `Ys`/`Yw` keep the child's
+//  previous value. The tree is immutable and shared; the mutable memory lives in
+//  a per-run slot array (`pmem`), one signed byte per stateful node (-1 = not yet
+//  started, so the first state gets the right base case).
+struct  PNode;
+using   PPtr = std::shared_ptr<PNode const>;
+struct  PNode
+{
+    enum Kind { Ap, Not, And, Or, Once, Hist, Prev }    kind;
+    int     ap   = -1;      //  Ap: __ap__ index
+    bool    weak = false;   //  Prev: value before the first state
+    int     slot = -1;      //  Once / Hist / Prev: index into pmem
+    PPtr    a, b;
+};
+
+//  Evaluate the past subtree at the current state, updating memory. `evalAp`
+//  reads a state predicate now; `pmem` carries each stateful node's memory.
+static bool stepPast(PPtr const& p, std::function<bool(int)> const& evalAp, std::vector<signed char>& pmem)
+{
+    switch (p->kind)
+    {
+        case PNode::Ap:     return evalAp(p->ap);
+        case PNode::Not:    return !stepPast(p->a, evalAp, pmem);
+        case PNode::And:    { bool x = stepPast(p->a, evalAp, pmem); bool y = stepPast(p->b, evalAp, pmem); return x && y; }
+        case PNode::Or:     { bool x = stepPast(p->a, evalAp, pmem); bool y = stepPast(p->b, evalAp, pmem); return x || y; }
+        case PNode::Once:   //  once_i = child_i || once_{i-1}   (once_0 = child_0)
+        {
+            bool    v    = stepPast(p->a, evalAp, pmem);
+            bool    prev = pmem[p->slot] == 1;
+            bool    cur  = v || prev;
+            pmem[p->slot] = cur;
+            return cur;
+        }
+        case PNode::Hist:   //  hist_i = child_i && hist_{i-1}   (hist_0 = child_0)
+        {
+            bool    v    = stepPast(p->a, evalAp, pmem);
+            bool    prev = pmem[p->slot] != 0;      //  -1 (start) counts as true
+            bool    cur  = v && prev;
+            pmem[p->slot] = cur;
+            return cur;
+        }
+        case PNode::Prev:   //  Ys/Yw: the child's value one state back (weak/strong base at the start)
+        {
+            bool    result = pmem[p->slot] == -1 ? p->weak : pmem[p->slot] == 1;
+            bool    child  = stepPast(p->a, evalAp, pmem);
+            pmem[p->slot] = child ? 1 : 0;
+            return result;
+        }
+    }
+    return false;
+}
+
+//  Build a pure-past subtree (`O`, `H`, `Ys`/`Yw` and booleans over state
+//  predicates) into a past machine. Returns null if it meets any operator that is
+//  not history-determined (a future/next operator, a bounded past, a multi-step
+//  `Ys`), which drops the whole requirement to the prefix path. Shares the `apc`
+//  leaf counter with `buildResidual` and assigns memory slots via `pslots`.
+static PPtr buildPast(Expr* e, int& apc, int& pslots)
+{
+    if (e == nullptr)                       return nullptr;
+    if (isStatePredicate(e))                { auto n = std::make_shared<PNode>(); n->kind = PNode::Ap; n->ap = apc++; return n; }
+
+    auto    unary = [&](PNode::Kind k, PPtr a) -> PPtr
+    { auto n = std::make_shared<PNode>(); n->kind = k; n->a = a; return n; };
+    auto    binary = [&](PNode::Kind k, PPtr a, PPtr b) -> PPtr
+    { auto n = std::make_shared<PNode>(); n->kind = k; n->a = a; n->b = b; return n; };
+
+    auto    stateful = [&](PNode::Kind k, PPtr a, bool w) -> PPtr
+    { auto n = std::make_shared<PNode>(); n->kind = k; n->a = a; n->weak = w; n->slot = pslots++; return n; };
+
+    if (auto* n = dynamic_cast<ExprNot*>(e))    { auto a = buildPast(n->arg, apc, pslots); return a ? unary(PNode::Not, a) : nullptr; }
+    if (auto* a = dynamic_cast<ExprAnd*>(e))    { auto l = buildPast(a->lhs, apc, pslots); auto r = buildPast(a->rhs, apc, pslots); return (l && r) ? binary(PNode::And, l, r) : nullptr; }
+    if (auto* o = dynamic_cast<ExprOr*>(e))     { auto l = buildPast(o->lhs, apc, pslots); auto r = buildPast(o->rhs, apc, pslots); return (l && r) ? binary(PNode::Or,  l, r) : nullptr; }
+    if (auto* i = dynamic_cast<ExprImp*>(e))    { auto l = buildPast(i->lhs, apc, pslots); auto r = buildPast(i->rhs, apc, pslots); return (l && r) ? binary(PNode::Or, unary(PNode::Not, l), r) : nullptr; }
+    if (auto* o = dynamic_cast<ExprO*>(e))      { if (o->time) return nullptr; auto a = buildPast(o->arg, apc, pslots); return a ? stateful(PNode::Once, a, false) : nullptr; }
+    if (auto* h = dynamic_cast<ExprH*>(e))      { if (h->time) return nullptr; auto a = buildPast(h->arg, apc, pslots); return a ? stateful(PNode::Hist, a, false) : nullptr; }
+    //  `Ys`/`Yw` shift `lhs` is a literal that `collectAPs` counts as an AP;
+    //  consume one `apc` slot for it (before the body) to stay in step.
+    if (auto* y = dynamic_cast<ExprYs*>(e))     { auto* k = dynamic_cast<ExprConstInteger*>(y->lhs); if (!k || k->value != 1) return nullptr; apc++; auto a = buildPast(y->rhs, apc, pslots); return a ? stateful(PNode::Prev, a, false) : nullptr; }
+    if (auto* y = dynamic_cast<ExprYw*>(e))     { auto* k = dynamic_cast<ExprConstInteger*>(y->lhs); if (!k || k->value != 1) return nullptr; apc++; auto a = buildPast(y->rhs, apc, pslots); return a ? stateful(PNode::Prev, a, true)  : nullptr; }
+
+    return nullptr;                             //  future/next/bounded-past/etc. inside a past formula
+}
 
 //  Build the residual template from the AST, numbering atomic propositions in
 //  the SAME pre-order the code generator's `collectAPs` uses -- so leaf k here
 //  is the compiled `__ap__k__<label>`. `isStatePredicate` is the AP boundary,
-//  exactly the generator's `readsOnlyCurrent`. Returns null on any operator not
-//  yet progressed (bounded, freeze, next, past, xor, iff, ternary, ...), which
-//  routes the requirement to the prefix path. Children are sequenced left before
-//  right so AP indices match. `apc` counts the leaves.
-static RPtr buildResidual(Expr* e, int& apc)
+//  exactly the generator's `readsOnlyCurrent`. A past subformula becomes a
+//  `PastRef` into `pasts` (a machine that evaluates it per state); a next
+//  operator becomes a countdown `Next`. Returns null on any operator not yet
+//  handled (bounded future, freeze, since/trigger, xor, iff, ternary, ...),
+//  routing the requirement to the prefix path. Children are sequenced left before
+//  right so AP indices match. `apc` counts leaves, `pslots` past-memory slots.
+static RPtr buildResidual(Expr* e, int& apc, int& pslots, std::vector<PPtr>& pasts)
 {
     if (e == nullptr)                       return nullptr;
     if (isStatePredicate(e))                return mkAp(apc++);
 
     if (auto* n = dynamic_cast<ExprNot*>(e))
     {
-        auto    x = buildResidual(n->arg, apc);
+        auto    x = buildResidual(n->arg, apc, pslots, pasts);
         return x ? mkNot(x) : nullptr;
     }
     if (auto* a = dynamic_cast<ExprAnd*>(e))
     {
-        auto    l = buildResidual(a->lhs, apc);
-        auto    r = buildResidual(a->rhs, apc);
+        auto    l = buildResidual(a->lhs, apc, pslots, pasts);
+        auto    r = buildResidual(a->rhs, apc, pslots, pasts);
         return (l && r) ? mkAnd(l, r) : nullptr;
     }
     if (auto* o = dynamic_cast<ExprOr*>(e))
     {
-        auto    l = buildResidual(o->lhs, apc);
-        auto    r = buildResidual(o->rhs, apc);
+        auto    l = buildResidual(o->lhs, apc, pslots, pasts);
+        auto    r = buildResidual(o->rhs, apc, pslots, pasts);
         return (l && r) ? mkOr(l, r) : nullptr;
     }
     if (auto* i = dynamic_cast<ExprImp*>(e))    //  a => b  ==  !a || b
     {
-        auto    l = buildResidual(i->lhs, apc);
-        auto    r = buildResidual(i->rhs, apc);
+        auto    l = buildResidual(i->lhs, apc, pslots, pasts);
+        auto    r = buildResidual(i->rhs, apc, pslots, pasts);
         return (l && r) ? mkOr(mkNot(l), r) : nullptr;
     }
     if (auto* g = dynamic_cast<ExprG*>(e))
     {
         if (g->time)    return nullptr;         //  bounded -> prefix path
-        auto    x = buildResidual(g->arg, apc);
+        auto    x = buildResidual(g->arg, apc, pslots, pasts);
         return x ? mkGlob(x) : nullptr;
     }
     if (auto* f = dynamic_cast<ExprF*>(e))
     {
         if (f->time)    return nullptr;
-        auto    x = buildResidual(f->arg, apc);
+        auto    x = buildResidual(f->arg, apc, pslots, pasts);
         return x ? mkFinl(x) : nullptr;
     }
-    if (auto* u = dynamic_cast<ExprUs*>(e))     { if (u->time) return nullptr; auto l = buildResidual(u->lhs, apc); auto r = buildResidual(u->rhs, apc); return (l && r) ? mkUntil(l, r, false) : nullptr; }
-    if (auto* u = dynamic_cast<ExprUw*>(e))     { if (u->time) return nullptr; auto l = buildResidual(u->lhs, apc); auto r = buildResidual(u->rhs, apc); return (l && r) ? mkUntil(l, r, true)  : nullptr; }
-    if (auto* r = dynamic_cast<ExprRs*>(e))     { if (r->time) return nullptr; auto l = buildResidual(r->lhs, apc); auto q = buildResidual(r->rhs, apc); return (l && q) ? mkRelease(l, q, false) : nullptr; }
-    if (auto* r = dynamic_cast<ExprRw*>(e))     { if (r->time) return nullptr; auto l = buildResidual(r->lhs, apc); auto q = buildResidual(r->rhs, apc); return (l && q) ? mkRelease(l, q, true)  : nullptr; }
+    if (auto* u = dynamic_cast<ExprUs*>(e))     { if (u->time) return nullptr; auto l = buildResidual(u->lhs, apc, pslots, pasts); auto r = buildResidual(u->rhs, apc, pslots, pasts); return (l && r) ? mkUntil(l, r, false) : nullptr; }
+    if (auto* u = dynamic_cast<ExprUw*>(e))     { if (u->time) return nullptr; auto l = buildResidual(u->lhs, apc, pslots, pasts); auto r = buildResidual(u->rhs, apc, pslots, pasts); return (l && r) ? mkUntil(l, r, true)  : nullptr; }
+    if (auto* r = dynamic_cast<ExprRs*>(e))     { if (r->time) return nullptr; auto l = buildResidual(r->lhs, apc, pslots, pasts); auto q = buildResidual(r->rhs, apc, pslots, pasts); return (l && q) ? mkRelease(l, q, false) : nullptr; }
+    if (auto* r = dynamic_cast<ExprRw*>(e))     { if (r->time) return nullptr; auto l = buildResidual(r->lhs, apc, pslots, pasts); auto q = buildResidual(r->rhs, apc, pslots, pasts); return (l && q) ? mkRelease(l, q, true)  : nullptr; }
+
+    //  Next `Xs`/`Xw`: shift the body forward `k` states; progression counts it
+    //  down. The shift `lhs` is a literal -- and `collectAPs` counts it as a
+    //  (constant) atomic proposition, so consume one `apc` slot to stay in step.
+    if (auto* x = dynamic_cast<ExprXs*>(e))     { auto* k = dynamic_cast<ExprConstInteger*>(x->lhs); if (!k || k->value < 1) return nullptr; apc++; auto b = buildResidual(x->rhs, apc, pslots, pasts); return b ? mkNext((int)k->value, false, b) : nullptr; }
+    if (auto* x = dynamic_cast<ExprXw*>(e))     { auto* k = dynamic_cast<ExprConstInteger*>(x->lhs); if (!k || k->value < 1) return nullptr; apc++; auto b = buildResidual(x->rhs, apc, pslots, pasts); return b ? mkNext((int)k->value, true,  b) : nullptr; }
+
+    //  Past `O`/`H`/`Ys`/`Yw`: history-determined, built as a past machine and
+    //  referenced by a `PastRef` leaf. `buildPast` shares the `apc` counter.
+    if (dynamic_cast<ExprO*>(e) || dynamic_cast<ExprH*>(e) ||
+        dynamic_cast<ExprYs*>(e) || dynamic_cast<ExprYw*>(e))
+    {
+        auto    p = buildPast(e, apc, pslots);
+        if (!p) return nullptr;
+        int     idx = (int)pasts.size();
+        pasts.push_back(p);
+        return mkPastRef(idx);
+    }
 
     return nullptr;                             //  unsupported operator
 }
 
-//  Rewrite the residual against one state: evaluate every AP (via `ev`), unfold
-//  each temporal one step, and simplify. The temporal nodes are threaded through
-//  unchanged (the `r` on the right), which the smart constructors' idempotence
-//  folds back together.
-static RPtr progress(RPtr const& r, std::function<bool(int)> const& ev)
+//  Rewrite the residual against one state: evaluate every leaf (`leaf` reads an
+//  `Ap` or a `PastRef`), unfold each temporal one step, and simplify. Temporal
+//  nodes are threaded through unchanged (the `r` on the right), which the smart
+//  constructors' idempotence folds back together. A `Next` counts its shift down;
+//  when it reaches the target state the body applies there and is progressed.
+static RPtr progress(RPtr const& r, std::function<bool(RNode const&)> const& leaf)
 {
     switch (r->kind)
     {
         case RNode::True:
         case RNode::False:      return r;
-        case RNode::Ap:         return ev(r->ap) ? rTrue() : rFalse();
-        case RNode::Not:        return mkNot(progress(r->a, ev));
-        case RNode::And:        return mkAnd(progress(r->a, ev), progress(r->b, ev));
-        case RNode::Or:         return mkOr (progress(r->a, ev), progress(r->b, ev));
-        case RNode::Glob:       return mkAnd(progress(r->a, ev), r);                     //  G x = x' & G x
-        case RNode::Finl:       return mkOr (progress(r->a, ev), r);                     //  F x = x' | F x
-        case RNode::Until:      return mkOr (progress(r->b, ev), mkAnd(progress(r->a, ev), r));   //  a U b = b' | (a' & aUb)
-        case RNode::Release:    return mkAnd(progress(r->b, ev), mkOr (progress(r->a, ev), r));   //  a R b = b' & (a' | aRb)
+        case RNode::Ap:
+        case RNode::PastRef:    return leaf(*r) ? rTrue() : rFalse();
+        case RNode::Not:        return mkNot(progress(r->a, leaf));
+        case RNode::And:        return mkAnd(progress(r->a, leaf), progress(r->b, leaf));
+        case RNode::Or:         return mkOr (progress(r->a, leaf), progress(r->b, leaf));
+        case RNode::Glob:       return mkAnd(progress(r->a, leaf), r);                       //  G x = x' & G x
+        case RNode::Finl:       return mkOr (progress(r->a, leaf), r);                       //  F x = x' | F x
+        case RNode::Until:      return mkOr (progress(r->b, leaf), mkAnd(progress(r->a, leaf), r));   //  a U b = b' | (a' & aUb)
+        case RNode::Release:    return mkAnd(progress(r->b, leaf), mkOr (progress(r->a, leaf), r));   //  a R b = b' & (a' | aRb)
+        case RNode::Next:       return r->shift >= 1 ? mkNext(r->shift - 1, r->weak, r->a)   //  consume a state, one fewer to skip
+                                                     : progress(r->a, leaf);                //  target state reached: body applies now
     }
     return r;
 }
@@ -4357,7 +4482,9 @@ static bool finalize(RPtr const& r)
         case RNode::Finl:       return false;
         case RNode::Until:      return r->weak;
         case RNode::Release:    return r->weak;
-        case RNode::Ap:         return false;   //  unreachable
+        case RNode::Next:       return r->weak;  //  Xs owes a state that never came -> strong false / weak true
+        case RNode::Ap:
+        case RNode::PastRef:    return false;   //  unreachable: leaves are evaluated during progress
     }
     return false;
 }
@@ -4469,6 +4596,8 @@ bool    Referee::monitor(std::istream& refStream, std::string refName,
             std::int64_t        hi  = 0;
             RPtr                templ;          //  Residual: the progression template
             std::vector<AtomFn> aps;            //  Residual: __ap__0..k
+            std::vector<PPtr>   pasts;          //  Residual: past-subformula machines
+            int                 pslots = 0;     //  Residual: past-memory slots
         };
 
         bool    allAtoms = js.astModule->getSpecs().empty();
@@ -4519,12 +4648,15 @@ bool    Referee::monitor(std::istream& refStream, std::string refName,
             llvm::consumeError(atomSym.takeError());
 
             //  Not a single-fold atom. If progression can represent it -- a
-            //  boolean/temporal formula over `G`/`F`/`U`/`R` and state predicates,
-            //  no bounded window, freeze, next or past -- carry it as a residual.
-            //  `buildResidual` numbers the atoms exactly as the code generator's
-            //  `collectAPs` did, so leaf k binds to `__ap__k__<label>` (piece 1).
-            int     apc  = 0;
-            RPtr    tmpl = buildResidual(e, apc);
+            //  boolean/temporal formula over `G`/`F`/`U`/`R`, `Xs`/`Xw` next, past
+            //  operators (`O`/`H`/`Ys`/`Yw`) and state predicates, no bounded
+            //  window or freeze -- carry it as a residual. `buildResidual` numbers
+            //  the atoms exactly as the code generator's `collectAPs` did, so leaf
+            //  k binds to `__ap__k__<label>` (piece 1).
+            int                 apc    = 0;
+            int                 pslots = 0;
+            std::vector<PPtr>   pasts;
+            RPtr                tmpl = buildResidual(e, apc, pslots, pasts);
             if (tmpl)
             {
                 std::vector<AtomFn>     aps;
@@ -4537,7 +4669,8 @@ bool    Referee::monitor(std::istream& refStream, std::string refName,
                 }
                 if (ok)
                 {
-                    atomReqs.push_back({label, Residual, nullptr, 0, 0, tmpl, std::move(aps)});
+                    atomReqs.push_back({label, Residual, nullptr, 0, 0, tmpl,
+                                        std::move(aps), std::move(pasts), pslots});
                     continue;
                 }
             }
@@ -4562,12 +4695,14 @@ bool    Referee::monitor(std::istream& refStream, std::string refName,
             std::vector<char>   value(atomReqs.size());     //  all/G[]: ok / any: met / first & residual: verdict once done
             std::vector<char>   done (atomReqs.size(), 0);  //  first, residual, bounded: decided yet
             std::vector<RPtr>   resid(atomReqs.size());     //  residual: the current progression formula
+            std::vector<std::vector<signed char>>   pmem(atomReqs.size());   //  residual: past-machine memory (-1 = unstarted)
             for (std::size_t i = 0; i < atomReqs.size(); i++)
             {
                 //  G and G[lo:hi] are safety -- true until broken; everything else
                 //  starts unmet, so a stream that ends before it settles is a FAIL.
                 value[i] = (atomReqs[i].fold == FoldAll || atomReqs[i].fold == BoundedG) ? 1 : 0;
                 resid[i] = atomReqs[i].templ;               //  null for atom folds
+                pmem[i].assign(atomReqs[i].pslots, -1);
             }
 
             //  Bounded operators are dense-time: a state's value holds over the
@@ -4671,15 +4806,23 @@ bool    Referee::monitor(std::istream& refStream, std::string refName,
 
                     if (atomReqs[i].fold == Residual)
                     {
-                        //  Progress the residual formula against this state. It
-                        //  settles the instant the residual folds to a constant:
+                        //  Evaluate each past subformula once (advancing its DP
+                        //  memory), then progress the residual against this state.
+                        //  It settles the instant the residual folds to a constant:
                         //  TRUE is a definitive PASS, FALSE a definitive violation
                         //  (a safety breach -- G broken, until's p failed, release's
                         //  q failed). A liveness obligation never settles here; it
                         //  stays `unknown` and is closed at end of stream.
                         if (done[i])    continue;
-                        auto&   aps = atomReqs[i].aps;
-                        resid[i] = progress(resid[i], [&](int k){ return aps[k](curr, conf); });
+                        auto&   aps   = atomReqs[i].aps;
+                        auto&   pasts = atomReqs[i].pasts;
+                        auto    evalAp = [&](int k){ return aps[k](curr, conf); };
+                        std::vector<char>   pastVal(pasts.size());
+                        for (std::size_t p = 0; p < pasts.size(); p++)
+                            pastVal[p] = stepPast(pasts[p], evalAp, pmem[i]);
+
+                        resid[i] = progress(resid[i], [&](RNode const& n)
+                                            { return n.kind == RNode::PastRef ? (bool)pastVal[n.ap] : aps[n.ap](curr, conf); });
                         if (isT(resid[i]))          { value[i] = 1; done[i] = 1; }
                         else if (isF(resid[i]))
                         {

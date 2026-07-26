@@ -168,6 +168,23 @@ tests now run *through* this evaluator, unchanged. Build order: (1) per-atom
 companions + IR test *(done)*; (2) the residual evaluator with the finite-trace
 finaliser *(done)*; (3) agreement against `executeRdb` at every prefix *(done)*.
 
+**Next and past** extend the residual with two more leaf shapes. *Next* (`Xs`/
+`Xw(k, φ)`) shifts its body `k` states forward: it becomes a `Next` node that
+progression counts down one state at a time, progressing the body at the target
+state and, if the stream ends first, closing to its weak/strong value (`Xs` owes
+a state that never came → false; `Xw` → true). *Past* (`O`, `H`, `Ys`/`Yw`) is
+history-determined, so it is not progressed at all: a small forward-DP machine
+(`PNode` / `stepPast`, memory in a per-run slot array) evaluates each past
+subformula to a boolean once per state — `O`/`H` keep their running value,
+`Ys`/`Yw` the child's previous — and the residual reads it through a `PastRef`
+leaf like an atom. One wrinkle keeps the numbering honest: `Xs`/`Ys` carry their
+step count as a literal `lhs`, which `collectAPs` counts as a (constant) atomic
+proposition, so `buildResidual`/`buildPast` consume one AP slot for it to stay in
+step with the compiled `__ap__k`. `MonitorNextPastAgreesAtEveryPrefix` pins
+`G(a ⇒ O b)`, `G(a ⇒ H c)`, `Ys`/`Yw`, `Xs`/`Xw`, a two-step `Xs(2, b)` and a
+past-antecedent/future-consequent mix against `executeRdb` at every prefix. Still
+deferred: since/trigger (`Ss`/`Sw`/`Ts`/`Tw`), multi-step `Ys`, and bounded past.
+
 **Bounded operators.** A *top-level* bounded `F[lo:hi]` / `G[lo:hi]` over a state
 predicate is **built** on the fast path (`Referee::monitor`, the `BoundedF` /
 `BoundedG` kinds) — one window `[t0+lo, t0+hi)` in absolute `__time__`, anchored

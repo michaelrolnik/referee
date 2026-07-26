@@ -705,6 +705,78 @@ TEST(Rdb, MonitorBoundedAgreesAtEveryPrefix)
     }
 }
 
+// Next (`Xs`/`Xw`) and past (`O`/`H`/`Ys`/`Yw`) operators, nested inside a
+// requirement, extend the residual evaluator. Past operators are history-
+// determined -- a little forward-DP machine evaluates each per state -- while
+// next shifts the body forward and progression counts it down (strong/weak at the
+// trace's end). These are the shapes the residual could not previously carry, so
+// they meet the same bar: agreement with the offline checker at EVERY prefix over
+// a trace exercising every proposition. Offline is the oracle for the base cases
+// (no previous at the first state, no next state at the last).
+TEST(Rdb, MonitorNextPastAgreesAtEveryPrefix)
+{
+    constexpr int   N = 30;
+
+    std::string                 header = "__time__,a,b,c";
+    std::vector<std::string>    rows;
+    for (int k = 0; k < N; k++)
+    {
+        bool    a = (k % 4) == 0;
+        bool    b = (k % 3) == 1;
+        bool    c = (k % 7) != 5;               // mostly true, occasionally false
+        rows.push_back(std::to_string(k * 1000)
+                     + "," + (a ? "true" : "false")
+                     + "," + (b ? "true" : "false")
+                     + "," + (c ? "true" : "false"));
+    }
+
+    char const* specs[] = {
+        "data a:boolean;\ndata b:boolean;\ndata c:boolean;\n@r G(a => O(b));\n",       // b happened by the time a does
+        "data a:boolean;\ndata b:boolean;\ndata c:boolean;\n@r G(a => H(c));\n",       // c held at every state up to a
+        "data a:boolean;\ndata b:boolean;\ndata c:boolean;\n@r G(a => Ys(b));\n",      // b at the previous state
+        "data a:boolean;\ndata b:boolean;\ndata c:boolean;\n@r G(a => Yw(b));\n",      // weak previous (true at the start)
+        "data a:boolean;\ndata b:boolean;\ndata c:boolean;\n@r G(a => Xs(b));\n",      // b at the next state
+        "data a:boolean;\ndata b:boolean;\ndata c:boolean;\n@r G(a => Xw(b));\n",      // weak next (true at the end)
+        "data a:boolean;\ndata b:boolean;\ndata c:boolean;\n@r G(a => Xs(2, b));\n",   // b two states ahead
+        "data a:boolean;\ndata b:boolean;\ndata c:boolean;\n@r O(b) => G(c);\n",       // past antecedent, future consequent
+    };
+
+    for (auto const* spec : specs)
+    {
+        auto    refPath = tmpFile("np") + ".ref";
+        { std::ofstream f(refPath); f << spec; }
+
+        for (int k = 1; k <= N; k++)
+        {
+            std::string     csv = header;
+            for (int j = 0; j < k; j++)  csv += "\n" + rows[j];
+
+            auto            csvPath = tmpFile("np-csv") + ".csv";
+            { std::ofstream f(csvPath); f << csv << "\n"; }
+
+            auto                rdbPath = tmpFile("np-rdb");
+            referee::db::ingest(refPath, csvPath, /*conf=*/"", rdbPath);
+            std::ifstream       refA(refPath);
+            std::ostringstream  offOut;
+            bool                offline = Referee::executeRdb(refA, refPath, rdbPath, offOut);
+
+            std::istringstream  states(csv);
+            std::ifstream       refB(refPath);
+            std::ostringstream  monOut;
+            bool                online = Referee::monitor(refB, refPath, states, "", monOut);
+
+            std::remove(rdbPath.c_str());
+            std::remove(csvPath.c_str());
+
+            ASSERT_EQ(offline, online)
+                << "next/past disagree at prefix " << k << " of " << N
+                << "\nspec:\n" << spec
+                << "\noffline:\n" << offOut.str() << "\nmonitor:\n" << monOut.str();
+        }
+        std::remove(refPath.c_str());
+    }
+}
+
 // The atom fast path (all requirements single-state atoms: invariants and an
 // eventually) must agree with the offline checker. This exercises the O(1)
 // per-state route -- ingest one row, call `__atom__`, fold a latch -- rather
