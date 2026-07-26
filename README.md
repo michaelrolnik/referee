@@ -43,6 +43,28 @@ The pipeline is: REF source → ANTLR4 parse → typed AST → semantic visitors
 
 **[docs/architecture.md](docs/architecture.md)** is the full map — the pipeline, the function shapes and `state_t` layout, the JIT and AOT backends, the trace format, and the online monitor.
 
+## Documentation
+
+Everything under `docs/`:
+
+- **[architecture.md](docs/architecture.md)** — the whole pipeline (parse → AST → LLVM → JIT/AOT), the per-requirement function shapes, the `state_t` layout, the trace format, and the monitor.
+- **Language & semantics**
+  - [references.md](docs/references.md) — the temporal-logic and specification-pattern literature the language is built on.
+  - [quantifiers.md](docs/quantifiers.md) — bounded quantifiers over array elements.
+  - [ragged-arrays.md](docs/ragged-arrays.md) — unbounded `T[]` arrays that carry their own length.
+  - [external-functions.md](docs/external-functions.md) — `func` declarations bound to `.so` plugins.
+  - [accumulator-cost.md](docs/accumulator-cost.md) — why `Itg` / `Sum` / `Cnt` go quadratic under a temporal scope.
+- **Traces & checking**
+  - [run-traces.md](docs/run-traces.md) — run traces: recording requirement *coverage*, not just failures.
+  - [run-trace-format.md](docs/run-trace-format.md) — the `--explain` NDJSON schema.
+  - [trace-expectations.md](docs/trace-expectations.md) — a corpus of traces that declare which requirements they must violate.
+  - [native-checkers.md](docs/native-checkers.md) — ahead-of-time compiled, LLVM-free checkers (`referee build`).
+- **Online monitoring**
+  - [monitor.md](docs/monitor.md) — the design: LTL₃ semantics, the verdict domain, streaming.
+  - [monitor-implementation.md](docs/monitor-implementation.md) — how it is built: the phases, the single-state atom path.
+- **Notes**
+  - [signal-node-leak.md](docs/signal-node-leak.md) — a fixed AST-interning bug, kept as a record.
+
 ## Design rationale
 
 The usual way to check behavioural requirements against a log is to hand-write a checker per requirement — a state machine with flags, counters, and event handlers. Referee exists because that approach degrades badly as the requirement set grows. The design choices below are each a response to a specific way it degrades.
