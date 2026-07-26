@@ -167,8 +167,23 @@ against `executeRdb` at every prefix, and the response/until/release agreement
 tests now run *through* this evaluator, unchanged. Build order: (1) per-atom
 companions + IR test *(done)*; (2) the residual evaluator with the finite-trace
 finaliser *(done)*; (3) agreement against `executeRdb` at every prefix *(done)*.
-Bounded operators, freeze, next and past stay on the prefix path until their
-windows/obligations are modelled.
+
+**Bounded operators.** A *top-level* bounded `F[lo:hi]` / `G[lo:hi]` over a state
+predicate is **built** on the fast path (`Referee::monitor`, the `BoundedF` /
+`BoundedG` kinds) — one window `[t0+lo, t0+hi]` in absolute `__time__`, anchored
+at the first state, read from the state buffer so it is independent of CSV column
+order. `F` settles PASS the first time its body holds in the window and FAIL once
+the window closes unmet; `G` settles FAIL the first time its body fails in the
+window and PASS once it closes unbroken — events outside the window are ignored,
+and a stream ending inside the window keeps the safe verdict (`F` unmet → FAIL,
+`G` unbroken → PASS). The body predicate is the `__atom__<name>` the generator
+already emits (`atomOf` peels the operator, bound and all); the bound literals
+come off the AST's `Time`. `MonitorBoundedAgreesAtEveryPrefix` pins both, with
+zero and nonzero lower bounds, against `executeRdb` at every prefix — offline
+fixes the bound inclusivity. Still on the prefix path: a bounded operator *nested*
+under another (each trigger opens a fresh window — many concurrent deadlines, the
+segment problem), bounded until/release, a non-literal bound, and freeze, next
+and past — until their windows/obligations are modelled.
 
 **4. Stream front end.** Read rows from stdin, build a `state_t` per row via the
 loader, then for each requirement project to its footprint and change-collapse to

@@ -261,11 +261,11 @@ TEST(Rdb, MonitorPerStateAndStopAtFirst)
     }
 }
 
-// A bounded operator (`F[0:2000]`) folds over a __time__ window the atom
-// fast path's all/any latch cannot express -- `any` would settle on an event
-// past the deadline. So a spec carrying one must fall back to the prefix path
-// and agree with offline. Here `x == 42` arrives at t=5000, outside the
-// [0:2000] window, so the deadline is FAIL both ways (not a spurious PASS).
+// A top-level bounded operator (`F[0:2000]`) folds its body over a __time__
+// window. The monitor tracks it as a deadline latch on the fast path -- the
+// plain all/any latch cannot, since `any` would settle on an event past the
+// deadline. Here `x == 42` arrives at t=5000, outside the [0:2000] window, so
+// the deadline is FAIL both ways (not a spurious PASS on the late event).
 TEST(Rdb, MonitorHandlesBoundedOperators)
 {
     auto    refPath = std::string(REFEREE_TEST_DATA_DIR) + "/bounded_mon.ref";
@@ -628,6 +628,71 @@ TEST(Rdb, MonitorGeneralResidualAgreesAtEveryPrefix)
 
             ASSERT_EQ(offline, online)
                 << "residual disagree at prefix " << k << " of " << N
+                << "\nspec:\n" << spec
+                << "\noffline:\n" << offOut.str() << "\nmonitor:\n" << monOut.str();
+        }
+        std::remove(refPath.c_str());
+    }
+}
+
+// A top-level bounded `F[lo:hi]` / `G[lo:hi]` is a deadline over the absolute
+// window [t0+lo, t0+hi] anchored at the first state. The monitor settles F PASS
+// the first time its body holds in the window and FAIL once the window closes
+// unmet; G FAIL the first time its body fails in the window and PASS once the
+// window closes unbroken -- events outside the window are ignored, and a stream
+// ending inside the window keeps the safe verdict (F unmet, G unbroken). Nonzero
+// lower bounds and both operators must agree with the offline checker at EVERY
+// prefix, over a trace whose values cross the thresholds inside and outside each
+// window. Offline is the oracle for the exact bound inclusivity.
+TEST(Rdb, MonitorBoundedAgreesAtEveryPrefix)
+{
+    constexpr int   N = 24;
+
+    std::string                 header = "__time__,x";
+    std::vector<std::string>    rows;
+    for (int k = 0; k < N; k++)
+    {
+        //  x weaves across 42 and 100 at assorted times; steps of 500 ticks.
+        int     x = (k % 6 == 2) ? 42 : (k % 6 == 4) ? 150 : (k * 7) % 90;
+        rows.push_back(std::to_string(k * 500) + "," + std::to_string(x));
+    }
+
+    char const* specs[] = {
+        "data x:integer;\n@r F[0:2000](x == 42);\n",        // deadline from the start
+        "data x:integer;\n@r G[0:3000](x < 100);\n",        // windowed invariant
+        "data x:integer;\n@r F[1000:3000](x == 42);\n",     // deadline with a nonzero lower bound
+        "data x:integer;\n@r G[1500:4000](x < 100);\n",     // windowed invariant, offset window
+    };
+
+    for (auto const* spec : specs)
+    {
+        auto    refPath = tmpFile("bnd") + ".ref";
+        { std::ofstream f(refPath); f << spec; }
+
+        for (int k = 1; k <= N; k++)
+        {
+            std::string     csv = header;
+            for (int j = 0; j < k; j++)  csv += "\n" + rows[j];
+
+            auto            csvPath = tmpFile("bnd-csv") + ".csv";
+            { std::ofstream f(csvPath); f << csv << "\n"; }
+
+            auto                rdbPath = tmpFile("bnd-rdb");
+            referee::db::ingest(refPath, csvPath, /*conf=*/"", rdbPath);
+            std::ifstream       refA(refPath);
+            std::ostringstream  offOut;
+            bool                offline = Referee::executeRdb(refA, refPath, rdbPath, offOut);
+
+            std::istringstream  states(csv);
+            std::ifstream       refB(refPath);
+            std::ostringstream  monOut;
+            bool                online = Referee::monitor(refB, refPath, states, "", monOut);
+
+            std::remove(rdbPath.c_str());
+            std::remove(csvPath.c_str());
+
+            ASSERT_EQ(offline, online)
+                << "bounded disagree at prefix " << k << " of " << N
                 << "\nspec:\n" << spec
                 << "\noffline:\n" << offOut.str() << "\nmonitor:\n" << monOut.str();
         }

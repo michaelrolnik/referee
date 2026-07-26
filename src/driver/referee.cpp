@@ -4362,6 +4362,17 @@ static bool finalize(RPtr const& r)
     return false;
 }
 
+//  A time bound as a plain integer: an absent bound takes `dflt` (a missing
+//  lower bound is 0), a constant literal its value. A non-literal bound (a conf
+//  reference, an expression) is not one the monitor's single window can carry,
+//  so it returns false and the requirement stays on the prefix path.
+static bool constTime(Expr* e, std::int64_t dflt, std::int64_t& out)
+{
+    if (e == nullptr)                                       { out = dflt; return true; }
+    if (auto* c = dynamic_cast<ExprConstInteger*>(e))       { out = c->value; return true; }
+    return false;
+}
+
 //  Parse `name … PASS/FAIL …` verdict lines from a runOneTrace capture into a
 //  label -> passed map.  The name is left-justified in a fixed column, so it is
 //  everything before the first ` PASS`/` FAIL`, trailing padding trimmed.
@@ -4443,16 +4454,19 @@ bool    Referee::monitor(std::istream& refStream, std::string refName,
     //  a spec with any falls through to the exact prefix path below.
     {
         using AtomFn = bool(*)(void*, void*);
-        //  Two evaluators share the incremental fast path. A single-fold atom
-        //  (an invariant, an eventually, a bare predicate) is one latch -- fn +
-        //  a fold. Anything richer that progression handles carries a residual
-        //  formula and its atomic-proposition functions instead.
-        enum    Fold { FoldAll, FoldAny, FoldFirst, Residual };
+        //  Evaluators sharing the incremental fast path. A single-fold atom (an
+        //  invariant, an eventually, a bare predicate) is one latch -- fn + a
+        //  fold. A top-level bounded `F`/`G` is a latch over a `__time__` window
+        //  -- fn + a [lo, hi] deadline. Anything richer that progression handles
+        //  carries a residual formula and its atomic-proposition functions.
+        enum    Fold { FoldAll, FoldAny, FoldFirst, BoundedF, BoundedG, Residual };
         struct  AtomReq
         {
             std::string         label;
             Fold                fold;
-            AtomFn              fn  = nullptr;   //  atom folds
+            AtomFn              fn  = nullptr;   //  atom folds, bounded F/G body
+            std::int64_t        lo  = 0;         //  bounded F/G: window [now+lo, now+hi]
+            std::int64_t        hi  = 0;
             RPtr                templ;          //  Residual: the progression template
             std::vector<AtomFn> aps;            //  Residual: __ap__0..k
         };
@@ -4472,18 +4486,34 @@ bool    Referee::monitor(std::istream& refStream, std::string refName,
             auto    atomSym = js.jit->lookup("__atom__" + label);
             if (atomSym)
             {
-                //  A bounded operator -- `F[a:b]`, `G[a:b]`, ... -- folds over a
-                //  `__time__` window the plain all/any latch cannot express, so
-                //  it takes the prefix path, which respects the bound.
+                auto    fn = (*atomSym).toPtr<AtomFn>();
+
+                //  A bounded operator folds its body over a `__time__` window the
+                //  plain all/any latch cannot express. A top-level `F[lo:hi]` or
+                //  `G[lo:hi]` over a state predicate is one window anchored at the
+                //  first state, so the monitor carries it as a deadline latch;
+                //  `__atom__` is that body predicate (`atomOf` peels the operator
+                //  bound and all). Bounded past (`H`/`O`), a non-literal bound, or
+                //  a bounded operator nested under another (many concurrent
+                //  windows) take the prefix path.
                 if (auto* t = dynamic_cast<Temporal<ExprUnary>*>(e); t != nullptr && t->time != nullptr)
                 {
+                    std::int64_t    lo, hi;
+                    bool            isF = dynamic_cast<ExprF*>(e) != nullptr;
+                    bool            isG = dynamic_cast<ExprG*>(e) != nullptr;
+                    if ((isF || isG) && t->time->hi != nullptr
+                        && constTime(t->time->lo, 0, lo) && constTime(t->time->hi, 0, hi))
+                    {
+                        atomReqs.push_back({label, isF ? BoundedF : BoundedG, fn, lo, hi});
+                        continue;
+                    }
                     allAtoms = false;
                     break;
                 }
                 auto    fold = (dynamic_cast<ExprG*>(e) || dynamic_cast<ExprH*>(e)) ? FoldAll
                              : (dynamic_cast<ExprF*>(e) || dynamic_cast<ExprO*>(e)) ? FoldAny
                              :                                                        FoldFirst;
-                atomReqs.push_back({label, fold, (*atomSym).toPtr<AtomFn>()});
+                atomReqs.push_back({label, fold, fn});
                 continue;
             }
             llvm::consumeError(atomSym.takeError());
@@ -4507,7 +4537,7 @@ bool    Referee::monitor(std::istream& refStream, std::string refName,
                 }
                 if (ok)
                 {
-                    atomReqs.push_back({label, Residual, nullptr, tmpl, std::move(aps)});
+                    atomReqs.push_back({label, Residual, nullptr, 0, 0, tmpl, std::move(aps)});
                     continue;
                 }
             }
@@ -4529,14 +4559,19 @@ bool    Referee::monitor(std::istream& refStream, std::string refName,
             std::string     header;
             if (!std::getline(states, header))  return true;
 
-            std::vector<char>   value(atomReqs.size());     //  all: ok / any: met / first & residual: verdict once done
-            std::vector<char>   done (atomReqs.size(), 0);  //  first & residual: decided yet
+            std::vector<char>   value(atomReqs.size());     //  all/G[]: ok / any: met / first & residual: verdict once done
+            std::vector<char>   done (atomReqs.size(), 0);  //  first, residual, bounded: decided yet
             std::vector<RPtr>   resid(atomReqs.size());     //  residual: the current progression formula
             for (std::size_t i = 0; i < atomReqs.size(); i++)
             {
-                value[i] = (atomReqs[i].fold == FoldAll) ? 1 : 0;
+                //  G and G[lo:hi] are safety -- true until broken; everything else
+                //  starts unmet, so a stream that ends before it settles is a FAIL.
+                value[i] = (atomReqs[i].fold == FoldAll || atomReqs[i].fold == BoundedG) ? 1 : 0;
                 resid[i] = atomReqs[i].templ;               //  null for atom folds
             }
+
+            std::int64_t    t0       = 0;       //  window anchor: __time__ of the first state
+            bool            haveT0   = false;
 
             std::string     line;
             while (std::getline(states, line))
@@ -4575,9 +4610,46 @@ bool    Referee::monitor(std::istream& refStream, std::string refName,
                 auto        comma = line.find(',');
                 std::string now   = comma == std::string::npos ? line : line.substr(0, comma);
 
+                //  Absolute `__time__` of this state, read from the state buffer
+                //  itself (its first field) so it is right regardless of CSV
+                //  column order; the first state anchors every bounded window.
+                std::int64_t    ts = *reinterpret_cast<std::int64_t const*>(curr);
+                if (!haveT0)    { t0 = ts; haveT0 = true; }
+
                 bool    violatedNow = false;
                 for (std::size_t i = 0; i < atomReqs.size(); i++)
                 {
+                    if (atomReqs[i].fold == BoundedF || atomReqs[i].fold == BoundedG)
+                    {
+                        //  Top-level `F[lo:hi]`/`G[lo:hi]` over the window
+                        //  [t0+lo, t0+hi]. Before the window a state is ignored;
+                        //  past it the verdict is fixed (F never met -> FAIL, G
+                        //  never broken -> PASS). In the window, F settles PASS the
+                        //  first time its body holds; G settles FAIL the first time
+                        //  its body fails. A stream ending inside the window keeps
+                        //  the initial verdict (F unmet -> FAIL, G unbroken -> PASS).
+                        if (done[i])    continue;
+                        std::int64_t    winLo = t0 + atomReqs[i].lo;
+                        std::int64_t    winHi = t0 + atomReqs[i].hi;
+                        bool            inWin = ts >= winLo && ts <= winHi;
+                        bool            body  = inWin && atomReqs[i].fn(curr, conf);
+
+                        bool    settleFail = atomReqs[i].fold == BoundedF ? ts > winHi           //  window closed, never met
+                                                                         : inWin && !body;      //  broken inside the window
+                        bool    settlePass = atomReqs[i].fold == BoundedF ? body                 //  met inside the window
+                                                                         : ts > winHi;          //  window closed, never broken
+                        if (settlePass)         { value[i] = 1; done[i] = 1; }
+                        else if (settleFail)
+                        {
+                            value[i] = 0;
+                            done[i]  = 1;
+                            os << red << "VIOLATION" << reset << "  " << yellow << atomReqs[i].label << reset
+                               << "  @ __time__=" << now << "  " << line << "\n";
+                            violatedNow = true;
+                        }
+                        continue;
+                    }
+
                     if (atomReqs[i].fold == Residual)
                     {
                         //  Progress the residual formula against this state. It
