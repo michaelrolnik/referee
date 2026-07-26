@@ -4204,6 +4204,21 @@ static bool isResponse(Expr* e)
     return isStatePredicate(imp->lhs) && isStatePredicate(f->arg);
 }
 
+//  A top-level unbounded until `Us(p, q)` / `Uw(p, q)` over two state predicates
+//  -- the other nested future the monitor progresses. Its residual, like the
+//  response's, is one bit: an obligation that stays live while `p` holds and `q`
+//  has not yet come. `weak` distinguishes the two only at end of stream. Bounded
+//  `Us[a:b]` and non-predicate arms take the prefix path.
+static bool isUntil(Expr* e, bool& weak)
+{
+    Temporal<ExprBinary>*   u = nullptr;
+    if (auto* s = dynamic_cast<ExprUs*>(e)) { u = s; weak = false; }
+    else if (auto* w = dynamic_cast<ExprUw*>(e)) { u = w; weak = true; }
+    else return false;
+    if (u->time) return false;                                              // bounded until
+    return isStatePredicate(u->lhs) && isStatePredicate(u->rhs);
+}
+
 //  Parse `name … PASS/FAIL …` verdict lines from a runOneTrace capture into a
 //  label -> passed map.  The name is left-justified in a fixed column, so it is
 //  everything before the first ` PASS`/` FAIL`, trailing padding trimmed.
@@ -4285,8 +4300,8 @@ bool    Referee::monitor(std::istream& refStream, std::string refName,
     //  a spec with any falls through to the exact prefix path below.
     {
         using AtomFn = bool(*)(void*, void*);
-        enum    Fold { FoldAll, FoldAny, FoldFirst, Response };
-        struct  AtomReq { std::string label; Fold fold; AtomFn fn; AtomFn fn2 = nullptr; };
+        enum    Fold { FoldAll, FoldAny, FoldFirst, Response, Until };
+        struct  AtomReq { std::string label; Fold fold; AtomFn fn; AtomFn fn2 = nullptr; bool weak = false; };
 
         bool    allAtoms = js.astModule->getSpecs().empty();
         for (auto const& name : js.astModule->getPropNames())
@@ -4319,21 +4334,24 @@ bool    Referee::monitor(std::istream& refStream, std::string refName,
             }
             llvm::consumeError(atomSym.takeError());
 
-            //  Not a single-fold atom. The one nested formula the monitor
-            //  progresses today is the unbounded response `G(a => F b)`, whose
-            //  residual is a single pending bit; `a`/`b` are its atomic
-            //  propositions __ap__0/__ap__1. Anything else -> prefix path.
-            if (isResponse(e))
+            //  Not a single-fold atom. Two nested formulas progress with a
+            //  one-bit residual: the unbounded response `G(a => F b)` and the
+            //  unbounded until `Us/Uw(p, q)`. Both bind their two state
+            //  predicates to the __ap__0/__ap__1 companions (piece 1); anything
+            //  else -> prefix path.
+            bool    weak = false;
+            if (isResponse(e) || isUntil(e, weak))
             {
-                auto    apA = js.jit->lookup("__ap__0__" + label);
-                auto    apB = js.jit->lookup("__ap__1__" + label);
-                if (apA && apB)
+                auto    ap0 = js.jit->lookup("__ap__0__" + label);
+                auto    ap1 = js.jit->lookup("__ap__1__" + label);
+                if (ap0 && ap1)
                 {
-                    atomReqs.push_back({label, Response, (*apA).toPtr<AtomFn>(), (*apB).toPtr<AtomFn>()});
+                    auto    kind = isResponse(e) ? Response : Until;
+                    atomReqs.push_back({label, kind, (*ap0).toPtr<AtomFn>(), (*ap1).toPtr<AtomFn>(), weak});
                     continue;
                 }
-                if (!apA)   llvm::consumeError(apA.takeError());
-                if (!apB)   llvm::consumeError(apB.takeError());
+                if (!ap0)   llvm::consumeError(ap0.takeError());
+                if (!ap1)   llvm::consumeError(ap1.takeError());
             }
             allAtoms = false;
             break;
@@ -4417,6 +4435,30 @@ bool    Referee::monitor(std::istream& refStream, std::string refName,
                         continue;
                     }
 
+                    if (atomReqs[i].fold == Until)
+                    {
+                        //  Us/Uw(p, q): progress the one obligation from state 0.
+                        //  q settles it TRUE now; else while p holds it stays
+                        //  pending; else p broke before q -- FALSE, a mid-stream
+                        //  violation for both strong and weak. Weak vs strong
+                        //  differ only at end of stream (below).
+                        if (done[i])    continue;
+                        if (atomReqs[i].fn2(curr, conf))            //  q: satisfied
+                        {
+                            value[i] = 1;
+                            done[i]  = 1;
+                        }
+                        else if (!atomReqs[i].fn(curr, conf))       //  neither q nor p: broken
+                        {
+                            value[i] = 0;
+                            done[i]  = 1;
+                            os << red << "VIOLATION" << reset << "  " << yellow << atomReqs[i].label << reset
+                               << "  @ __time__=" << now << "  " << line << "\n";
+                            violatedNow = true;
+                        }
+                        continue;
+                    }
+
                     bool    a = atomReqs[i].fn(curr, conf);
                     if (atomReqs[i].fold == FoldAll && value[i] && !a)
                     {
@@ -4448,7 +4490,7 @@ bool    Referee::monitor(std::istream& refStream, std::string refName,
                     if      (atomReqs[i].fold == FoldAll)    v ? (os << '?')                    : (os << red << "FAIL" << reset);
                     else if (atomReqs[i].fold == FoldAny)    v ? (os << green << "PASS" << reset) : (os << '?');
                     else if (atomReqs[i].fold == Response)   os << '?';   //  liveness: undecided until end of stream
-                    else                                     done[i] ? (v ? (os << green << "PASS" << reset) : (os << red << "FAIL" << reset)) : (os << '?');
+                    else                                     done[i] ? (v ? (os << green << "PASS" << reset) : (os << red << "FAIL" << reset)) : (os << '?');   //  first / until
                 }
                 os << "\n";
                 os.flush();
@@ -4463,7 +4505,12 @@ bool    Referee::monitor(std::istream& refStream, std::string refName,
             {
                 //  For a response `value` is the pending bit -- an obligation
                 //  still owed at end of stream is a FAIL, so its verdict inverts.
-                bool    pass = (atomReqs[i].fold == Response) ? !value[i] : (bool)value[i];
+                //  A still-pending until (p held, q never came) is a FAIL if
+                //  strong (q was required) and a PASS if weak (p forever suffices).
+                bool    pass;
+                if      (atomReqs[i].fold == Response)                   pass = !value[i];
+                else if (atomReqs[i].fold == Until && !done[i])          pass = atomReqs[i].weak;
+                else                                                     pass = value[i];
                 if (pass)
                     os << green << "PASS" << reset << "  " << atomReqs[i].label << "\n";
                 else

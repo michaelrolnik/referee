@@ -416,6 +416,80 @@ TEST(Rdb, MonitorResponsePatternAgreesAtEveryPrefix)
     std::remove(refPath.c_str());
 }
 
+// The unbounded until `Us(p, q)` / `Uw(p, q)` is the second nested future the
+// monitor progresses incrementally (piece 2). Its residual is one obligation
+// live from state 0: `q` settles it PASS, `p` keeps it waiting, and `p` breaking
+// before `q` is a mid-stream FAIL for both. Strong and weak differ only when the
+// stream ends with the obligation still live -- strong FAILs (q was required),
+// weak PASSes (p forever suffices). Each spec is either an atom or an until, so
+// the whole thing takes the incremental path, and must agree with the offline
+// checker at every prefix across traces that cross every outcome.
+TEST(Rdb, MonitorUntilAgreesAtEveryPrefix)
+{
+    struct  Trace { char const* name; std::vector<std::pair<bool, bool>> pq; };   // (p, q) per state
+
+    //  crafted so, read as a prefix grows, each until crosses its outcomes:
+    Trace   traces[] = {
+        //  q arrives at state 3 with p held throughout -> settles PASS
+        { "satisfied", {{1,0},{1,0},{1,0},{1,1},{0,0},{1,0}} },
+        //  p breaks at state 2 before any q -> FALSE mid-stream (both weak/strong)
+        { "broken",    {{1,0},{1,0},{0,0},{1,0},{1,1},{0,0}} },
+        //  p holds forever, q never comes -> strong FAIL, weak PASS at end
+        { "forever",   {{1,0},{1,0},{1,0},{1,0},{1,0},{1,0}} },
+    };
+
+    char const* specs[] = {
+        "data p:boolean;\ndata q:boolean;\n@u Us(p, q);\n",   // strong
+        "data p:boolean;\ndata q:boolean;\n@u Uw(p, q);\n",   // weak
+    };
+
+    for (auto const& tr : traces)
+    {
+        std::string                 header = "__time__,p,q";
+        std::vector<std::string>    rows;
+        for (std::size_t k = 0; k < tr.pq.size(); k++)
+            rows.push_back(std::to_string(k * 1000)
+                         + "," + (tr.pq[k].first  ? "true" : "false")
+                         + "," + (tr.pq[k].second ? "true" : "false"));
+
+        for (auto const* spec : specs)
+        {
+            auto    refPath = tmpFile("until") + ".ref";
+            { std::ofstream f(refPath); f << spec; }
+
+            for (std::size_t k = 1; k <= rows.size(); k++)
+            {
+                std::string     csv = header;
+                for (std::size_t j = 0; j < k; j++)  csv += "\n" + rows[j];
+
+                auto            csvPath = tmpFile("until-csv") + ".csv";
+                { std::ofstream f(csvPath); f << csv << "\n"; }
+
+                auto                rdbPath = tmpFile("until-rdb");
+                referee::db::ingest(refPath, csvPath, /*conf=*/"", rdbPath);
+                std::ifstream       refA(refPath);
+                std::ostringstream  offOut;
+                bool                offline = Referee::executeRdb(refA, refPath, rdbPath, offOut);
+
+                std::istringstream  states(csv);
+                std::ifstream       refB(refPath);
+                std::ostringstream  monOut;
+                bool                online = Referee::monitor(refB, refPath, states, "", monOut);
+
+                std::remove(rdbPath.c_str());
+                std::remove(csvPath.c_str());
+
+                ASSERT_EQ(offline, online)
+                    << "until '" << tr.name << "' disagree at prefix " << k
+                    << " of " << rows.size()
+                    << "\nspec:\n" << spec
+                    << "\noffline:\n" << offOut.str() << "\nmonitor:\n" << monOut.str();
+            }
+            std::remove(refPath.c_str());
+        }
+    }
+}
+
 // The atom fast path (all requirements single-state atoms: invariants and an
 // eventually) must agree with the offline checker. This exercises the O(1)
 // per-state route -- ingest one row, call `__atom__`, fold a latch -- rather

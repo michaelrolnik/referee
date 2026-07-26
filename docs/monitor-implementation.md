@@ -138,12 +138,23 @@ An unbounded response cannot fail mid-stream, so its per-state verdict is always
 `?`; at end of stream a still-pending obligation is a `FAIL` reported with the
 trigger's time, otherwise `PASS`. The detector `isResponse` matches the exact
 shape — `G` and `F` both unbounded, `a`/`b` state predicates — and the two atomic
-propositions bind to the `__ap__0`/`__ap__1` companions (piece 1). Anything else
-— `p U q`, `G(F p)`, bounded windows, freeze — still takes the prefix path.
-`MonitorResponsePatternAgreesAtEveryPrefix` pins it against `executeRdb` at every
-prefix, across a trace that crosses both a met response and one left dangling at
-end of stream. Remaining: the general residual evaluator over `U`/`R` and
-arbitrary nesting.
+propositions bind to the `__ap__0`/`__ap__1` companions (piece 1).
+
+The second nested formula is **built**: the unbounded until `Us(p, q)` /
+`Uw(p, q)` over two state predicates. Its residual is also one bit — an
+obligation live from state 0 while `p` holds and `q` has not yet come. `q`
+settles it PASS; `p` keeps it waiting; `p` breaking before `q` is a mid-stream
+FAIL, for both strong and weak (`isUntil` detects the shape, `p`=`__ap__0`,
+`q`=`__ap__1`). The two differ only when the stream ends with the obligation
+still live: strong FAILs (`q` was required), weak PASSes (`p` forever suffices).
+`MonitorUntilAgreesAtEveryPrefix` pins both against `executeRdb` at every prefix
+across traces that cross every outcome — satisfied, broken, and held-forever.
+
+Anything else — `G(F p)`, `R` release, bounded windows, freeze — still takes the
+prefix path. Remaining: the general residual evaluator over release and arbitrary
+nesting. Each is pinned to `executeRdb` at every prefix, the discipline the atom
+path is held to (`MonitorResponsePatternAgreesAtEveryPrefix` likewise, across a
+trace that crosses both a met response and one left dangling at end of stream).
 
 Progression rewrites a requirement's *residual* formula against the current
 state's atoms and emits `true` / `false` / `unknown`:
@@ -172,10 +183,11 @@ and it was the first commit of this piece. Then the monitor carries a residual
 per requirement, progresses it per state, and reports a settled `false` as a
 violation. Build order: (1) per-atom companions + IR test *(done)*; (2) the
 residual evaluator, with the finite-trace finaliser — the response `G(a ⇒ F b)`
-is the first residual shape wired *(done)*, the general `U`/`R` and arbitrary
+and the unbounded until `Us`/`Uw` are wired *(done)*, `R` release and arbitrary
 nesting remain; (3) agreement against `executeRdb` at every prefix, the same
-discipline the atom path is held to *(done for the response)*. Bounded operators
-and freeze stay on the prefix path until their windows/obligations are modelled.
+discipline the atom path is held to *(done for response and until)*. Bounded
+operators and freeze stay on the prefix path until their windows/obligations are
+modelled.
 
 **4. Stream front end.** Read rows from stdin, build a `state_t` per row via the
 loader, then for each requirement project to its footprint and change-collapse to
