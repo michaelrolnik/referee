@@ -119,16 +119,31 @@ or a violation; `refresh` clears the window. Realised first as this explicit
 struct threaded across calls; compiled coroutines (`llvm.coro`) are a later
 option only if nested future formulas make the hand-threaded form the hard part.
 
-### Nested future formulas: explicit-state progression *(planned)*
+### Nested future formulas: explicit-state progression
 
 The atom fast path covers a requirement whose whole verdict is one fold — `G(P)`,
 `F(P)`, a bare predicate. A *nested* future formula — `G(a ⇒ F b)` (response),
-`G(F p)`, `p U q` — is not one fold, and today falls to the O(N²) prefix path.
-The chosen route to make it incremental is **LTL₃ formula progression** (the
-formula-derivative technique), with explicit per-requirement state — not
-compiled coroutines, which stay deferred: progression has small residuals, so
-the hand-written state machine is not the hard part the coroutines were reserved
-for.
+`G(F p)`, `p U q` — is not one fold. The chosen route to make it incremental is
+**LTL₃ formula progression** (the formula-derivative technique), with explicit
+per-requirement state — not compiled coroutines, which stay deferred: progression
+has small residuals, so the hand-written state machine is not the hard part the
+coroutines were reserved for.
+
+The first nested formula is **built**: the unbounded response `G(a ⇒ F b)`. Its
+progression residual is a single *pending* bit — an outstanding `a` awaiting a
+`b` — so the monitor carries one latch per response and joins them to the atom
+fast path (`Referee::monitor`, the incremental block): a `b` discharges the
+obligation, a fresh `a` with none pending arms one and remembers its `__time__`.
+An unbounded response cannot fail mid-stream, so its per-state verdict is always
+`?`; at end of stream a still-pending obligation is a `FAIL` reported with the
+trigger's time, otherwise `PASS`. The detector `isResponse` matches the exact
+shape — `G` and `F` both unbounded, `a`/`b` state predicates — and the two atomic
+propositions bind to the `__ap__0`/`__ap__1` companions (piece 1). Anything else
+— `p U q`, `G(F p)`, bounded windows, freeze — still takes the prefix path.
+`MonitorResponsePatternAgreesAtEveryPrefix` pins it against `executeRdb` at every
+prefix, across a trace that crosses both a met response and one left dangling at
+end of stream. Remaining: the general residual evaluator over `U`/`R` and
+arbitrary nesting.
 
 Progression rewrites a requirement's *residual* formula against the current
 state's atoms and emits `true` / `false` / `unknown`:
@@ -153,13 +168,14 @@ a requirement's *atomic propositions* per state (`a` and `b` in `G(a ⇒ F b)`),
 so the code generator must emit a single-state companion **per atom**, not just
 one `__atom__` for a whole reducible requirement. That is a small generalisation
 of the `__atom__` work — the same `(curr, conf)` shape, one per leaf predicate —
-and it is the first commit of this piece. Then the monitor carries a residual
+and it was the first commit of this piece. Then the monitor carries a residual
 per requirement, progresses it per state, and reports a settled `false` as a
-violation. Build order: (1) per-atom companions + IR test; (2) the residual
-evaluator over `G`/`F`/`X`/`U` + boolean, with the finite-trace finaliser;
-(3) agreement against `executeRdb` at every prefix, the same discipline the atom
-path is held to. Bounded operators and freeze stay on the prefix path until
-their windows/obligations are modelled.
+violation. Build order: (1) per-atom companions + IR test *(done)*; (2) the
+residual evaluator, with the finite-trace finaliser — the response `G(a ⇒ F b)`
+is the first residual shape wired *(done)*, the general `U`/`R` and arbitrary
+nesting remain; (3) agreement against `executeRdb` at every prefix, the same
+discipline the atom path is held to *(done for the response)*. Bounded operators
+and freeze stay on the prefix path until their windows/obligations are modelled.
 
 **4. Stream front end.** Read rows from stdin, build a `state_t` per row via the
 loader, then for each requirement project to its footprint and change-collapse to

@@ -358,6 +358,64 @@ TEST(Rdb, MonitorMatchesOfflineAtEveryPrefix)
     }
 }
 
+// The unbounded response `G(a => F b)` is a nested future formula: not a single
+// fold, but its progression residual is one pending bit, so the monitor runs it
+// incrementally (piece 2) rather than re-ingesting each prefix. Every requirement
+// here is either an atom or a response, so the whole spec takes the incremental
+// fast path -- and it must still agree with the offline checker at every prefix,
+// as the trace crosses both outcomes: a trigger whose response arrives later
+// (PASS) and a trigger left outstanding at end of stream (FAIL).
+TEST(Rdb, MonitorResponsePatternAgreesAtEveryPrefix)
+{
+    constexpr int   N = 30;
+
+    std::string                 header = "__time__,a,b";
+    std::vector<std::string>    rows;
+    for (int k = 0; k < N; k++)
+    {
+        //  a fires every 4th state; b fires 2 states after each a EXCEPT the
+        //  last window, which is left dangling so the response is unmet at end.
+        bool    a = (k % 4) == 0;
+        bool    b = (k % 4) == 2 && k < N - 3;
+        rows.push_back(std::to_string(k * 1000) + "," + (a ? "true" : "false")
+                     + "," + (b ? "true" : "false"));
+    }
+
+    char const* spec = "data a:boolean;\ndata b:boolean;\n"
+                       "@resp G(a => F(b));\n@inv G(a || !a);\n";
+
+    auto    refPath = tmpFile("resp") + ".ref";
+    { std::ofstream f(refPath); f << spec; }
+
+    for (int k = 1; k <= N; k++)
+    {
+        std::string     csv = header;
+        for (int j = 0; j < k; j++)  csv += "\n" + rows[j];
+
+        auto            csvPath = tmpFile("resp-csv") + ".csv";
+        { std::ofstream f(csvPath); f << csv << "\n"; }
+
+        auto                rdbPath = tmpFile("resp-rdb");
+        referee::db::ingest(refPath, csvPath, /*conf=*/"", rdbPath);
+        std::ifstream       refA(refPath);
+        std::ostringstream  offOut;
+        bool                offline = Referee::executeRdb(refA, refPath, rdbPath, offOut);
+
+        std::istringstream  states(csv);
+        std::ifstream       refB(refPath);
+        std::ostringstream  monOut;
+        bool                online = Referee::monitor(refB, refPath, states, "", monOut);
+
+        std::remove(rdbPath.c_str());
+        std::remove(csvPath.c_str());
+
+        ASSERT_EQ(offline, online)
+            << "response disagree at prefix " << k << " of " << N
+            << "\noffline:\n" << offOut.str() << "\nmonitor:\n" << monOut.str();
+    }
+    std::remove(refPath.c_str());
+}
+
 // The atom fast path (all requirements single-state atoms: invariants and an
 // eventually) must agree with the offline checker. This exercises the O(1)
 // per-state route -- ingest one row, call `__atom__`, fold a latch -- rather

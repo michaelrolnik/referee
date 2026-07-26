@@ -4168,6 +4168,42 @@ static bool hasEventually(Expr* e)
     return false;
 }
 
+//  A state predicate: no operator that reaches another state, so it is one of
+//  the requirement's atomic propositions the code generator emitted an `__ap__`
+//  for. Mirrors the compiler's `readsOnlyCurrent`, including the `Xs`/`Ys` and
+//  freeze exclusions `is_temporal()` misses.
+static bool isStatePredicate(Expr* e)
+{
+    if (e == nullptr)                                                       return true;
+    if (dynamic_cast<Temporal<ExprUnary>*>(e) || dynamic_cast<Temporal<ExprBinary>*>(e) ||
+        dynamic_cast<ExprXs*>(e) || dynamic_cast<ExprXw*>(e) ||
+        dynamic_cast<ExprYs*>(e) || dynamic_cast<ExprYw*>(e) ||
+        dynamic_cast<ExprAt*>(e))                                          return false;
+    if (auto* c = dynamic_cast<ExprCount*>(e))   return isStatePredicate(c->arg) && isStatePredicate(c->body);
+    if (auto* u = dynamic_cast<ExprUnary*>(e))   return isStatePredicate(u->arg);
+    if (auto* b = dynamic_cast<ExprBinary*>(e))  return isStatePredicate(b->lhs) && isStatePredicate(b->rhs);
+    if (auto* t = dynamic_cast<ExprTernary*>(e)) return isStatePredicate(t->lhs) && isStatePredicate(t->mhs) && isStatePredicate(t->rhs);
+    return true;
+}
+
+//  The unbounded response `G(a => F b)` -- the canonical nested future formula.
+//  Its progression residual is one bit (an outstanding `a` awaiting `b`), so the
+//  monitor evaluates it incrementally. Recognise the exact shape with `a`, `b`
+//  state predicates (the requirement's two atomic propositions, __ap__0/__ap__1)
+//  and the `F` unbounded; anything else takes the prefix path.
+static bool isResponse(Expr* e)
+{
+    auto* g = dynamic_cast<ExprG*>(e);
+    if (g == nullptr) return false;
+    if (auto* gt = dynamic_cast<Temporal<ExprUnary>*>(g); gt && gt->time) return false;   // bounded G
+    auto* imp = dynamic_cast<ExprImp*>(g->arg);
+    if (imp == nullptr) return false;
+    auto* f = dynamic_cast<ExprF*>(imp->rhs);
+    if (f == nullptr) return false;
+    if (auto* ft = dynamic_cast<Temporal<ExprUnary>*>(f); ft && ft->time) return false;   // bounded F
+    return isStatePredicate(imp->lhs) && isStatePredicate(f->arg);
+}
+
 //  Parse `name … PASS/FAIL …` verdict lines from a runOneTrace capture into a
 //  label -> passed map.  The name is left-justified in a fixed column, so it is
 //  everything before the first ` PASS`/` FAIL`, trailing padding trimmed.
@@ -4249,8 +4285,8 @@ bool    Referee::monitor(std::istream& refStream, std::string refName,
     //  a spec with any falls through to the exact prefix path below.
     {
         using AtomFn = bool(*)(void*, void*);
-        enum    Fold { FoldAll, FoldAny, FoldFirst };
-        struct  AtomReq { std::string label; Fold fold; AtomFn fn; };
+        enum    Fold { FoldAll, FoldAny, FoldFirst, Response };
+        struct  AtomReq { std::string label; Fold fold; AtomFn fn; AtomFn fn2 = nullptr; };
 
         bool    allAtoms = js.astModule->getSpecs().empty();
         for (auto const& name : js.astModule->getPropNames())
@@ -4262,30 +4298,45 @@ bool    Referee::monitor(std::istream& refStream, std::string refName,
         {
             auto    label = js.astModule->getExprName(i);
             if (label.empty())  label = exprs[i]->where().text();
-
-            auto    sym = js.jit->lookup("__atom__" + label);
-            if (!sym)
-            {
-                llvm::consumeError(sym.takeError());
-                allAtoms = false;               //  not a single-state atom
-                break;
-            }
             auto*   e = exprs[i];
 
-            //  A bounded operator -- `F[a:b]`, `G[a:b]`, ... -- folds over a
-            //  `__time__` window, which the plain all/any latch cannot express:
-            //  `any` would settle on an event outside the deadline, `all` would
-            //  ignore one. Those take the prefix path, which respects the bound.
-            if (auto* t = dynamic_cast<Temporal<ExprUnary>*>(e); t != nullptr && t->time != nullptr)
+            auto    atomSym = js.jit->lookup("__atom__" + label);
+            if (atomSym)
             {
-                allAtoms = false;
-                break;
+                //  A bounded operator -- `F[a:b]`, `G[a:b]`, ... -- folds over a
+                //  `__time__` window the plain all/any latch cannot express, so
+                //  it takes the prefix path, which respects the bound.
+                if (auto* t = dynamic_cast<Temporal<ExprUnary>*>(e); t != nullptr && t->time != nullptr)
+                {
+                    allAtoms = false;
+                    break;
+                }
+                auto    fold = (dynamic_cast<ExprG*>(e) || dynamic_cast<ExprH*>(e)) ? FoldAll
+                             : (dynamic_cast<ExprF*>(e) || dynamic_cast<ExprO*>(e)) ? FoldAny
+                             :                                                        FoldFirst;
+                atomReqs.push_back({label, fold, (*atomSym).toPtr<AtomFn>(), nullptr});
+                continue;
             }
+            llvm::consumeError(atomSym.takeError());
 
-            auto    fold = (dynamic_cast<ExprG*>(e) || dynamic_cast<ExprH*>(e)) ? FoldAll
-                         : (dynamic_cast<ExprF*>(e) || dynamic_cast<ExprO*>(e)) ? FoldAny
-                         :                                                        FoldFirst;
-            atomReqs.push_back({label, fold, (*sym).toPtr<AtomFn>()});
+            //  Not a single-fold atom. The one nested formula the monitor
+            //  progresses today is the unbounded response `G(a => F b)`, whose
+            //  residual is a single pending bit; `a`/`b` are its atomic
+            //  propositions __ap__0/__ap__1. Anything else -> prefix path.
+            if (isResponse(e))
+            {
+                auto    apA = js.jit->lookup("__ap__0__" + label);
+                auto    apB = js.jit->lookup("__ap__1__" + label);
+                if (apA && apB)
+                {
+                    atomReqs.push_back({label, Response, (*apA).toPtr<AtomFn>(), (*apB).toPtr<AtomFn>()});
+                    continue;
+                }
+                if (!apA)   llvm::consumeError(apA.takeError());
+                if (!apB)   llvm::consumeError(apB.takeError());
+            }
+            allAtoms = false;
+            break;
         }
 
         if (allAtoms && !atomReqs.empty())
@@ -4302,10 +4353,11 @@ bool    Referee::monitor(std::istream& refStream, std::string refName,
             std::string     header;
             if (!std::getline(states, header))  return true;
 
-            std::vector<char>   value(atomReqs.size());     //  all: ok / any: met / first: verdict
-            std::vector<char>   done (atomReqs.size(), 0);  //  first: decided yet
+            std::vector<char>           value  (atomReqs.size());     //  all: ok / any: met / first: verdict / response: pending
+            std::vector<char>           done   (atomReqs.size(), 0);  //  first: decided yet
+            std::vector<std::string>    witness(atomReqs.size());     //  response: __time__ of the unmet trigger
             for (std::size_t i = 0; i < atomReqs.size(); i++)
-                value[i] = (atomReqs[i].fold == FoldAll) ? 1 : 0;
+                value[i] = (atomReqs[i].fold == FoldAll) ? 1 : 0;     //  response starts un-pending (0)
 
             std::string     line;
             while (std::getline(states, line))
@@ -4347,6 +4399,24 @@ bool    Referee::monitor(std::istream& refStream, std::string refName,
                 bool    violatedNow = false;
                 for (std::size_t i = 0; i < atomReqs.size(); i++)
                 {
+                    if (atomReqs[i].fold == Response)
+                    {
+                        //  G(a => F b): progress the one pending bit. A `b`
+                        //  discharges any outstanding obligation; a fresh `a`
+                        //  with none outstanding arms one, remembering when. An
+                        //  unbounded response cannot fail mid-stream -- a still
+                        //  pending obligation is only a violation at end of
+                        //  stream -- so no VIOLATION is reported here.
+                        if (atomReqs[i].fn2(curr, conf))            //  b: obligation met
+                            value[i] = 0;
+                        else if (atomReqs[i].fn(curr, conf) && !value[i])   //  a with none pending
+                        {
+                            value[i]   = 1;
+                            witness[i] = now;
+                        }
+                        continue;
+                    }
+
                     bool    a = atomReqs[i].fn(curr, conf);
                     if (atomReqs[i].fold == FoldAll && value[i] && !a)
                     {
@@ -4377,6 +4447,7 @@ bool    Referee::monitor(std::istream& refStream, std::string refName,
                     bool    v = value[i];
                     if      (atomReqs[i].fold == FoldAll)    v ? (os << '?')                    : (os << red << "FAIL" << reset);
                     else if (atomReqs[i].fold == FoldAny)    v ? (os << green << "PASS" << reset) : (os << '?');
+                    else if (atomReqs[i].fold == Response)   os << '?';   //  liveness: undecided until end of stream
                     else                                     done[i] ? (v ? (os << green << "PASS" << reset) : (os << red << "FAIL" << reset)) : (os << '?');
                 }
                 os << "\n";
@@ -4390,12 +4461,18 @@ bool    Referee::monitor(std::istream& refStream, std::string refName,
             bool    allPass = true;
             for (std::size_t i = 0; i < atomReqs.size(); i++)
             {
-                if (value[i])
+                //  For a response `value` is the pending bit -- an obligation
+                //  still owed at end of stream is a FAIL, so its verdict inverts.
+                bool    pass = (atomReqs[i].fold == Response) ? !value[i] : (bool)value[i];
+                if (pass)
                     os << green << "PASS" << reset << "  " << atomReqs[i].label << "\n";
                 else
                 {
                     allPass = false;
-                    os << red << "FAIL" << reset << "  " << yellow << atomReqs[i].label << reset << "\n";
+                    os << red << "FAIL" << reset << "  " << yellow << atomReqs[i].label << reset;
+                    if (atomReqs[i].fold == Response)
+                        os << "  (unmet response, trigger @ __time__=" << witness[i] << ")";
+                    os << "\n";
                 }
             }
             return allPass;
