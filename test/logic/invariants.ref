@@ -1,0 +1,4 @@
+data x : integer;
+@lo G(x >= 0);
+@hi G(x < 100);
+@hit F(x == 5);

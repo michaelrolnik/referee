@@ -83,10 +83,17 @@ temporal to read them. Like the other `__…` companions, `__atom__` is filtered
 out of the requirement harvest (three sites) so it is never run as a
 requirement, and dropped from an AOT object where nothing calls it.
 
-What remains is the *consumer*: the phase-1 monitor still re-ingests the whole
-prefix. Wiring it to build one `state_t` per row and call `__atom__` per state
-— O(1) per state for an invariant, no re-run — is the next step and the payoff
-of this piece.
+The *consumer* is now wired too. When every requirement is a single-state atom
+(invariant, bare predicate, or eventually/once) and there are no computed props,
+the monitor takes an **atom fast path**: it ingests only the current row, calls
+`prepare` on that one-state `Reader` (whose `ptrFirst()` is a valid state buffer,
+exactly as the AOT checker uses it), and evaluates each `__atom__` on the single
+real state — O(1) per state, no prefix re-run. Each result folds into a
+per-requirement latch: **all** for `G`/`H` (fails the instant an atom is false),
+**any** for `F`/`O` (settles once an atom is true), **first** for a bare
+predicate. A spec with a Dwyer scope, a computed prop, or any non-atom
+requirement falls through to the exact prefix path, so the two always agree —
+which a test pins against `executeRdb` over an all-invariant fixture.
 
 **3. The per-requirement frame.** A small struct carried across steps, the
 explicit-state form of the design's primitives:

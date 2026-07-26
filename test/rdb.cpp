@@ -261,6 +261,36 @@ TEST(Rdb, MonitorPerStateAndStopAtFirst)
     }
 }
 
+// The atom fast path (all requirements single-state atoms: invariants and an
+// eventually) must agree with the offline checker. This exercises the O(1)
+// per-state route -- ingest one row, call `__atom__`, fold a latch -- rather
+// than the prefix re-run, and pins it against `executeRdb` on the same trace.
+TEST(Rdb, MonitorAtomPathAgreesWithOffline)
+{
+    auto    refPath = std::string(REFEREE_TEST_DATA_DIR) + "/invariants.ref";
+    auto    csvPath = std::string(REFEREE_TEST_DATA_DIR) + "/invariants.csv";
+
+    auto    rdbPath = tmpFile("atom-agree");
+    referee::db::ingest(refPath, csvPath, /*conf=*/"", rdbPath);
+    std::ifstream       refA(refPath);
+    std::ostringstream  offOut;
+    bool                offline = Referee::executeRdb(refA, refPath, rdbPath, offOut);
+    std::remove(rdbPath.c_str());
+
+    std::ifstream       csvIn(csvPath);
+    std::stringstream   csvBuf;
+    csvBuf << csvIn.rdbuf();
+    std::istringstream  states(csvBuf.str());
+    std::ifstream       refB(refPath);
+    std::ostringstream  monOut;
+    bool                online = Referee::monitor(refB, refPath, states, "", monOut);
+
+    EXPECT_TRUE(offline) << offOut.str();               // the fixture is all-pass
+    EXPECT_EQ(offline, online) << monOut.str();
+    //  the eventually settles PASS mid-stream via the atom fold, not at the end
+    EXPECT_NE(monOut.str().find("hit=PASS"), std::string::npos) << monOut.str();
+}
+
 // The monitor's end-of-stream verdict must equal the offline checker's on the
 // same trace -- the agreement property the design rests on. Streaming the CSV
 // row by row and re-ingesting the prefix has to land on the same final result

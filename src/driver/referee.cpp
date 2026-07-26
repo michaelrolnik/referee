@@ -4235,6 +4235,161 @@ bool    Referee::monitor(std::istream& refStream, std::string refName,
     Color::Modifier const   yellow(Color::FG_YELLOW);
     Color::Modifier const   reset (Color::FG_DEFAULT);
 
+    //  ── Atom fast path ──────────────────────────────────────────────────────
+    //  When every requirement is a single-state atom -- an invariant, a bare
+    //  predicate, or an eventually/once, each with an `__atom__<name>` companion
+    //  the code generator emits -- the monitor need not re-ingest the growing
+    //  prefix. It ingests just the current row, evaluates each atom on that one
+    //  state, and folds the result into a per-requirement latch: `all` for G/H
+    //  (fails the instant an atom is false), `any` for F/O (settles once an atom
+    //  is true), `first` for a bare predicate (decided at the first state). That
+    //  is O(1) per state, not the prefix path's O(N). Computed props are
+    //  excluded -- a temporal one cannot be materialised from a single row -- so
+    //  a spec with any falls through to the exact prefix path below.
+    {
+        using AtomFn = bool(*)(void*, void*);
+        enum    Fold { FoldAll, FoldAny, FoldFirst };
+        struct  AtomReq { std::string label; Fold fold; AtomFn fn; };
+
+        bool    allAtoms = js.astModule->getSpecs().empty();
+        for (auto const& name : js.astModule->getPropNames())
+            if (js.astModule->isExprData(name)) { allAtoms = false; break; }
+
+        std::vector<AtomReq>    atomReqs;
+        auto&   exprs = js.astModule->getExprs();
+        for (std::size_t i = 0; allAtoms && i < exprs.size(); i++)
+        {
+            auto    label = js.astModule->getExprName(i);
+            if (label.empty())  label = exprs[i]->where().text();
+
+            auto    sym = js.jit->lookup("__atom__" + label);
+            if (!sym)
+            {
+                llvm::consumeError(sym.takeError());
+                allAtoms = false;               //  not a single-state atom
+                break;
+            }
+            auto*   e    = exprs[i];
+            auto    fold = (dynamic_cast<ExprG*>(e) || dynamic_cast<ExprH*>(e)) ? FoldAll
+                         : (dynamic_cast<ExprF*>(e) || dynamic_cast<ExprO*>(e)) ? FoldAny
+                         :                                                        FoldFirst;
+            atomReqs.push_back({label, fold, (*sym).toPtr<AtomFn>()});
+        }
+
+        if (allAtoms && !atomReqs.empty())
+        {
+            if (auto modSym = js.jit->lookup("referee_module"))
+                internModuleStrings((*modSym).toPtr<referee_module_v1 const* (*)()>()());
+            else
+                llvm::consumeError(modSym.takeError());
+
+            auto    prepSym = js.jit->lookup("__prepare__");
+            if (!prepSym)   throw std::runtime_error("JIT: missing __prepare__");
+            auto    prepFn  = (*prepSym).toPtr<void(*)(void*, void*, void*)>();
+
+            std::string     header;
+            if (!std::getline(states, header))  return true;
+
+            std::vector<char>   value(atomReqs.size());     //  all: ok / any: met / first: verdict
+            std::vector<char>   done (atomReqs.size(), 0);  //  first: decided yet
+            for (std::size_t i = 0; i < atomReqs.size(); i++)
+                value[i] = (atomReqs[i].fold == FoldAll) ? 1 : 0;
+
+            std::string     line;
+            while (std::getline(states, line))
+            {
+                if (line.empty())   continue;
+
+                std::string                             rowCsv = header + "\n" + line;
+                std::istringstream                      csvIn(rowCsv);
+                std::unique_ptr<std::istringstream>     confIn;
+                if (!confContents.empty())
+                    confIn = std::make_unique<std::istringstream>(confContents);
+
+                std::stringstream   rdbBuf(std::ios::in | std::ios::out | std::ios::binary);
+                try
+                {
+                    referee::db::ingestWithModule(csvIn, "stdin.csv", confIn.get(), confPath,
+                                                  js.astModule, rdbBuf);
+                }
+                catch (std::exception const& e)
+                {
+                    os << red << "error" << reset << ": " << e.what() << "\n";
+                    return false;
+                }
+
+                auto                        str = std::move(rdbBuf).str();
+                std::vector<std::uint8_t>   bytes(str.begin(), str.end());
+                referee::db::Reader         rdb(std::move(bytes), "stdin.csv");
+
+                prepFn(const_cast<void*>(rdb.ptrFirst()), const_cast<void*>(rdb.ptrLast()), rdb.confPtr());
+
+                //  the single real state sits between the two sentinels
+                auto*   base = static_cast<char*>(const_cast<void*>(rdb.ptrFirst()));
+                void*   curr = base + (rdb.numStates() - 2) * rdb.rowBytes();
+                void*   conf = rdb.confPtr();
+
+                auto        comma = line.find(',');
+                std::string now   = comma == std::string::npos ? line : line.substr(0, comma);
+
+                bool    violatedNow = false;
+                for (std::size_t i = 0; i < atomReqs.size(); i++)
+                {
+                    bool    a = atomReqs[i].fn(curr, conf);
+                    if (atomReqs[i].fold == FoldAll && value[i] && !a)
+                    {
+                        value[i] = 0;
+                        os << red << "VIOLATION" << reset << "  " << yellow << atomReqs[i].label << reset
+                           << "  @ __time__=" << now << "  " << line << "\n";
+                        violatedNow = true;
+                    }
+                    else if (atomReqs[i].fold == FoldAny && a)
+                        value[i] = 1;
+                    else if (atomReqs[i].fold == FoldFirst && !done[i])
+                    {
+                        value[i] = a ? 1 : 0;
+                        done[i]  = 1;
+                        if (!a)
+                        {
+                            os << red << "VIOLATION" << reset << "  " << yellow << atomReqs[i].label << reset
+                               << "  @ __time__=" << now << "  " << line << "\n";
+                            violatedNow = true;
+                        }
+                    }
+                }
+
+                os << yellow << "__time__=" << now << reset;
+                for (std::size_t i = 0; i < atomReqs.size(); i++)
+                {
+                    os << "  " << atomReqs[i].label << '=';
+                    bool    v = value[i];
+                    if      (atomReqs[i].fold == FoldAll)    v ? (os << '?')                    : (os << red << "FAIL" << reset);
+                    else if (atomReqs[i].fold == FoldAny)    v ? (os << green << "PASS" << reset) : (os << '?');
+                    else                                     done[i] ? (v ? (os << green << "PASS" << reset) : (os << red << "FAIL" << reset)) : (os << '?');
+                }
+                os << "\n";
+                os.flush();
+
+                if (stopAtFirst && violatedNow)
+                    return false;
+            }
+
+            os << "-- end of stream --\n";
+            bool    allPass = true;
+            for (std::size_t i = 0; i < atomReqs.size(); i++)
+            {
+                if (value[i])
+                    os << green << "PASS" << reset << "  " << atomReqs[i].label << "\n";
+                else
+                {
+                    allPass = false;
+                    os << red << "FAIL" << reset << "  " << yellow << atomReqs[i].label << reset << "\n";
+                }
+            }
+            return allPass;
+        }
+    }
+
     std::string     header;
     if (!std::getline(states, header))  return true;    //  empty stream
 
