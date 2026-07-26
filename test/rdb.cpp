@@ -636,32 +636,37 @@ TEST(Rdb, MonitorGeneralResidualAgreesAtEveryPrefix)
 }
 
 // A top-level bounded `F[lo:hi]` / `G[lo:hi]` is a deadline over the absolute
-// window [t0+lo, t0+hi] anchored at the first state. The monitor settles F PASS
-// the first time its body holds in the window and FAIL once the window closes
-// unmet; G FAIL the first time its body fails in the window and PASS once the
-// window closes unbroken -- events outside the window are ignored, and a stream
-// ending inside the window keeps the safe verdict (F unmet, G unbroken). Nonzero
-// lower bounds and both operators must agree with the offline checker at EVERY
-// prefix, over a trace whose values cross the thresholds inside and outside each
-// window. Offline is the oracle for the exact bound inclusivity.
+// window [t0+lo, t0+hi) anchored at the first state -- and it is DENSE-TIME: a
+// value holds over [its state's time, the next state's time), the window is
+// upper-exclusive, and values persist between states, so `F[500:1000]` is met by
+// a body that went true before 500 and is still true at 500. This trace is built
+// to break a naive point model: irregular timestamps, values that persist across
+// several states, thresholds crossed exactly ON window edges (t=1000, 2000, 3000)
+// so the exclusive upper bound bites, and windows offset to start mid-persistence.
+// Both operators must agree with the offline checker -- the oracle for the exact
+// dense-time semantics -- at EVERY prefix.
 TEST(Rdb, MonitorBoundedAgreesAtEveryPrefix)
 {
-    constexpr int   N = 24;
-
+    //  (time, x). x stays 42 across [1000,3000) -- persistence -- and the window
+    //  edges below land on 1000/2000/3000, so [lo,hi)'s open upper end matters.
+    struct  Row { int t; int x; };
+    Row     table[] = {
+        {0, 10}, {1000, 42}, {2000, 42}, {3000, 10}, {3500, 150},
+        {4000, 42}, {4200, 42}, {5000, 10}, {6000, 99}, {7000, 100},
+    };
+    int const                   N = sizeof(table) / sizeof(table[0]);
     std::string                 header = "__time__,x";
     std::vector<std::string>    rows;
-    for (int k = 0; k < N; k++)
-    {
-        //  x weaves across 42 and 100 at assorted times; steps of 500 ticks.
-        int     x = (k % 6 == 2) ? 42 : (k % 6 == 4) ? 150 : (k * 7) % 90;
-        rows.push_back(std::to_string(k * 500) + "," + std::to_string(x));
-    }
+    for (auto const& r : table)
+        rows.push_back(std::to_string(r.t) + "," + std::to_string(r.x));
 
     char const* specs[] = {
-        "data x:integer;\n@r F[0:2000](x == 42);\n",        // deadline from the start
-        "data x:integer;\n@r G[0:3000](x < 100);\n",        // windowed invariant
-        "data x:integer;\n@r F[1000:3000](x == 42);\n",     // deadline with a nonzero lower bound
-        "data x:integer;\n@r G[1500:4000](x < 100);\n",     // windowed invariant, offset window
+        "data x:integer;\n@r F[0:1000](x == 42);\n",        // window closes exactly when x turns 42
+        "data x:integer;\n@r F[0:2000](x == 42);\n",        // x==42 persists into and through the window
+        "data x:integer;\n@r F[1000:2000](x == 42);\n",     // window opens where x is already 42
+        "data x:integer;\n@r G[0:3000](x < 100);\n",        // x<100 holds until exactly 3000 (edge)
+        "data x:integer;\n@r G[0:4000](x < 100);\n",        // x=150 at 3500 breaks it inside the window
+        "data x:integer;\n@r G[2000:6000](x < 100);\n",     // offset window over the persistence
     };
 
     for (auto const* spec : specs)

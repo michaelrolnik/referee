@@ -4570,8 +4570,19 @@ bool    Referee::monitor(std::istream& refStream, std::string refName,
                 resid[i] = atomReqs[i].templ;               //  null for atom folds
             }
 
-            std::int64_t    t0       = 0;       //  window anchor: __time__ of the first state
-            bool            haveT0   = false;
+            //  Bounded operators are dense-time: a state's value holds over the
+            //  half-open segment [its time, the next state's time), and the window
+            //  is [t0+lo, t0+hi) -- upper-exclusive, values persisting between
+            //  states (`F[500:1000]` is met by a `b` that went true before 500 and
+            //  is still true at 500). So a segment is only closed once the next
+            //  state's time is known: the monitor lags one state, carrying the
+            //  previous state's body value, and closes the final state as a point.
+            std::int64_t        t0     = 0;      //  window anchor: __time__ of the first state
+            bool                haveT0 = false;
+            std::int64_t        prevTs = 0;
+            std::string         prevNow, prevLine;
+            std::vector<char>   prevBody(atomReqs.size(), 0);   //  bounded: body over the previous segment
+            std::vector<char>   curBody (atomReqs.size(), 0);
 
             std::string     line;
             while (std::getline(states, line))
@@ -4613,33 +4624,41 @@ bool    Referee::monitor(std::istream& refStream, std::string refName,
                 //  Absolute `__time__` of this state, read from the state buffer
                 //  itself (its first field) so it is right regardless of CSV
                 //  column order; the first state anchors every bounded window.
-                std::int64_t    ts = *reinterpret_cast<std::int64_t const*>(curr);
-                if (!haveT0)    { t0 = ts; haveT0 = true; }
+                std::int64_t    ts         = *reinterpret_cast<std::int64_t const*>(curr);
+                bool            firstState = !haveT0;
+                if (firstState) { t0 = ts; haveT0 = true; }
 
                 bool    violatedNow = false;
                 for (std::size_t i = 0; i < atomReqs.size(); i++)
                 {
                     if (atomReqs[i].fold == BoundedF || atomReqs[i].fold == BoundedG)
                     {
-                        //  Top-level `F[lo:hi]`/`G[lo:hi]` over the window
-                        //  [t0+lo, t0+hi]. Before the window a state is ignored;
-                        //  past it the verdict is fixed (F never met -> FAIL, G
-                        //  never broken -> PASS). In the window, F settles PASS the
-                        //  first time its body holds; G settles FAIL the first time
-                        //  its body fails. A stream ending inside the window keeps
-                        //  the initial verdict (F unmet -> FAIL, G unbroken -> PASS).
+                        //  Top-level `F[lo:hi]`/`G[lo:hi]` over the dense-time
+                        //  window [t0+lo, t0+hi). Close the previous state's
+                        //  segment [prevTs, ts) -- which held `prevBody[i]` -- now
+                        //  that its end `ts` is known: F is met if a `true` segment
+                        //  overlaps the window; G is broken if a `false` one does.
+                        //  A segment [a, b) overlaps iff a < winHi and b > winLo.
+                        curBody[i] = atomReqs[i].fn(curr, conf);        //  value over the NEXT segment [ts, ...)
                         if (done[i])    continue;
                         std::int64_t    winLo = t0 + atomReqs[i].lo;
                         std::int64_t    winHi = t0 + atomReqs[i].hi;
-                        bool            inWin = ts >= winLo && ts <= winHi;
-                        bool            body  = inWin && atomReqs[i].fn(curr, conf);
 
-                        bool    settleFail = atomReqs[i].fold == BoundedF ? ts > winHi           //  window closed, never met
-                                                                         : inWin && !body;      //  broken inside the window
-                        bool    settlePass = atomReqs[i].fold == BoundedF ? body                 //  met inside the window
-                                                                         : ts > winHi;          //  window closed, never broken
-                        if (settlePass)         { value[i] = 1; done[i] = 1; }
-                        else if (settleFail)
+                        if (!firstState && prevTs < winHi && ts > winLo)    //  previous segment overlaps the window
+                        {
+                            if (atomReqs[i].fold == BoundedF && prevBody[i])     { value[i] = 1; done[i] = 1; }
+                            if (atomReqs[i].fold == BoundedG && !prevBody[i])
+                            {
+                                value[i] = 0;
+                                done[i]  = 1;
+                                os << red << "VIOLATION" << reset << "  " << yellow << atomReqs[i].label << reset
+                                   << "  @ __time__=" << prevNow << "  " << prevLine << "\n";
+                                violatedNow = true;
+                            }
+                        }
+                        //  Once we observe a state at or past the window's end, F
+                        //  can no longer be met -- the window is entirely behind us.
+                        if (atomReqs[i].fold == BoundedF && !done[i] && ts >= winHi)
                         {
                             value[i] = 0;
                             done[i]  = 1;
@@ -4708,9 +4727,32 @@ bool    Referee::monitor(std::istream& refStream, std::string refName,
                 os << "\n";
                 os.flush();
 
+                //  Carry this state forward as the open segment for the next row.
+                prevTs   = ts;
+                prevNow  = now;
+                prevLine = line;
+                prevBody = curBody;
+
                 if (stopAtFirst && violatedNow)
                     return false;
             }
+
+            //  Close the final state as a point [prevTs, prevTs]: it covers no
+            //  segment (no successor), so it satisfies a bounded window only if
+            //  its own time falls in [t0+lo, t0+hi). F left unmet -> FAIL, G left
+            //  unbroken -> PASS, both already the standing `value`.
+            if (haveT0)
+                for (std::size_t i = 0; i < atomReqs.size(); i++)
+                {
+                    if ((atomReqs[i].fold != BoundedF && atomReqs[i].fold != BoundedG) || done[i])   continue;
+                    std::int64_t    winLo = t0 + atomReqs[i].lo;
+                    std::int64_t    winHi = t0 + atomReqs[i].hi;
+                    if (winLo <= prevTs && prevTs < winHi)
+                    {
+                        if (atomReqs[i].fold == BoundedF &&  prevBody[i])    { value[i] = 1; done[i] = 1; }
+                        if (atomReqs[i].fold == BoundedG && !prevBody[i])    { value[i] = 0; done[i] = 1; }
+                    }
+                }
 
             os << "-- end of stream --\n";
             bool    allPass = true;

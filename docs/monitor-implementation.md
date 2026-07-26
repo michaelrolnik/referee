@@ -170,20 +170,34 @@ finaliser *(done)*; (3) agreement against `executeRdb` at every prefix *(done)*.
 
 **Bounded operators.** A *top-level* bounded `F[lo:hi]` / `G[lo:hi]` over a state
 predicate is **built** on the fast path (`Referee::monitor`, the `BoundedF` /
-`BoundedG` kinds) — one window `[t0+lo, t0+hi]` in absolute `__time__`, anchored
+`BoundedG` kinds) — one window `[t0+lo, t0+hi)` in absolute `__time__`, anchored
 at the first state, read from the state buffer so it is independent of CSV column
-order. `F` settles PASS the first time its body holds in the window and FAIL once
-the window closes unmet; `G` settles FAIL the first time its body fails in the
-window and PASS once it closes unbroken — events outside the window are ignored,
-and a stream ending inside the window keeps the safe verdict (`F` unmet → FAIL,
-`G` unbroken → PASS). The body predicate is the `__atom__<name>` the generator
-already emits (`atomOf` peels the operator, bound and all); the bound literals
-come off the AST's `Time`. `MonitorBoundedAgreesAtEveryPrefix` pins both, with
-zero and nonzero lower bounds, against `executeRdb` at every prefix — offline
-fixes the bound inclusivity. Still on the prefix path: a bounded operator *nested*
-under another (each trigger opens a fresh window — many concurrent deadlines, the
-segment problem), bounded until/release, a non-literal bound, and freeze, next
-and past — until their windows/obligations are modelled.
+order.
+
+REF's bounded operators are **dense-time**, and getting this right is the whole
+subtlety: a state's value holds over the half-open segment `[its time, the next
+state's time)`, the window is *upper-exclusive*, and values **persist** between
+states — so `F[500:1000] b` is met by a `b` that went true before 500 and is still
+true at 500, and a `b` at exactly `t0+1000` does *not* meet `F[0:1000]`. A segment
+`[a, b)` meets the window iff `a < t0+hi` and `b > t0+lo`. Because a segment's end
+is only known when the next state arrives, the monitor **lags one state**: it
+carries the previous state's body value and closes that segment against the window
+when the next timestamp comes, then closes the final state as a *point* (`t0+lo ≤
+t < t0+hi`). `F` is met once a `true` segment overlaps; `G` broken once a `false`
+one does; a stream ending short keeps the safe verdict (`F` unmet → FAIL, `G`
+unbroken → PASS). The body predicate is the `__atom__<name>` the generator already
+emits (`atomOf` peels the operator, bound and all); the bound literals come off
+the AST's `Time`. `MonitorBoundedAgreesAtEveryPrefix` pins both against
+`executeRdb` at every prefix over a trace built to break a naive point model —
+edge-aligned windows and values persisting across several states.
+
+Still on the prefix path, and materially harder: a bounded operator *nested*
+under another. `G(a ⇒ F[lo:hi] b)` does not open one deadline per trigger — under
+dense time a trigger `a` holds over an interval, so it opens a *continuum* of
+sliding windows, and the failure condition becomes an interval-covering test (a
+`b`-free gap wide enough to swallow some anchor's window). That is a real segment
+algorithm, not a queue, and is deferred with the rest: bounded until/release,
+non-literal bounds, freeze, next and past.
 
 **4. Stream front end.** Read rows from stdin, build a `state_t` per row via the
 loader, then for each requirement project to its footprint and change-collapse to
