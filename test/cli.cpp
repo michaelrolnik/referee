@@ -724,6 +724,27 @@ TEST(Cli, CompileEmitsSingleStateAtoms)
     EXPECT_EQ(r.output.find("@__atom__nested"), std::string::npos) << r.output;
 }
 
+// Atomic-proposition companions (phase-2 progression, piece 1). A nested
+// future formula gets one `__ap__<k>__<name>(curr, conf)` per atomic
+// proposition -- the maximal current-state subexpressions -- so the monitor's
+// progression evaluator can evaluate them one state at a time. `G(a => F b)`
+// yields two (`a`, `b`); an until likewise. A single-fold invariant keeps its
+// one `__atom__` and gets no `__ap__`.
+TEST(Cli, CompileEmitsAtomicPropositions)
+{
+    auto    r = run(quote(REFEREE_BIN) + " compile " + quote(data("aps.ref")));
+    EXPECT_EQ(r.status, 0) << r.output;
+
+    EXPECT_NE(r.output.find("@__ap__0__resp("), std::string::npos) << r.output;   // a
+    EXPECT_NE(r.output.find("@__ap__1__resp("), std::string::npos) << r.output;   // b
+    EXPECT_NE(r.output.find("@__ap__0__untl("), std::string::npos) << r.output;   // x<50
+    EXPECT_NE(r.output.find("@__ap__1__untl("), std::string::npos) << r.output;   // b
+
+    //  a single-fold invariant is served by __atom__, not __ap__
+    EXPECT_NE(r.output.find("@__atom__inv("), std::string::npos) << r.output;
+    EXPECT_EQ(r.output.find("@__ap__0__inv"), std::string::npos) << r.output;
+}
+
 TEST(Cli, CompileRejectsMissingFile)
 {
     auto    r = run(quote(REFEREE_BIN) + " compile /no/such/file.ref");

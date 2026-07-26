@@ -271,6 +271,8 @@ protected:
                     continue;
                 if(name.rfind("__atom__", 0) == 0)
                     continue;
+                if(name.rfind("__ap__", 0) == 0)
+                    continue;
                 if(name.rfind("__sub__", 0) == 0)
                     continue;
                 if(name.rfind("__scope", 0) == 0)

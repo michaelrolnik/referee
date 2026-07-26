@@ -3721,6 +3721,36 @@ static bool readsOnlyCurrent(Expr* e)
     return true;
 }
 
+//  Does the expression carry a freeze (`@`) anywhere? A freeze binds a state
+//  other than the current one, so its subexpressions are not the plain
+//  single-state atomic propositions progression works over -- a requirement
+//  with one stays on the prefix path, and its atoms are not extracted.
+static bool containsFreeze(Expr* e)
+{
+    if(e == nullptr)                            return false;
+    if(dynamic_cast<ExprAt*>(e))                return true;      //  before ExprUnary: ExprAt derives from it
+    if(auto* c = dynamic_cast<ExprCount*>(e))   return containsFreeze(c->arg) || containsFreeze(c->body);
+    if(auto* u = dynamic_cast<ExprUnary*>(e))   return containsFreeze(u->arg);
+    if(auto* b = dynamic_cast<ExprBinary*>(e))  return containsFreeze(b->lhs) || containsFreeze(b->rhs);
+    if(auto* t = dynamic_cast<ExprTernary*>(e)) return containsFreeze(t->lhs) || containsFreeze(t->mhs) || containsFreeze(t->rhs);
+    return false;
+}
+
+//  The atomic propositions of a formula: its maximal subexpressions that read
+//  only the current state. Walking down, the first `readsOnlyCurrent` node is
+//  an atom and its interior is left alone; a temporal or boolean node above one
+//  is descended. `G(a => F b)` yields `a` and `b`. A pre-order walk, so the
+//  compiler and the monitor -- walking the same AST -- number the atoms alike.
+static void collectAPs(Expr* e, std::vector<Expr*>& out)
+{
+    if(e == nullptr)                                return;
+    if(readsOnlyCurrent(e))                         { out.push_back(e); return; }
+    if(auto* c = dynamic_cast<ExprCount*>(e))       { collectAPs(c->arg, out); collectAPs(c->body, out); return; }
+    if(auto* u = dynamic_cast<ExprUnary*>(e))       { collectAPs(u->arg, out); return; }
+    if(auto* b = dynamic_cast<ExprBinary*>(e))      { collectAPs(b->lhs, out); collectAPs(b->rhs, out); return; }
+    if(auto* t = dynamic_cast<ExprTernary*>(e))     { collectAPs(t->lhs, out); collectAPs(t->mhs, out); collectAPs(t->rhs, out); return; }
+}
+
 void Compile::make(llvm::LLVMContext* context, llvm::Module* module, Module* refmod,
                    std::vector<std::uint8_t> const* schema)
 {
@@ -3826,6 +3856,37 @@ void Compile::make(llvm::LLVMContext* context, llvm::Module* module, Module* ref
 
             CompileExprImpl compAtom(context, module, builder.get(), atomBody, refmod, propType, confType);
             builder->CreateRet(compAtom.make(atomTemp));
+        }
+
+        //  Atomic-proposition companions for progression. A nested future
+        //  formula (not a single-fold atom, no freeze) is evaluated online by
+        //  formula progression, which needs each of its atomic propositions --
+        //  `a` and `b` in `G(a => F b)` -- as its own single-state function.
+        //  Each maximal current-state subexpression gets a
+        //  `__ap__<k>__<name>(curr, conf)`, the same shape as `__atom__`,
+        //  numbered by the same pre-order walk the monitor will use.
+        if(atomOf(expr) == nullptr && !containsFreeze(expr))
+        {
+            std::vector<Expr*>  aps;
+            collectAPs(expr, aps);
+            for(std::size_t k = 0; k < aps.size(); k++)
+            {
+                auto    apTemp = Rewrite::make(aps[k]);
+                TypeCalc::make(refmod, apTemp);
+
+                auto    apType = llvm::FunctionType::get(builder->getInt1Ty(),
+                                    {propPtrType, confPtrType}, false);
+                auto    apBody = llvm::Function::Create(apType, llvm::Function::ExternalLinkage,
+                                    "__ap__" + std::to_string(k) + "__" + funcName, module);
+                auto    apArg  = apBody->args().begin();
+                apArg->setName("curr"); apArg++;
+                apArg->setName("conf");
+
+                builder->SetInsertPoint(llvm::BasicBlock::Create(*context, "entry", apBody));
+
+                CompileExprImpl compAp(context, module, builder.get(), apBody, refmod, propType, confType);
+                builder->CreateRet(compAp.make(apTemp));
+            }
         }
 
         //  A run trace names a requirement vacuous when its antecedent never

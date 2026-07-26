@@ -1,0 +1,7 @@
+# Atomic-proposition companions for progression (phase-2, piece 1).
+data a : boolean;
+data b : boolean;
+data x : integer;
+@resp G(a => F(b));       # nested future -> __ap__0__resp (a), __ap__1__resp (b)
+@inv  G(x < 100);         # single-fold    -> __atom__inv, no __ap__
+@untl Us(x < 50, b);      # nested until    -> __ap__0__untl, __ap__1__untl
