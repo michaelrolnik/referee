@@ -1,0 +1,8 @@
+__time__,temp,heater
+0,20,true
+1000,38,true
+2000,55,true
+3000,68,false
+4000,72,false
+5000,70,false
+6000,69,false

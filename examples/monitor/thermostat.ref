@@ -1,0 +1,19 @@
+# A thermostat, watched live by `referee monitor`.
+#
+#   ./examples/monitor/feed.sh | ./build/referee monitor examples/monitor/thermostat.ref
+#
+# Two invariants (safety) and one eventuality (liveness), so the demo shows all
+# three verdict shapes the monitor produces:
+#   - a safety requirement reads `?` while it holds and FAIL the instant it breaks;
+#   - a liveness requirement reads `?` until it is met and PASS once settled.
+
+data temp   : integer;   # current temperature, whole degrees
+data heater : boolean;   # is the heater energised?
+
+# ── Safety: broken the instant it is false, reported mid-stream ──────────────
+@never_overheat   G(temp < 100);              # must never exceed 100
+@heater_off_hot   G(temp >= 90 => !heater);   # heater must be off once it is hot
+
+# ── Liveness: unmet reads `?`, not a violation; settles PASS once reached, and
+#    is only finalised at end of stream ──────────────────────────────────────
+@reaches_comfort  F(temp >= 68);              # must eventually warm to comfort
