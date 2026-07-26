@@ -273,13 +273,21 @@ the AST's `Time`. `MonitorBoundedAgreesAtEveryPrefix` pins both against
 `executeRdb` at every prefix over a trace built to break a naive point model —
 edge-aligned windows and values persisting across several states.
 
-Still on the prefix path, and materially harder: a bounded operator *nested*
-under another. `G(a ⇒ F[lo:hi] b)` does not open one deadline per trigger — under
-dense time a trigger `a` holds over an interval, so it opens a *continuum* of
-sliding windows, and the failure condition becomes an interval-covering test (a
-`b`-free gap wide enough to swallow some anchor's window). That is a real segment
-algorithm, not a queue, and is deferred with the rest: bounded until/release,
-non-literal bounds, freeze, next and past.
+The **bounded response** `G(a ⇒ F[lo:hi] b)` is **built** (`BoundedResponse`).
+It does not open one deadline per trigger: under dense time a trigger `a` holds
+over an interval, so it opens a *continuum* of sliding windows, and the verdict is
+an interval-covering test. A `b` region `[bs, be)` witnesses exactly the anchors
+whose window it falls in — the open range `(bs-hi, be-lo)`, closed at the top for
+a `b` at the very last state (a lo-offset window can start exactly on it). The
+monitor buffers `(time, a, b)` per state and, at end of stream, folds it: fail iff
+some `a` anchor is covered by no `b` region — where "observed `b` only" makes an
+anchor whose window reaches past the last state fail unless a `b` fell inside it.
+All the open/closed boundaries land on integer times, so it works in doubled
+coordinates (`t → 2t`, an open end `2x±1`, a closed end `2x`), reducing coverage
+to plain integer-interval containment. `MonitorBoundedResponseAgreesAtEveryPrefix`
+pins it against `executeRdb` at every prefix over pulsed `b` and zero/nonzero
+lower bounds. Still on the prefix path: bounded until/release/since/trigger,
+non-literal bounds, freeze.
 
 **4. Stream front end.** Read rows from stdin, build a `state_t` per row via the
 loader, then for each requirement project to its footprint and change-collapse to

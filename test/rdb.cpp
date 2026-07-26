@@ -1116,6 +1116,69 @@ TEST(Rdb, MonitorXorIffMultiStepAgreesAtEveryPrefix)
     }
 }
 
+// The bounded response `G(a => F[lo:hi] b)` -- a bounded window opened at every
+// instant `a` holds. It is dense-time: `a` true across an interval demands a `b`
+// in the sliding window of every instant, so a `b` pulse can miss the middle of
+// an `a` interval. The monitor folds the interval-covering directly (a `b`-free
+// gap wide enough to swallow a whole window, overlapping an `a` interval, fails).
+// It must agree with the offline checker at EVERY prefix over traces where `a`
+// spans intervals and `b` appears as pulses, with zero and nonzero lower bounds.
+TEST(Rdb, MonitorBoundedResponseAgreesAtEveryPrefix)
+{
+    constexpr int   N = 28;
+
+    std::string                 header = "__time__,a,b";
+    std::vector<std::string>    rows;
+    for (int k = 0; k < N; k++)
+    {
+        bool    a = (k % 7) < 4;                // a holds in runs of 4
+        bool    b = (k % 5) == 3;               // b pulses on a different cycle
+        rows.push_back(std::to_string(k * 500) + "," + (a ? "true" : "false")
+                     + "," + (b ? "true" : "false"));
+    }
+
+    char const* specs[] = {
+        "data a:boolean;\ndata b:boolean;\n@r G(a => F[0:1500](b));\n",
+        "data a:boolean;\ndata b:boolean;\n@r G(a => F[0:2500](b));\n",
+        "data a:boolean;\ndata b:boolean;\n@r G(a => F[500:2000](b));\n",
+    };
+
+    for (auto const* spec : specs)
+    {
+        auto    refPath = tmpFile("br") + ".ref";
+        { std::ofstream f(refPath); f << spec; }
+
+        for (int k = 1; k <= N; k++)
+        {
+            std::string     csv = header;
+            for (int j = 0; j < k; j++)  csv += "\n" + rows[j];
+
+            auto            csvPath = tmpFile("br-csv") + ".csv";
+            { std::ofstream f(csvPath); f << csv << "\n"; }
+
+            auto                rdbPath = tmpFile("br-rdb");
+            referee::db::ingest(refPath, csvPath, /*conf=*/"", rdbPath);
+            std::ifstream       refA(refPath);
+            std::ostringstream  offOut;
+            bool                offline = Referee::executeRdb(refA, refPath, rdbPath, offOut);
+
+            std::istringstream  states(csv);
+            std::ifstream       refB(refPath);
+            std::ostringstream  monOut;
+            bool                online = Referee::monitor(refB, refPath, states, "", monOut);
+
+            std::remove(rdbPath.c_str());
+            std::remove(csvPath.c_str());
+
+            ASSERT_EQ(offline, online)
+                << "bounded response disagree at prefix " << k << " of " << N
+                << "\nspec:\n" << spec
+                << "\noffline:\n" << offOut.str() << "\nmonitor:\n" << monOut.str();
+        }
+        std::remove(refPath.c_str());
+    }
+}
+
 // The atom fast path (all requirements single-state atoms: invariants and an
 // eventually) must agree with the offline checker. This exercises the O(1)
 // per-state route -- ingest one row, call `__atom__`, fold a latch -- rather

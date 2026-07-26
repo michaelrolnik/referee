@@ -154,6 +154,7 @@ void lowerMinMaxIntrinsics(llvm::Module& M)
 }
 } // namespace
 
+#include <limits>
 #include <memory>
 #include <cstdlib>
 #include <iomanip>
@@ -4545,6 +4546,24 @@ static bool constTime(Expr* e, std::int64_t dflt, std::int64_t& out)
     return false;
 }
 
+//  The bounded response `G(a => F[lo:hi] b)`: whenever `a` holds, `b` must follow
+//  within a `[lo, hi)` window. Unlike the top-level bounded `F`, this is nested
+//  under an unbounded `G`, so every instant `a` is true opens its own window --
+//  the dense-time interval-covering case the monitor evaluates specially. Match
+//  the exact shape (outer `G` unbounded, inner `F` bounded, `a`/`b` state
+//  predicates, literal bounds); anything else stays on the prefix path.
+static bool isBoundedResponse(Expr* e, std::int64_t& lo, std::int64_t& hi)
+{
+    auto* g = dynamic_cast<ExprG*>(e);
+    if (g == nullptr || g->time != nullptr)                             return false;
+    auto* imp = dynamic_cast<ExprImp*>(g->arg);
+    if (imp == nullptr)                                                 return false;
+    auto* f = dynamic_cast<ExprF*>(imp->rhs);
+    if (f == nullptr || f->time == nullptr || f->time->hi == nullptr)   return false;
+    if (!isStatePredicate(imp->lhs) || !isStatePredicate(f->arg))       return false;
+    return constTime(f->time->lo, 0, lo) && constTime(f->time->hi, 0, hi);
+}
+
 //  Parse `name … PASS/FAIL …` verdict lines from a runOneTrace capture into a
 //  label -> passed map.  The name is left-justified in a fixed column, so it is
 //  everything before the first ` PASS`/` FAIL`, trailing padding trimmed.
@@ -4642,7 +4661,7 @@ bool    Referee::monitor(std::istream& refStream, std::string refName,
         //  fold. A top-level bounded `F`/`G` is a latch over a `__time__` window
         //  -- fn + a [lo, hi] deadline. Anything richer that progression handles
         //  carries a residual formula and its atomic-proposition functions.
-        enum    Fold  { FoldAll, FoldAny, FoldFirst, BoundedF, BoundedG, Residual };
+        enum    Fold  { FoldAll, FoldAny, FoldFirst, BoundedF, BoundedG, BoundedResponse, Residual };
         //  A residual's Dwyer scope. Single-interval: globally (whole trace),
         //  before R ([frst, R), vacuous if no R), after Q ([Q, end], vacuous if no
         //  Q). Multi-interval: between Q and R and after Q until R (each [Q, R),
@@ -4716,6 +4735,26 @@ bool    Referee::monitor(std::istream& refStream, std::string refName,
                 continue;
             }
             llvm::consumeError(atomSym.takeError());
+
+            //  The bounded response `G(a => F[lo:hi] b)`: a bounded window opened
+            //  at every instant `a` holds. Its `a`/`b` are `__ap__0`/`__ap__1`
+            //  (piece 1); the monitor evaluates the dense-time covering directly.
+            {
+                std::int64_t    rlo, rhi;
+                if (isBoundedResponse(e, rlo, rhi))
+                {
+                    auto    ap0 = js.jit->lookup("__ap__0__" + label);
+                    auto    ap1 = js.jit->lookup("__ap__1__" + label);
+                    if (ap0 && ap1)
+                    {
+                        atomReqs.push_back({label, BoundedResponse, nullptr, rlo, rhi, nullptr,
+                                            {(*ap0).toPtr<AtomFn>(), (*ap1).toPtr<AtomFn>()}});
+                        continue;
+                    }
+                    if (!ap0)   llvm::consumeError(ap0.takeError());
+                    if (!ap1)   llvm::consumeError(ap1.takeError());
+                }
+            }
 
             //  Not a single-fold atom. If progression can represent it -- a
             //  boolean/temporal formula over `G`/`F`/`U`/`R`, `Xs`/`Xw` next, past
@@ -4841,6 +4880,10 @@ bool    Referee::monitor(std::istream& refStream, std::string refName,
             std::vector<char>   inside(atomReqs.size(), 0); //  multi-interval scope: currently within an interval
             std::vector<RPtr>   resid(atomReqs.size());     //  residual: the current progression formula
             std::vector<std::vector<signed char>>   pmem(atomReqs.size());   //  residual: past-machine memory (-1 = unstarted)
+            //  bounded response: per-state (time, a, b), for a dense-time covering
+            //  fold computed at end of stream.
+            struct  Sample { std::int64_t t; char a, b; };
+            std::vector<std::vector<Sample>>    brBuf(atomReqs.size());
             for (std::size_t i = 0; i < atomReqs.size(); i++)
             {
                 //  G and G[lo:hi] are safety -- true until broken. A multi-interval
@@ -4915,6 +4958,16 @@ bool    Referee::monitor(std::istream& refStream, std::string refName,
                 bool    violatedNow = false;
                 for (std::size_t i = 0; i < atomReqs.size(); i++)
                 {
+                    if (atomReqs[i].fold == BoundedResponse)
+                    {
+                        //  Record (time, a, b); the dense-time covering is folded
+                        //  at end of stream, when every `a` interval and `b` gap is
+                        //  known.
+                        brBuf[i].push_back({ts, (char)atomReqs[i].aps[0](curr, conf),
+                                                (char)atomReqs[i].aps[1](curr, conf)});
+                        continue;
+                    }
+
                     if (atomReqs[i].fold == BoundedF || atomReqs[i].fold == BoundedG)
                     {
                         //  Top-level `F[lo:hi]`/`G[lo:hi]` over the dense-time
@@ -5129,6 +5182,63 @@ bool    Referee::monitor(std::istream& refStream, std::string refName,
                     && (atomReqs[i].scope == ScBetween || atomReqs[i].scope == ScWhile)
                     && !finalize(resid[i]))
                     value[i] = 0;
+
+            //  Bounded response `G(a => F[lo:hi] b)`, the dense-time covering fold.
+            //  Every instant `a` holds needs a `b` in its `[+lo, +hi)` window. A
+            //  `b` region `[bs, be)` (a point at the last state) witnesses exactly
+            //  the anchors whose window it falls in: `t` with `t+lo < be` and
+            //  `t+hi > bs`, i.e. the open range `(bs-hi, be-lo)`. Only *observed*
+            //  `b` counts, so an anchor whose window reaches past the last state is
+            //  covered only by a `b` seen within it. The response fails iff some
+            //  `a` anchor is covered by no `b` region.
+            //  All the open/closed boundaries fall on integer times, so working in
+            //  doubled coordinates (`t -> 2t`) turns every interval into a closed
+            //  integer one: an open end `x` becomes `2x-/+1`, a closed end `2x`.
+            //  Coverage then reduces to plain integer-interval containment.
+            for (std::size_t i = 0; i < atomReqs.size(); i++)
+            {
+                if (atomReqs[i].fold != BoundedResponse)     continue;
+                auto&           buf = brBuf[i];
+                if (buf.empty())    { value[i] = 1; continue; }
+                std::int64_t    lo = atomReqs[i].lo;
+                std::int64_t    hi = atomReqs[i].hi;
+
+                //  Coverage: a `b` region `[bs, be)` witnesses anchors `(bs-hi,
+                //  be-lo)` (open); a `b` *point* at the last state witnesses
+                //  `(bp-hi, bp-lo]` -- closed at the top, since a lo-offset window
+                //  can start exactly on it. Doubled and merged (adjacent ints join).
+                std::vector<std::pair<std::int64_t, std::int64_t>>  cov;
+                for (std::size_t k = 0; k < buf.size(); k++)
+                    if (buf[k].b)
+                    {
+                        bool            last = k + 1 >= buf.size();
+                        std::int64_t    bs   = buf[k].t;
+                        std::int64_t    be   = last ? buf[k].t : buf[k + 1].t;
+                        cov.push_back({2 * (bs - hi) + 1, 2 * (be - lo) - (last ? 0 : 1)});
+                    }
+                std::sort(cov.begin(), cov.end());
+                std::vector<std::pair<std::int64_t, std::int64_t>>  merged;
+                for (auto const& c : cov)
+                    if (!merged.empty() && c.first <= merged.back().second + 1)
+                        merged.back().second = std::max(merged.back().second, c.second);
+                    else
+                        merged.push_back(c);
+
+                //  Each `a` anchor: segment `[as, ae)` (`[2as, 2ae-1]`) or the last
+                //  state as a point (`[2ap, 2ap]`). Fail if any is not contained.
+                bool    fail = false;
+                for (std::size_t m = 0; m < buf.size() && !fail; m++)
+                {
+                    if (!buf[m].a)      continue;
+                    bool            last = m + 1 >= buf.size();
+                    std::int64_t    aL   = 2 * buf[m].t;
+                    std::int64_t    aH   = last ? 2 * buf[m].t : 2 * buf[m + 1].t - 1;
+                    bool            in   = false;
+                    for (auto const& c : merged)    if (c.first <= aL && aH <= c.second) { in = true; break; }
+                    if (!in)            fail = true;
+                }
+                value[i] = fail ? 0 : 1;
+            }
 
             os << "-- end of stream --\n";
             bool    allPass = true;
