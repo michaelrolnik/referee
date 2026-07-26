@@ -22,6 +22,7 @@ proposed work below.
 
 - [What it reuses, and what is new](#what-it-reuses-and-what-is-new)
 - [The pieces](#the-pieces)
+  - [Nested future formulas: explicit-state progression *(planned)*](#nested-future-formulas-explicit-state-progression-planned)
 - [Build order](#build-order)
 - [Testing](#testing)
 - [Risks and open questions](#risks-and-open-questions)
@@ -117,6 +118,48 @@ explicit-state form of the design's primitives:
 or a violation; `refresh` clears the window. Realised first as this explicit
 struct threaded across calls; compiled coroutines (`llvm.coro`) are a later
 option only if nested future formulas make the hand-threaded form the hard part.
+
+### Nested future formulas: explicit-state progression *(planned)*
+
+The atom fast path covers a requirement whose whole verdict is one fold — `G(P)`,
+`F(P)`, a bare predicate. A *nested* future formula — `G(a ⇒ F b)` (response),
+`G(F p)`, `p U q` — is not one fold, and today falls to the O(N²) prefix path.
+The chosen route to make it incremental is **LTL₃ formula progression** (the
+formula-derivative technique), with explicit per-requirement state — not
+compiled coroutines, which stay deferred: progression has small residuals, so
+the hand-written state machine is not the hard part the coroutines were reserved
+for.
+
+Progression rewrites a requirement's *residual* formula against the current
+state's atoms and emits `true` / `false` / `unknown`:
+
+```
+progress(a,      s) = TRUE if s ⊨ a else FALSE          # an atomic proposition
+progress(φ ∧ ψ,  s) = progress(φ,s) ∧ progress(ψ,s)     # (∨, ¬ likewise)
+progress(X φ,    s) = φ                                  # next: owe φ next step
+progress(G φ,    s) = progress(φ,s) ∧ G φ               # always: check now, keep owing
+progress(F φ,    s) = progress(φ,s) ∨ F φ               # eventually: met, or keep owing
+progress(φ U ψ,  s) = progress(ψ,s) ∨ (progress(φ,s) ∧ φ U ψ)
+```
+
+with the residual simplified to `TRUE`/`FALSE`/`unknown` each step and finalised
+by the finite-trace rule at end of stream (`F φ` still owed → `false`, `G φ`
+never broken → `true`). This is exactly the LTL₃ latch generalised from one bit
+to a residual formula, and the memory story still holds: the residual of a
+non-data formula is bounded, and only a matched freeze grows it.
+
+The **dependency** this needs that the atom path did not: progression evaluates
+a requirement's *atomic propositions* per state (`a` and `b` in `G(a ⇒ F b)`),
+so the code generator must emit a single-state companion **per atom**, not just
+one `__atom__` for a whole reducible requirement. That is a small generalisation
+of the `__atom__` work — the same `(curr, conf)` shape, one per leaf predicate —
+and it is the first commit of this piece. Then the monitor carries a residual
+per requirement, progresses it per state, and reports a settled `false` as a
+violation. Build order: (1) per-atom companions + IR test; (2) the residual
+evaluator over `G`/`F`/`X`/`U` + boolean, with the finite-trace finaliser;
+(3) agreement against `executeRdb` at every prefix, the same discipline the atom
+path is held to. Bounded operators and freeze stay on the prefix path until
+their windows/obligations are modelled.
 
 **4. Stream front end.** Read rows from stdin, build a `state_t` per row via the
 loader, then for each requirement project to its footprint and change-collapse to
