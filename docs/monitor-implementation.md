@@ -227,10 +227,21 @@ the trace start, so their past machines have the right history).
 absence, response and until under both scopes against `executeRdb` at every
 prefix.
 
-The **multi-interval** scopes — `between Q and R`, `after Q until R`, `while` —
-remain on the prefix path; they need a per-interval open/close state machine (a
-`refresh` of the residual at each open) over the two boundary columns, and differ
-in how they treat an unclosed final interval.
+The **multi-interval** scopes — `between Q and R`, `after Q until R`, `while E` —
+are **built** too, as a running AND of one residual per interval that is
+`refresh`ed (reset, with its past memory) at each open. `between`/`after-until`
+open on `Q` (with `R` absent) and close on `R`; the interval is `[Q, R)`, so the
+`R` state closes it without being progressed, and the closed interval is
+finalised strongly. `while E` opens on `E` and closes on `!E`. Within an interval
+the residual is progressed but never settled early — a violation is real only
+once the interval closes (finalised at its boundary) or the stream ends. The
+three differ exactly in the *unclosed final interval*, which probing offline
+pinned: `between` and `while` finalise it strongly (an unmet liveness or a broken
+safety fails), while `after-until` excuses it entirely (its `until R` obligation
+never came due). `MonitorMultiIntervalScopeAgreesAtEveryPrefix` pins universality
+and existence under all three against `executeRdb` at every prefix. As with
+`after`, a pattern carrying a *past* operator under any interval scope takes the
+prefix path (the residual restarts at each open, losing cross-boundary history).
 
 **Bounded operators.** A *top-level* bounded `F[lo:hi]` / `G[lo:hi]` over a state
 predicate is **built** on the fast path (`Referee::monitor`, the `BoundedF` /

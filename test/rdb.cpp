@@ -983,6 +983,75 @@ TEST(Rdb, MonitorBeforeAfterScopeAgreesAtEveryPrefix)
     }
 }
 
+// The multi-interval Dwyer scopes: `between Q and R` and `after Q until R`
+// (each maximal [Q, R), plus a final open [Q, end] -- checked strongly by
+// between, leniently by after-until), and `while E` (each maximal run of E).
+// The monitor keeps one residual per interval, refreshed at each open, and folds
+// a running AND. It must agree with the offline checker at EVERY prefix over a
+// trace whose boundaries open and close several times and whose pattern both
+// holds and breaks across intervals -- including an interval left open at the end.
+TEST(Rdb, MonitorMultiIntervalScopeAgreesAtEveryPrefix)
+{
+    constexpr int   N = 26;
+
+    std::string                 header = "__time__,a,b,c,e";
+    std::vector<std::string>    rows;
+    for (int k = 0; k < N; k++)
+    {
+        bool    a = (k % 4) != 2;               // breaks periodically
+        bool    b = (k % 6) == 1;               // Q opens
+        bool    c = (k % 6) == 4;               // R closes (so intervals are [1,4),[7,10),...)
+        bool    e = (k % 5) < 3;                // while runs of 3
+        rows.push_back(std::to_string(k * 1000)
+                     + "," + (a ? "true" : "false") + "," + (b ? "true" : "false")
+                     + "," + (c ? "true" : "false") + "," + (e ? "true" : "false"));
+    }
+
+    char const* specs[] = {
+        "data a:boolean;\ndata b:boolean;\ndata c:boolean;\ndata e:boolean;\nbetween b and c, it is always the case that a holds;\n",
+        "data a:boolean;\ndata b:boolean;\ndata c:boolean;\ndata e:boolean;\nbetween b and c, a eventually holds;\n",
+        "data a:boolean;\ndata b:boolean;\ndata c:boolean;\ndata e:boolean;\nafter b until c, it is always the case that a holds;\n",
+        "data a:boolean;\ndata b:boolean;\ndata c:boolean;\ndata e:boolean;\nafter b until c, a eventually holds;\n",
+        "data a:boolean;\ndata b:boolean;\ndata c:boolean;\ndata e:boolean;\nwhile e, it is always the case that a holds;\n",
+        "data a:boolean;\ndata b:boolean;\ndata c:boolean;\ndata e:boolean;\nwhile e, a eventually holds;\n",
+    };
+
+    for (auto const* spec : specs)
+    {
+        auto    refPath = tmpFile("mi") + ".ref";
+        { std::ofstream f(refPath); f << spec; }
+
+        for (int k = 1; k <= N; k++)
+        {
+            std::string     csv = header;
+            for (int j = 0; j < k; j++)  csv += "\n" + rows[j];
+
+            auto            csvPath = tmpFile("mi-csv") + ".csv";
+            { std::ofstream f(csvPath); f << csv << "\n"; }
+
+            auto                rdbPath = tmpFile("mi-rdb");
+            referee::db::ingest(refPath, csvPath, /*conf=*/"", rdbPath);
+            std::ifstream       refA(refPath);
+            std::ostringstream  offOut;
+            bool                offline = Referee::executeRdb(refA, refPath, rdbPath, offOut);
+
+            std::istringstream  states(csv);
+            std::ifstream       refB(refPath);
+            std::ostringstream  monOut;
+            bool                online = Referee::monitor(refB, refPath, states, "", monOut);
+
+            std::remove(rdbPath.c_str());
+            std::remove(csvPath.c_str());
+
+            ASSERT_EQ(offline, online)
+                << "multi-interval scope disagree at prefix " << k << " of " << N
+                << "\nspec:\n" << spec
+                << "\noffline:\n" << offOut.str() << "\nmonitor:\n" << monOut.str();
+        }
+        std::remove(refPath.c_str());
+    }
+}
+
 // The atom fast path (all requirements single-state atoms: invariants and an
 // eventually) must agree with the offline checker. This exercises the O(1)
 // per-state route -- ingest one row, call `__atom__`, fold a latch -- rather
