@@ -490,6 +490,79 @@ TEST(Rdb, MonitorUntilAgreesAtEveryPrefix)
     }
 }
 
+// The unbounded release `Rs(p, q)` / `Rw(p, q)` is the dual of until and the
+// third nested future the monitor progresses (piece 2). `q` must hold at every
+// state until `p` releases it: `q` failing is a mid-stream FAIL, `q` with `p`
+// releases it PASS, `q` without `p` stays pending. Strong and weak differ only
+// when the stream ends still pending -- strong FAILs (`p` was required to
+// release), weak PASSes (`q` forever suffices). Each spec is an atom or a
+// release, so the whole thing takes the incremental path, and must agree with
+// the offline checker at every prefix across traces that cross every outcome.
+TEST(Rdb, MonitorReleaseAgreesAtEveryPrefix)
+{
+    struct  Trace { char const* name; std::vector<std::pair<bool, bool>> pq; };   // (p, q) per state
+
+    Trace   traces[] = {
+        //  q holds throughout, p releases at state 3 -> PASS
+        { "released", {{0,1},{0,1},{0,1},{1,1},{0,0},{1,1}} },
+        //  q breaks at state 2 before any release -> FALSE mid-stream (both)
+        { "qbroke",   {{0,1},{0,1},{0,0},{1,1},{0,1},{0,0}} },
+        //  q holds forever, p never releases -> strong FAIL, weak PASS at end
+        { "forever",  {{0,1},{0,1},{0,1},{0,1},{0,1},{0,1}} },
+    };
+
+    char const* specs[] = {
+        "data p:boolean;\ndata q:boolean;\n@r Rs(p, q);\n",   // strong
+        "data p:boolean;\ndata q:boolean;\n@r Rw(p, q);\n",   // weak
+    };
+
+    for (auto const& tr : traces)
+    {
+        std::string                 header = "__time__,p,q";
+        std::vector<std::string>    rows;
+        for (std::size_t k = 0; k < tr.pq.size(); k++)
+            rows.push_back(std::to_string(k * 1000)
+                         + "," + (tr.pq[k].first  ? "true" : "false")
+                         + "," + (tr.pq[k].second ? "true" : "false"));
+
+        for (auto const* spec : specs)
+        {
+            auto    refPath = tmpFile("release") + ".ref";
+            { std::ofstream f(refPath); f << spec; }
+
+            for (std::size_t k = 1; k <= rows.size(); k++)
+            {
+                std::string     csv = header;
+                for (std::size_t j = 0; j < k; j++)  csv += "\n" + rows[j];
+
+                auto            csvPath = tmpFile("release-csv") + ".csv";
+                { std::ofstream f(csvPath); f << csv << "\n"; }
+
+                auto                rdbPath = tmpFile("release-rdb");
+                referee::db::ingest(refPath, csvPath, /*conf=*/"", rdbPath);
+                std::ifstream       refA(refPath);
+                std::ostringstream  offOut;
+                bool                offline = Referee::executeRdb(refA, refPath, rdbPath, offOut);
+
+                std::istringstream  states(csv);
+                std::ifstream       refB(refPath);
+                std::ostringstream  monOut;
+                bool                online = Referee::monitor(refB, refPath, states, "", monOut);
+
+                std::remove(rdbPath.c_str());
+                std::remove(csvPath.c_str());
+
+                ASSERT_EQ(offline, online)
+                    << "release '" << tr.name << "' disagree at prefix " << k
+                    << " of " << rows.size()
+                    << "\nspec:\n" << spec
+                    << "\noffline:\n" << offOut.str() << "\nmonitor:\n" << monOut.str();
+            }
+            std::remove(refPath.c_str());
+        }
+    }
+}
+
 // The atom fast path (all requirements single-state atoms: invariants and an
 // eventually) must agree with the offline checker. This exercises the O(1)
 // per-state route -- ingest one row, call `__atom__`, fold a latch -- rather

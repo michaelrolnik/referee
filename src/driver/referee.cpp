@@ -4219,6 +4219,21 @@ static bool isUntil(Expr* e, bool& weak)
     return isStatePredicate(u->lhs) && isStatePredicate(u->rhs);
 }
 
+//  A top-level unbounded release `Rs(p, q)` / `Rw(p, q)` -- the dual of until.
+//  `q` must hold at every state until `p` releases it; its residual is one bit
+//  too, the mirror of the until's. `weak` distinguishes at end of stream. Same
+//  __ap__0/__ap__1 (p/q) companions; bounded/non-predicate forms take the prefix
+//  path.
+static bool isRelease(Expr* e, bool& weak)
+{
+    Temporal<ExprBinary>*   r = nullptr;
+    if (auto* s = dynamic_cast<ExprRs*>(e)) { r = s; weak = false; }
+    else if (auto* w = dynamic_cast<ExprRw*>(e)) { r = w; weak = true; }
+    else return false;
+    if (r->time) return false;                                              // bounded release
+    return isStatePredicate(r->lhs) && isStatePredicate(r->rhs);
+}
+
 //  Parse `name … PASS/FAIL …` verdict lines from a runOneTrace capture into a
 //  label -> passed map.  The name is left-justified in a fixed column, so it is
 //  everything before the first ` PASS`/` FAIL`, trailing padding trimmed.
@@ -4300,7 +4315,7 @@ bool    Referee::monitor(std::istream& refStream, std::string refName,
     //  a spec with any falls through to the exact prefix path below.
     {
         using AtomFn = bool(*)(void*, void*);
-        enum    Fold { FoldAll, FoldAny, FoldFirst, Response, Until };
+        enum    Fold { FoldAll, FoldAny, FoldFirst, Response, Until, Release };
         struct  AtomReq { std::string label; Fold fold; AtomFn fn; AtomFn fn2 = nullptr; bool weak = false; };
 
         bool    allAtoms = js.astModule->getSpecs().empty();
@@ -4334,19 +4349,25 @@ bool    Referee::monitor(std::istream& refStream, std::string refName,
             }
             llvm::consumeError(atomSym.takeError());
 
-            //  Not a single-fold atom. Two nested formulas progress with a
-            //  one-bit residual: the unbounded response `G(a => F b)` and the
-            //  unbounded until `Us/Uw(p, q)`. Both bind their two state
-            //  predicates to the __ap__0/__ap__1 companions (piece 1); anything
-            //  else -> prefix path.
-            bool    weak = false;
-            if (isResponse(e) || isUntil(e, weak))
+            //  Not a single-fold atom. Three nested formulas progress with a
+            //  one-bit residual: the unbounded response `G(a => F b)`, the
+            //  unbounded until `Us/Uw(p, q)`, and its dual, the unbounded release
+            //  `Rs/Rw(p, q)`. Each binds its two state predicates to the
+            //  __ap__0/__ap__1 companions (piece 1); anything else -> prefix path.
+            bool    weak    = false;
+            bool    matched = true;
+            Fold    kind    = Response;
+            if      (isResponse(e))         kind = Response;
+            else if (isUntil(e, weak))      kind = Until;
+            else if (isRelease(e, weak))    kind = Release;
+            else                            matched = false;
+
+            if (matched)
             {
                 auto    ap0 = js.jit->lookup("__ap__0__" + label);
                 auto    ap1 = js.jit->lookup("__ap__1__" + label);
                 if (ap0 && ap1)
                 {
-                    auto    kind = isResponse(e) ? Response : Until;
                     atomReqs.push_back({label, kind, (*ap0).toPtr<AtomFn>(), (*ap1).toPtr<AtomFn>(), weak});
                     continue;
                 }
@@ -4459,6 +4480,30 @@ bool    Referee::monitor(std::istream& refStream, std::string refName,
                         continue;
                     }
 
+                    if (atomReqs[i].fold == Release)
+                    {
+                        //  Rs/Rw(p, q), dual of until: q must hold at every state
+                        //  until p releases it. q failing now is a violation (for
+                        //  both strong and weak); q with p releases it TRUE; q
+                        //  without p stays pending. End of stream resolves a still
+                        //  pending release like an until (below).
+                        if (done[i])    continue;
+                        if (!atomReqs[i].fn2(curr, conf))           //  q broke: release violated
+                        {
+                            value[i] = 0;
+                            done[i]  = 1;
+                            os << red << "VIOLATION" << reset << "  " << yellow << atomReqs[i].label << reset
+                               << "  @ __time__=" << now << "  " << line << "\n";
+                            violatedNow = true;
+                        }
+                        else if (atomReqs[i].fn(curr, conf))        //  p releases the obligation
+                        {
+                            value[i] = 1;
+                            done[i]  = 1;
+                        }
+                        continue;
+                    }
+
                     bool    a = atomReqs[i].fn(curr, conf);
                     if (atomReqs[i].fold == FoldAll && value[i] && !a)
                     {
@@ -4505,12 +4550,13 @@ bool    Referee::monitor(std::istream& refStream, std::string refName,
             {
                 //  For a response `value` is the pending bit -- an obligation
                 //  still owed at end of stream is a FAIL, so its verdict inverts.
-                //  A still-pending until (p held, q never came) is a FAIL if
-                //  strong (q was required) and a PASS if weak (p forever suffices).
+                //  A still-pending until (p held, q never came) or release (q
+                //  held, p never released) is a FAIL if strong (the eventuality
+                //  was required) and a PASS if weak (holding forever suffices).
                 bool    pass;
-                if      (atomReqs[i].fold == Response)                   pass = !value[i];
-                else if (atomReqs[i].fold == Until && !done[i])          pass = atomReqs[i].weak;
-                else                                                     pass = value[i];
+                if      (atomReqs[i].fold == Response)                                       pass = !value[i];
+                else if ((atomReqs[i].fold == Until || atomReqs[i].fold == Release) && !done[i])  pass = atomReqs[i].weak;
+                else                                                                        pass = value[i];
                 if (pass)
                     os << green << "PASS" << reset << "  " << atomReqs[i].label << "\n";
                 else

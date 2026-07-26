@@ -150,11 +150,21 @@ still live: strong FAILs (`q` was required), weak PASSes (`p` forever suffices).
 `MonitorUntilAgreesAtEveryPrefix` pins both against `executeRdb` at every prefix
 across traces that cross every outcome — satisfied, broken, and held-forever.
 
-Anything else — `G(F p)`, `R` release, bounded windows, freeze — still takes the
-prefix path. Remaining: the general residual evaluator over release and arbitrary
-nesting. Each is pinned to `executeRdb` at every prefix, the discipline the atom
-path is held to (`MonitorResponsePatternAgreesAtEveryPrefix` likewise, across a
-trace that crosses both a met response and one left dangling at end of stream).
+The third nested formula is **built**: the unbounded release `Rs(p, q)` /
+`Rw(p, q)`, the dual of until. `q` must hold at every state until `p` releases
+it — so `q` failing is a mid-stream FAIL, `q` with `p` releases it PASS, `q`
+without `p` stays pending; strong vs weak again splits only at end of stream
+(`p` was required, or `q` forever suffices). It shares the until's end-of-stream
+finaliser and the same `__ap__0`/`__ap__1` (p/q) companions; `isRelease` matches
+`Rs`/`Rw`. `MonitorReleaseAgreesAtEveryPrefix` holds both against `executeRdb`
+across satisfied / broken / held-forever traces.
+
+Anything else — `G(F p)`, `F(G p)`, bounded windows, freeze — still takes the
+prefix path. Remaining: the general residual evaluator over arbitrary nesting.
+Each of the three wired shapes is pinned to `executeRdb` at every prefix, the
+discipline the atom path is held to (`MonitorResponsePatternAgreesAtEveryPrefix`
+likewise, across a trace that crosses both a met response and one left dangling
+at end of stream).
 
 Progression rewrites a requirement's *residual* formula against the current
 state's atoms and emits `true` / `false` / `unknown`:
@@ -183,9 +193,10 @@ and it was the first commit of this piece. Then the monitor carries a residual
 per requirement, progresses it per state, and reports a settled `false` as a
 violation. Build order: (1) per-atom companions + IR test *(done)*; (2) the
 residual evaluator, with the finite-trace finaliser — the response `G(a ⇒ F b)`
-and the unbounded until `Us`/`Uw` are wired *(done)*, `R` release and arbitrary
-nesting remain; (3) agreement against `executeRdb` at every prefix, the same
-discipline the atom path is held to *(done for response and until)*. Bounded
+the unbounded until `Us`/`Uw` and the unbounded release `Rs`/`Rw` are wired
+*(done)*, arbitrary nesting remains; (3) agreement against `executeRdb` at every
+prefix, the same discipline the atom path is held to *(done for response, until,
+and release)*. Bounded
 operators and freeze stay on the prefix path until their windows/obligations are
 modelled.
 
