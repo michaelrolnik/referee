@@ -650,20 +650,31 @@ CompileExprImpl::CompileExprImpl(
     m_T     = llvm::ConstantInt::getTrue(*m_context);
     m_F     = llvm::ConstantInt::getFalse(*m_context);
 
-    //  A requirement function is `(frst, last, conf)` and is evaluated at the
-    //  first real state. A *column* function is `(frst, last, curr, conf)` --
-    //  the same body, but evaluated at a state the caller chooses, so calling
-    //  it once per state produces the per-state column a run trace draws. The
-    //  arity tells the two apart, so nothing else has to.
-    auto    iter        = function->arg_begin();
-    bool    hasCurrArg  = function->arg_size() == 4;
-
-    m_frst.push_back(iter++);
-    m_last.push_back(iter++);
+    //  Arity tells the three function shapes apart, so nothing else has to.
+    //  A requirement is `(frst, last, conf)`, evaluated at the first real state.
+    //  A *column* is `(frst, last, curr, conf)` -- the same body at a state the
+    //  caller chooses, so calling it once per state draws a run trace's column.
+    //  A single-state *atom* is `(curr, conf)`: a non-temporal predicate with no
+    //  trace at all, for a monitor to evaluate one state at a time. `curr`
+    //  stands in for frst/last so the pointer type resolves, and an atom carries
+    //  nothing temporal that would read them.
+    auto    iter    = function->arg_begin();
+    auto    arity   = function->arg_size();
 
     llvm::Value*    currArg = nullptr;
-    if(hasCurrArg)
+    if(arity == 2)
+    {
         currArg = iter++;
+        m_frst.push_back(currArg);
+        m_last.push_back(currArg);
+    }
+    else
+    {
+        m_frst.push_back(iter++);
+        m_last.push_back(iter++);
+        if(arity == 4)
+            currArg = iter++;
+    }
 
     m_conf  = iter;
     m_propType      = propType;
@@ -672,7 +683,7 @@ CompileExprImpl::CompileExprImpl(
     m_confPtrType   = m_conf->getType();
     m_boolType      = m_builder->getInt1Ty();
 
-    m_curr.push_back(hasCurrArg ? currArg : getNext(m_frst.front()));
+    m_curr.push_back(arity == 3 ? getNext(m_frst.front()) : currArg);
 }
 
 void    CompileExprImpl::visit(ExprAdd*          expr)
@@ -3689,6 +3700,27 @@ static void     emitCheckerTable(llvm::LLVMContext* context, llvm::Module* modul
     b.CreateRet(modGV);
 }
 
+//  Whether an expression reads only the current state -- no operator that
+//  reaches another one, so it can be evaluated on one `state_t` alone. This is
+//  the eligibility test for a single-state atom, and `is_temporal()` is not
+//  enough for it: `Xs`/`Xw`/`Ys`/`Yw` shift the state but are modelled as plain
+//  binaries and report false, and a freeze binds a different state entirely.
+static bool readsOnlyCurrent(Expr* e)
+{
+    if(e == nullptr)                                                      return true;
+    //  Order matters: these all derive from ExprUnary/ExprBinary, so they must
+    //  be ruled out before the generic recursion below would descend past them.
+    if(dynamic_cast<Temporal<ExprUnary>*>(e) || dynamic_cast<Temporal<ExprBinary>*>(e) ||
+       dynamic_cast<ExprXs*>(e) || dynamic_cast<ExprXw*>(e) ||
+       dynamic_cast<ExprYs*>(e) || dynamic_cast<ExprYw*>(e) ||
+       dynamic_cast<ExprAt*>(e))                                          return false;
+    if(auto* c = dynamic_cast<ExprCount*>(e))   return readsOnlyCurrent(c->arg) && readsOnlyCurrent(c->body);
+    if(auto* u = dynamic_cast<ExprUnary*>(e))   return readsOnlyCurrent(u->arg);
+    if(auto* b = dynamic_cast<ExprBinary*>(e))  return readsOnlyCurrent(b->lhs) && readsOnlyCurrent(b->rhs);
+    if(auto* t = dynamic_cast<ExprTernary*>(e)) return readsOnlyCurrent(t->lhs) && readsOnlyCurrent(t->mhs) && readsOnlyCurrent(t->rhs);
+    return true;
+}
+
 void Compile::make(llvm::LLVMContext* context, llvm::Module* module, Module* refmod,
                    std::vector<std::uint8_t> const* schema)
 {
@@ -3756,6 +3788,45 @@ void Compile::make(llvm::LLVMContext* context, llvm::Module* module, Module* ref
         TypeCalc::make(refmod, temp);
         compExpr.compileTemporalLoops(temp);
         builder->CreateRet(compExpr.make(temp));
+
+        //  A single-state atom `__atom__<name>(curr, conf)`: the requirement's
+        //  per-state predicate, compiled to evaluate one state with no trace.
+        //  It exists when the requirement is that predicate directly (a
+        //  non-temporal requirement) or one ranging operator over it -- `G`,
+        //  `F`, `H`, `O` -- whose body is non-temporal; an invariant `G(P)`
+        //  yields `P`. A monitor evaluates it per state instead of re-running
+        //  the whole trace: for an invariant, `P` false at any state is the
+        //  violation. `Xs`/`Ys` are excluded -- they shift the state, so their
+        //  body at `curr` is not what they mean -- as is anything with a freeze,
+        //  which needs the frozen state the atom does not carry.
+        auto    atomOf = [](Expr* e) -> Expr*
+        {
+            if(readsOnlyCurrent(e))     return e;
+            if(dynamic_cast<ExprG*>(e) || dynamic_cast<ExprF*>(e) ||
+               dynamic_cast<ExprH*>(e) || dynamic_cast<ExprO*>(e))
+                if(auto* u = dynamic_cast<ExprUnary*>(e); u && readsOnlyCurrent(u->arg))
+                    return u->arg;
+            return nullptr;
+        };
+
+        if(auto* atom = atomOf(expr); atom != nullptr)
+        {
+            auto    atomTemp = Rewrite::make(atom);
+            TypeCalc::make(refmod, atomTemp);
+
+            auto    atomType = llvm::FunctionType::get(builder->getInt1Ty(),
+                                {propPtrType, confPtrType}, false);     //  (curr, conf)
+            auto    atomBody = llvm::Function::Create(atomType, llvm::Function::ExternalLinkage,
+                                "__atom__" + funcName, module);
+            auto    atomArg  = atomBody->args().begin();
+            atomArg->setName("curr"); atomArg++;
+            atomArg->setName("conf");
+
+            builder->SetInsertPoint(llvm::BasicBlock::Create(*context, "entry", atomBody));
+
+            CompileExprImpl compAtom(context, module, builder.get(), atomBody, refmod, propType, confType);
+            builder->CreateRet(compAtom.make(atomTemp));
+        }
 
         //  A run trace names a requirement vacuous when its antecedent never
         //  fires: `G(a => b)` proves nothing about `b` on a trace where `a` is

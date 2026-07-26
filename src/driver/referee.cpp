@@ -2048,6 +2048,7 @@ JitWithSpecs    buildJitFromRef(std::istream& refStream, std::string const& refN
         //  dereferences it.
         if (name.rfind("__col__", 0) == 0) continue;
         if (name.rfind("__ante__", 0) == 0) continue;
+        if (name.rfind("__atom__", 0) == 0) continue;   // single-state companion, not a requirement
         if (name.rfind("__sub__", 0) == 0) continue;
         if (name.rfind("__scope", 0) == 0) continue;
         if (name == "referee_module") continue;
@@ -3204,7 +3205,8 @@ void    Referee::emitObject(std::string const&               refPath,
         auto&   F = *it++;
         auto    n = F.getName();
         if ((n.starts_with("__col__") || n.starts_with("__ante__")
-          || n.starts_with("__sub__") || n.starts_with("__scope"))
+          || n.starts_with("__sub__") || n.starts_with("__scope")
+          || n.starts_with("__atom__"))
          && F.use_empty())
         {
             F.eraseFromParent();

@@ -1,0 +1,16 @@
+# Single-state atom compilation (phase-2 monitor foundation). A requirement
+# that reads only the current state -- directly, or as the body of one ranging
+# operator (G/F/H/O) over such a predicate -- gets a companion
+# `__atom__<name>(curr, conf)` that evaluates it on one state, no trace. A
+# state-shifting operator (Xs/Ys) or a nested temporal does not.
+
+data x  : integer;
+data ok : boolean;
+
+@inv    G(x < 100);      # invariant       -> __atom__inv  = (x < 100)
+@bare   x < 50;          # non-temporal    -> __atom__bare = the predicate itself
+@ev     F(x == 42);      # eventually      -> __atom__ev   = (x == 42)
+@past   H(ok);           # historically    -> __atom__past = ok
+
+@shift  Xs(ok);          # next-state      -> NO atom (reads the next state)
+@nested G(F(ok));        # nested temporal -> NO atom

@@ -701,6 +701,29 @@ TEST(Cli, CompileEmitsIR)
     EXPECT_NE(r.output.find("__prop_t"),    std::string::npos) << r.output;
 }
 
+// Single-state atom compilation (phase-2 monitor foundation). A requirement
+// that reads only the current state -- directly, or as the body of one ranging
+// operator (G/F/H/O) -- gets a `__atom__<name>(curr, conf)` companion, a
+// two-argument function with no trace context. A state-shifting operator
+// (Xs/Ys) or a nested temporal does not, since its body at `curr` is not what
+// it means.
+TEST(Cli, CompileEmitsSingleStateAtoms)
+{
+    auto    r = run(quote(REFEREE_BIN) + " compile " + quote(data("atoms.ref")));
+    EXPECT_EQ(r.status, 0) << r.output;
+
+    //  emitted for the invariant body, the bare predicate, the eventually and
+    //  the historically bodies
+    EXPECT_NE(r.output.find("@__atom__inv("),  std::string::npos) << r.output;
+    EXPECT_NE(r.output.find("@__atom__bare("), std::string::npos) << r.output;
+    EXPECT_NE(r.output.find("@__atom__ev("),   std::string::npos) << r.output;
+    EXPECT_NE(r.output.find("@__atom__past("), std::string::npos) << r.output;
+
+    //  and NOT for a state-shifting or a nested-temporal requirement
+    EXPECT_EQ(r.output.find("@__atom__shift"),  std::string::npos) << r.output;
+    EXPECT_EQ(r.output.find("@__atom__nested"), std::string::npos) << r.output;
+}
+
 TEST(Cli, CompileRejectsMissingFile)
 {
     auto    r = run(quote(REFEREE_BIN) + " compile /no/such/file.ref");

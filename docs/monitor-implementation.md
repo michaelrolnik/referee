@@ -63,13 +63,30 @@ the requirement may stutter-collapse and to what unit (value / timed segment /
 segment-with-count / every state), whether its window is bounded, and where its
 `refresh` points are. This pass is cheap and gates the rest.
 
-**2. Single-state atom compilation.** Today's compiled functions take
+**2. Single-state atom compilation.** *(Built.)* Today's compiled functions take
 `(frst, last)` — a whole trace. The monitor needs the requirement's *atoms* —
-its non-temporal leaf predicates over one state — compiled to take a single
-`state_t*`. This is a narrowing of the existing generator, not new semantics:
-the same expression lowering, emitted against one state instead of a range.
-Indexing, member access and `func` calls carry over; a freeze or a temporal
-subexpression does not appear at this level.
+its predicates over one state — compiled to take a single `state_t*`. This is a
+narrowing of the existing generator, not new semantics: the same expression
+lowering, emitted against one state instead of a range.
+
+The generator now emits, per requirement, a companion `__atom__<name>(curr,
+conf)` — a two-argument function, no `frst`/`last` — whenever the requirement
+reads only the current state: directly (a non-temporal requirement) or as the
+body of one ranging operator, `G`/`F`/`H`/`O`, over such a predicate, so an
+invariant `G(P)` yields `P`. The eligibility test is `readsOnlyCurrent`, which
+unlike `is_temporal()` also rejects `Xs`/`Xw`/`Ys`/`Yw` (they shift the state
+but are modelled as plain binaries) and freeze. The two-argument shape is the
+third case in the compile-visitor constructor, beside the requirement
+`(frst,last,conf)` and column `(frst,last,curr,conf)` forms; `curr` stands in
+for `frst`/`last` so the pointer type resolves, and an atom carries nothing
+temporal to read them. Like the other `__…` companions, `__atom__` is filtered
+out of the requirement harvest (three sites) so it is never run as a
+requirement, and dropped from an AOT object where nothing calls it.
+
+What remains is the *consumer*: the phase-1 monitor still re-ingests the whole
+prefix. Wiring it to build one `state_t` per row and call `__atom__` per state
+— O(1) per state for an invariant, no re-run — is the next step and the payoff
+of this piece.
 
 **3. The per-requirement frame.** A small struct carried across steps, the
 explicit-state form of the design's primitives:
