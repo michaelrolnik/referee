@@ -715,6 +715,14 @@ public:
 class Spec
     : public Visitable<Base, Spec>
 {
+public:
+    //  A specification node is per-compilation, exactly like an expression: it
+    //  holds `Expr` children and refers to one module's declarations. But `Spec`
+    //  descends from `Base`, not `Expr`, so without this it would miss the
+    //  arena opt-in that `Expr` has -- landing in the process-global intern
+    //  bucket, never swept, and handed stale (with dangling `Expr` children) to
+    //  the next compilation whose child addresses collide. Opt in like `Expr`.
+    using factory_scoped = void;
 };
 
 class SpecScoped
