@@ -208,9 +208,29 @@ the pattern rewrites into the fragment the residual evaluator already covers
 (`Rw`/`Us`/booleans/past), universality, absence, existence, response, until and
 past-precedence patterns all progress with no new code.
 `MonitorGloballyScopeAgreesAtEveryPrefix` pins all six shapes against
-`executeRdb` at every prefix. The other scopes — which need per-interval
-open/close state machines over the `__scopeA__`/`__scopeB__` boundary columns the
-generator already emits — remain on the prefix path.
+`executeRdb` at every prefix.
+
+The two **single-interval** scopes, `before R` and `after Q`, are **built** too,
+reusing the same residual over the compiled `__scope*__` boundary column. Their
+exact semantics (read off the offline IR and pinned by probing): `before R`
+checks the pattern over `[frst, R)` — from the start up to, but *not* including,
+the first `R` — and is a vacuous PASS if `R` never fires; crucially a pattern
+violation there is provisional, counted only once some `R` closes the scope, so
+the residual is finalised at that `R` (or PASS at end of stream if none comes) and
+never settles early. `after Q` is dormant until `Q` first holds, then is a plain
+residual over `[Q, end]`, and a vacuous PASS if `Q` never fires. One restriction:
+`after Q` starts the pattern fresh at `Q`, but the offline anchors it one state
+earlier so a past operator can read across the boundary — so an `after` pattern
+carrying a past operator takes the prefix path (`before`/`globally` progress from
+the trace start, so their past machines have the right history).
+`MonitorBeforeAfterScopeAgreesAtEveryPrefix` pins universality, existence,
+absence, response and until under both scopes against `executeRdb` at every
+prefix.
+
+The **multi-interval** scopes — `between Q and R`, `after Q until R`, `while` —
+remain on the prefix path; they need a per-interval open/close state machine (a
+`refresh` of the residual at each open) over the two boundary columns, and differ
+in how they treat an unclosed final interval.
 
 **Bounded operators.** A *top-level* bounded `F[lo:hi]` / `G[lo:hi]` over a state
 predicate is **built** on the fast path (`Referee::monitor`, the `BoundedF` /

@@ -912,6 +912,77 @@ TEST(Rdb, MonitorGloballyScopeAgreesAtEveryPrefix)
     }
 }
 
+// The single-interval Dwyer scopes `before R` and `after Q`. `before R` checks
+// the pattern over [frst, R) -- from the start up to (excluding) the first R,
+// and is a vacuous PASS if R never fires; a pattern violation counts only once
+// some R closes the scope. `after Q` checks it over [Q, end] -- from the first Q
+// to the end, vacuous PASS if Q never fires. The monitor runs one residual per
+// spec, gated on the compiled `__scope*__` boundary column, and must agree with
+// the offline checker at EVERY prefix over a trace where the boundary fires at
+// assorted points and the pattern both holds and breaks inside the scope.
+TEST(Rdb, MonitorBeforeAfterScopeAgreesAtEveryPrefix)
+{
+    constexpr int   N = 24;
+
+    std::string                 header = "__time__,a,b,c";
+    std::vector<std::string>    rows;
+    for (int k = 0; k < N; k++)
+    {
+        bool    a = (k % 3) != 0;               // breaks periodically (for universality)
+        bool    b = (k % 7) == 4;               // the `after` boundary Q
+        bool    c = (k % 8) == 6;               // the `before` boundary R
+        rows.push_back(std::to_string(k * 1000)
+                     + "," + (a ? "true" : "false")
+                     + "," + (b ? "true" : "false")
+                     + "," + (c ? "true" : "false"));
+    }
+
+    char const* specs[] = {
+        "data a:boolean;\ndata b:boolean;\ndata c:boolean;\nbefore c, it is always the case that a holds;\n",
+        "data a:boolean;\ndata b:boolean;\ndata c:boolean;\nbefore c, a eventually holds;\n",
+        "data a:boolean;\ndata b:boolean;\ndata c:boolean;\nbefore c, it is never the case that a holds;\n",
+        "data a:boolean;\ndata b:boolean;\ndata c:boolean;\nafter b, it is always the case that a holds;\n",
+        "data a:boolean;\ndata b:boolean;\ndata c:boolean;\nafter b, a eventually holds;\n",
+        "data a:boolean;\ndata b:boolean;\ndata c:boolean;\nafter b, if a has occurred, then in response c eventually holds;\n",
+        "data a:boolean;\ndata b:boolean;\ndata c:boolean;\nafter b, a holds without interruption until c holds;\n",
+    };
+
+    for (auto const* spec : specs)
+    {
+        auto    refPath = tmpFile("ba") + ".ref";
+        { std::ofstream f(refPath); f << spec; }
+
+        for (int k = 1; k <= N; k++)
+        {
+            std::string     csv = header;
+            for (int j = 0; j < k; j++)  csv += "\n" + rows[j];
+
+            auto            csvPath = tmpFile("ba-csv") + ".csv";
+            { std::ofstream f(csvPath); f << csv << "\n"; }
+
+            auto                rdbPath = tmpFile("ba-rdb");
+            referee::db::ingest(refPath, csvPath, /*conf=*/"", rdbPath);
+            std::ifstream       refA(refPath);
+            std::ostringstream  offOut;
+            bool                offline = Referee::executeRdb(refA, refPath, rdbPath, offOut);
+
+            std::istringstream  states(csv);
+            std::ifstream       refB(refPath);
+            std::ostringstream  monOut;
+            bool                online = Referee::monitor(refB, refPath, states, "", monOut);
+
+            std::remove(rdbPath.c_str());
+            std::remove(csvPath.c_str());
+
+            ASSERT_EQ(offline, online)
+                << "before/after scope disagree at prefix " << k << " of " << N
+                << "\nspec:\n" << spec
+                << "\noffline:\n" << offOut.str() << "\nmonitor:\n" << monOut.str();
+        }
+        std::remove(refPath.c_str());
+    }
+}
+
 // The atom fast path (all requirements single-state atoms: invariants and an
 // eventually) must agree with the offline checker. This exercises the O(1)
 // per-state route -- ingest one row, call `__atom__`, fold a latch -- rather

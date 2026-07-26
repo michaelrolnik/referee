@@ -4610,13 +4610,17 @@ bool    Referee::monitor(std::istream& refStream, std::string refName,
     //  excluded -- a temporal one cannot be materialised from a single row -- so
     //  a spec with any falls through to the exact prefix path below.
     {
-        using AtomFn = bool(*)(void*, void*);
+        using AtomFn  = bool(*)(void*, void*);
+        using ScopeFn = bool(*)(void*, void*, void*, void*);    //  (frst, last, curr, conf)
         //  Evaluators sharing the incremental fast path. A single-fold atom (an
         //  invariant, an eventually, a bare predicate) is one latch -- fn + a
         //  fold. A top-level bounded `F`/`G` is a latch over a `__time__` window
         //  -- fn + a [lo, hi] deadline. Anything richer that progression handles
         //  carries a residual formula and its atomic-proposition functions.
-        enum    Fold { FoldAll, FoldAny, FoldFirst, BoundedF, BoundedG, Residual };
+        enum    Fold  { FoldAll, FoldAny, FoldFirst, BoundedF, BoundedG, Residual };
+        //  A residual's Dwyer scope: globally (whole trace), before R ([frst, R),
+        //  vacuous if R never fires), after Q ([Q, end], vacuous if Q never fires).
+        enum    Scope { ScGlobally, ScBefore, ScAfter };
         struct  AtomReq
         {
             std::string         label;
@@ -4628,6 +4632,8 @@ bool    Referee::monitor(std::istream& refStream, std::string refName,
             std::vector<AtomFn> aps;            //  Residual: __ap__0..k
             std::vector<PPtr>   pasts;          //  Residual: past-subformula machines
             int                 pslots = 0;     //  Residual: past-memory slots
+            Scope               scope   = ScGlobally;
+            ScopeFn             scopeA  = nullptr;   //  before/after: the R/Q boundary column
         };
 
         //  A `globally`-scoped Dwyer pattern applies over the whole trace, so it
@@ -4712,27 +4718,40 @@ bool    Referee::monitor(std::istream& refStream, std::string refName,
             break;
         }
 
-        //  Dwyer-pattern specs. Only `globally` is incremental so far: its
-        //  pattern applies over the whole trace, exactly what a residual is. The
-        //  pattern is the scope's body rewritten (and canonicalised, as the
-        //  compiler did when emitting its `__ap__` companions), so `buildResidual`
-        //  sees the same `Rw`/`Us`/... form and numbers the atoms alike. Any other
-        //  scope, or a pattern outside the progressable fragment, drops the whole
-        //  spec set to the prefix path.
+        //  Dwyer-pattern specs. `globally` (whole trace), `before R` and
+        //  `after Q` are incremental; their pattern is the scope body rewritten
+        //  (and canonicalised, as the compiler did when emitting its `__ap__`
+        //  companions), so `buildResidual` sees the same `Rw`/`Us`/... form and
+        //  numbers the atoms alike. A scope's boundary is one of the
+        //  `__scope*__<name>` column functions the generator emits; the monitor
+        //  folds the interval out of it. `between`/`after-until`/`while` (multi
+        //  interval) and any pattern outside the fragment drop to the prefix path.
         auto&   specs = js.astModule->getSpecs();
         for (std::size_t i = 0; allAtoms && i < specs.size(); i++)
         {
             auto    label = js.astModule->getSpecName(i);
             if (label.empty())  label = specs[i]->where().text();
 
-            auto*   glob = dynamic_cast<SpecGlobally*>(specs[i]);
-            if (glob == nullptr)    { allAtoms = false; break; }        //  a real scope -> prefix path
+            auto*   scoped = dynamic_cast<SpecScoped*>(specs[i]);
+            auto*   sc     = js.astModule->scopeFor(label);
+            if (scoped == nullptr || sc == nullptr) { allAtoms = false; break; }
+
+            Scope   scope;
+            if      (sc->kind == "globally")    scope = ScGlobally;
+            else if (sc->kind == "before")      scope = ScBefore;
+            else if (sc->kind == "after")       scope = ScAfter;
+            else    { allAtoms = false; break; }                       //  multi-interval scope -> prefix path
 
             int                 apc    = 0;
             int                 pslots = 0;
             std::vector<PPtr>   pasts;
-            RPtr                tmpl = buildResidual(Rewrite::make(glob->spec), apc, pslots, pasts);
-            if (tmpl)
+            RPtr                tmpl = buildResidual(Rewrite::make(scoped->spec), apc, pslots, pasts);
+            //  `after Q` starts the pattern fresh at Q, but the offline anchors it
+            //  one state earlier so a past operator can read across the boundary;
+            //  a past-bearing `after` pattern would disagree, so it takes the
+            //  prefix path. `before`/`globally` progress from the trace start, so
+            //  their past machines have the right history.
+            if (tmpl != nullptr && !(scope == ScAfter && pslots > 0))
             {
                 std::vector<AtomFn>     aps;
                 bool                    ok = true;
@@ -4742,10 +4761,19 @@ bool    Referee::monitor(std::istream& refStream, std::string refName,
                     if (!sym)   { llvm::consumeError(sym.takeError()); ok = false; break; }
                     aps.push_back((*sym).toPtr<AtomFn>());
                 }
+
+                ScopeFn scopeA = nullptr;
+                if (ok && scope != ScGlobally)
+                {
+                    auto    sym = js.jit->lookup(sc->condA);
+                    if (!sym)   { llvm::consumeError(sym.takeError()); ok = false; }
+                    else        scopeA = (*sym).toPtr<ScopeFn>();
+                }
+
                 if (ok)
                 {
                     atomReqs.push_back({label, Residual, nullptr, 0, 0, tmpl,
-                                        std::move(aps), std::move(pasts), pslots});
+                                        std::move(aps), std::move(pasts), pslots, scope, scopeA});
                     continue;
                 }
             }
@@ -4769,6 +4797,7 @@ bool    Referee::monitor(std::istream& refStream, std::string refName,
 
             std::vector<char>   value(atomReqs.size());     //  all/G[]: ok / any: met / first & residual: verdict once done
             std::vector<char>   done (atomReqs.size(), 0);  //  first, residual, bounded: decided yet
+            std::vector<char>   started(atomReqs.size(), 0);//  after-scope: its Q boundary has fired
             std::vector<RPtr>   resid(atomReqs.size());     //  residual: the current progression formula
             std::vector<std::vector<signed char>>   pmem(atomReqs.size());   //  residual: past-machine memory (-1 = unstarted)
             for (std::size_t i = 0; i < atomReqs.size(); i++)
@@ -4827,6 +4856,8 @@ bool    Referee::monitor(std::istream& refStream, std::string refName,
                 auto*   base = static_cast<char*>(const_cast<void*>(rdb.ptrFirst()));
                 void*   curr = base + (rdb.numStates() - 2) * rdb.rowBytes();
                 void*   conf = rdb.confPtr();
+                void*   sfrst = const_cast<void*>(rdb.ptrFirst());   //  for scope boundary columns
+                void*   slast = const_cast<void*>(rdb.ptrLast());
 
                 auto        comma = line.find(',');
                 std::string now   = comma == std::string::npos ? line : line.substr(0, comma);
@@ -4889,6 +4920,34 @@ bool    Referee::monitor(std::istream& refStream, std::string refName,
                         //  q failed). A liveness obligation never settles here; it
                         //  stays `unknown` and is closed at end of stream.
                         if (done[i])    continue;
+
+                        //  `before R`: the window is [frst, R). When R first holds
+                        //  the window closes at (not including) this state, so the
+                        //  residual is finalised over what came before -- without
+                        //  progressing this state. Until then (and forever, if R
+                        //  never fires) it stays open and does not settle: a pattern
+                        //  violation counts only if some R later closes the scope.
+                        if (atomReqs[i].scope == ScBefore
+                            && atomReqs[i].scopeA(sfrst, slast, curr, conf))
+                        {
+                            value[i] = finalize(resid[i]) ? 1 : 0;
+                            done[i]  = 1;
+                            if (!value[i])
+                            {
+                                os << red << "VIOLATION" << reset << "  " << yellow << atomReqs[i].label << reset
+                                   << "  @ __time__=" << now << "  " << line << "\n";
+                                violatedNow = true;
+                            }
+                            continue;
+                        }
+                        //  `after Q`: dormant until Q first holds; from then it is
+                        //  a plain residual over [Q, end].
+                        if (atomReqs[i].scope == ScAfter && !started[i])
+                        {
+                            if (!atomReqs[i].scopeA(sfrst, slast, curr, conf))  continue;
+                            started[i] = 1;
+                        }
+
                         auto&   aps   = atomReqs[i].aps;
                         auto&   pasts = atomReqs[i].pasts;
                         auto    evalAp = [&](int k){ return aps[k](curr, conf); };
@@ -4898,14 +4957,22 @@ bool    Referee::monitor(std::istream& refStream, std::string refName,
 
                         resid[i] = progress(resid[i], [&](RNode const& n)
                                             { return n.kind == RNode::PastRef ? (bool)pastVal[n.ap] : aps[n.ap](curr, conf); });
-                        if (isT(resid[i]))          { value[i] = 1; done[i] = 1; }
-                        else if (isF(resid[i]))
+
+                        //  A `before` residual must not settle early -- a violation
+                        //  is only real once an R closes the window (handled above),
+                        //  and until then more states may satisfy it. Globally and
+                        //  after settle the instant they fold to a constant.
+                        if (atomReqs[i].scope != ScBefore)
                         {
-                            value[i] = 0;
-                            done[i]  = 1;
-                            os << red << "VIOLATION" << reset << "  " << yellow << atomReqs[i].label << reset
-                               << "  @ __time__=" << now << "  " << line << "\n";
-                            violatedNow = true;
+                            if (isT(resid[i]))          { value[i] = 1; done[i] = 1; }
+                            else if (isF(resid[i]))
+                            {
+                                value[i] = 0;
+                                done[i]  = 1;
+                                os << red << "VIOLATION" << reset << "  " << yellow << atomReqs[i].label << reset
+                                   << "  @ __time__=" << now << "  " << line << "\n";
+                                violatedNow = true;
+                            }
                         }
                         continue;
                     }
@@ -4978,10 +5045,14 @@ bool    Referee::monitor(std::istream& refStream, std::string refName,
             {
                 //  A residual still unsettled at end of stream is closed over the
                 //  empty suffix by `finalize` (G holds, F fails, weak/strong until
-                //  and release split); a settled one keeps its verdict.
+                //  and release split); a settled one keeps its verdict. An open
+                //  `before R` whose R never fired, or an `after Q` whose Q never
+                //  fired, is a vacuous PASS -- the scope covered nothing.
                 bool    pass;
-                if (atomReqs[i].fold == Residual && !done[i])    pass = finalize(resid[i]);
-                else                                             pass = value[i];
+                if (atomReqs[i].fold != Residual || done[i])                     pass = value[i];
+                else if (atomReqs[i].scope == ScBefore)                          pass = true;
+                else if (atomReqs[i].scope == ScAfter && !started[i])           pass = true;
+                else                                                             pass = finalize(resid[i]);
                 if (pass)
                     os << green << "PASS" << reset << "  " << atomReqs[i].label << "\n";
                 else
