@@ -261,6 +261,72 @@ TEST(Rdb, MonitorPerStateAndStopAtFirst)
     }
 }
 
+// The heavy one: the monitor must agree with the offline checker at *every*
+// prefix, not just at end of stream. Over a big generated trace, for each
+// prefix length k the first k rows are fed to both `executeRdb` and
+// `Referee::monitor`, and the pass/fail must match -- state by state. Run for
+// two specs: an all-invariant one (which takes the O(1) atom fast path) and a
+// mixed one carrying a nested-future requirement (which falls back to the
+// prefix path), so both routes are checked against offline the whole way.
+TEST(Rdb, MonitorMatchesOfflineAtEveryPrefix)
+{
+    constexpr int   N = 40;
+
+    std::string                 header = "__time__,x,flag";
+    std::vector<std::string>    rows;
+    for (int k = 0; k < N; k++)
+    {
+        int     x    = (k * 13 + 7) % 130;          // crosses 100, visits 42, etc.
+        bool    flag = (k % 3) == 0;
+        rows.push_back(std::to_string(k * 1000) + "," + std::to_string(x)
+                     + "," + (flag ? "true" : "false"));
+    }
+
+    struct  Case { char const* name; char const* spec; };
+    Case    cases[] = {
+        //  all single-state atoms -> atom fast path
+        { "atoms", "data x:integer;\ndata flag:boolean;\n"
+                   "@a G(x < 100);\n@b G(x >= 0);\n@c F(x == 42);\n@d H(x < 200);\n" },
+        //  a nested future makes the whole spec take the prefix path
+        { "mixed", "data x:integer;\ndata flag:boolean;\n"
+                   "@a G(x < 100);\n@e G(flag => F(x == 42));\n" },
+    };
+
+    for (auto const& c : cases)
+    {
+        auto    refPath = tmpFile(std::string("sbs-") + c.name) + ".ref";
+        { std::ofstream f(refPath); f << c.spec; }
+
+        for (int k = 1; k <= N; k++)
+        {
+            std::string     csv = header;
+            for (int j = 0; j < k; j++)  csv += "\n" + rows[j];
+
+            auto            csvPath = tmpFile("sbs-csv") + ".csv";
+            { std::ofstream f(csvPath); f << csv << "\n"; }
+
+            auto                rdbPath = tmpFile("sbs-rdb");
+            referee::db::ingest(refPath, csvPath, /*conf=*/"", rdbPath);
+            std::ifstream       refA(refPath);
+            std::ostringstream  offOut;
+            bool                offline = Referee::executeRdb(refA, refPath, rdbPath, offOut);
+
+            std::istringstream  states(csv);
+            std::ifstream       refB(refPath);
+            std::ostringstream  monOut;
+            bool                online = Referee::monitor(refB, refPath, states, "", monOut);
+
+            std::remove(rdbPath.c_str());
+            std::remove(csvPath.c_str());
+
+            ASSERT_EQ(offline, online)
+                << c.name << " disagree at prefix " << k << " of " << N
+                << "\noffline:\n" << offOut.str() << "\nmonitor:\n" << monOut.str();
+        }
+        std::remove(refPath.c_str());
+    }
+}
+
 // The atom fast path (all requirements single-state atoms: invariants and an
 // eventually) must agree with the offline checker. This exercises the O(1)
 // per-state route -- ingest one row, call `__atom__`, fold a latch -- rather
