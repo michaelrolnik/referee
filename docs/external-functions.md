@@ -3,6 +3,24 @@
 **Status:** built -- `func` declarations, `referee header`/`--stub`, `-L` loading, overloading, slices, the whole-state form. Kept as the design record.
 **Scope:** declaring a native function in a `.ref`, generating a C header from the specification's types, calling the function from a requirement, and an optional whole-state calling convention.
 
+## Contents
+
+- [The problem](#the-problem)
+- [What is proposed](#what-is-proposed)
+  - [1. `func` declarations](#1-func-declarations)
+  - [2. Generated header](#2-generated-header)
+  - [3. Calling](#3-calling)
+- [The whole-state convention](#the-whole-state-convention)
+- [Purity, and what it costs](#purity-and-what-it-costs)
+- [The workflow](#the-workflow)
+  - [What gets loaded](#what-gets-loaded)
+  - [Failure before any trace is read](#failure-before-any-trace-is-read)
+  - [Why a directory rather than named libraries](#why-a-directory-rather-than-named-libraries)
+- [AOT checkers](#aot-checkers)
+- [Standard library](#standard-library)
+- [What I would build, and in what order](#what-i-would-build-and-in-what-order)
+- [Open questions](#open-questions)
+
 ## The problem
 
 Some requirements need arithmetic the language cannot express and should not grow syntax for. The motivating one is concrete: MCTP over SMBus ends every packet with a PEC, a CRC-8 over the transaction. It is the single highest-yield mechanical check on a capture, and it is unwritable today — REF has no fold over an array and no function abstraction, so the only spelling is the fully unrolled polynomial, eight shift/xor steps per octet across every octet.

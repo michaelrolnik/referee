@@ -3,6 +3,17 @@
 **Status:** FIXED. Kept as the record of what the bug was, why it survived, and how it was resolved.
 **Severity:** was silent wrong answers -- the only defect in this codebase that produced an incorrect result rather than a missing feature.
 
+## Contents
+
+- [Reproduction](#reproduction)
+- [Diagnosis](#diagnosis)
+- [What was built](#what-was-built)
+- [The design, as reasoned through](#the-design-as-reasoned-through)
+  - [The real fix: intern nodes per compilation, types globally](#the-real-fix-intern-nodes-per-compilation-types-globally)
+  - [The stopgap: a discriminator on `ExprContext`](#the-stopgap-a-discriminator-on-exprcontext)
+  - [What a `Factory::reset()` would and would not do](#what-a-factoryreset-would-and-would-not-do)
+- [Test to add with the fix](#test-to-add-with-the-fix)
+
 ## Reproduction
 
 Two specifications compiled in one process, both declaring a signal called `g`

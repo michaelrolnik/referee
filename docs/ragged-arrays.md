@@ -5,6 +5,18 @@ reads however many cells a row held and writes a `{count, pointer}` descriptor,
 `.count` is a load, and a quantifier is a loop. One open consequence, below.
 **Shape:** an array of arrays where each inner array carries its own length, rather than every row having the same extent.
 
+## Contents
+
+- [Why the current arrays cannot do it](#why-the-current-arrays-cannot-do-it)
+- [What already exists](#what-already-exists)
+- [What has to change](#what-has-to-change)
+- [The shape, decided](#the-shape-decided)
+  - [Two kinds, and the migration is gentler than it looks](#two-kinds-and-the-migration-is-gentler-than-it-looks)
+  - [CSV: columns to the widest row, absent elements marked](#csv-columns-to-the-widest-row-absent-elements-marked)
+  - [Quantifiers as runtime loops](#quantifiers-as-runtime-loops)
+- [Suggested spelling](#suggested-spelling)
+- [An index past the end was fatal, and `&&` now guards against it](#an-index-past-the-end-was-fatal-and--now-guards-against-it)
+
 ## Why the current arrays cannot do it
 
 `T[N][M]` is *N* arrays of exactly *M*. The outer array's element type is one

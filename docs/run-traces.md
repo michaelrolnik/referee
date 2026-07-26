@@ -3,6 +3,21 @@
 **Status:** built, except `quantifier_empty` vacuity and the bottom-up column evaluator. Header, signal and requirement lines are written; bare requirements carry their own per-state column plus subexpression rows; Dwyer patterns carry verdict, scope intervals and scope vacuity; implication vacuity is computed.
 **Scope:** `referee execute --explain run.json`, producing a per-requirement record of what was evaluated where, for a visualiser (Bokeh) to draw.
 
+## Contents
+
+- [The obvious motivation, and the better one](#the-obvious-motivation-and-the-better-one)
+- [What a run trace has to contain](#what-a-run-trace-has-to-contain)
+- [How the values are produced](#how-the-values-are-produced)
+  - [Compile each subexpression as its own function](#compile-each-subexpression-as-its-own-function)
+  - [Witnesses and windows are derived, not compiled](#witnesses-and-windows-are-derived-not-compiled)
+  - [Bottom-up, one pass per node](#bottom-up-one-pass-per-node)
+  - [What that costs, and the check that pays for it](#what-that-costs-and-the-check-that-pays-for-it)
+  - [Where it stays expensive](#where-it-stays-expensive)
+- [A subtlety the visualiser must not hide](#a-subtlety-the-visualiser-must-not-hide)
+- [What exists](#what-exists)
+- [Format](#format)
+- [Open questions](#open-questions)
+
 ## The obvious motivation, and the better one
 
 The obvious one: when a requirement fails, the report says *which* requirement and nothing else. For anything with a scope or a nested temporal operator, that leaves the real question — *why* — to be answered by squinting at the trace.

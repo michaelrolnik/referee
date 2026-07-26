@@ -4,6 +4,15 @@ The logics and formalisms REF draws on, with the primary sources for each. The
 specification-pattern layer is the project's original inspiration; the temporal
 operators beneath it come from the classical temporal-logic literature.
 
+## Contents
+
+- [Specification patterns (the inspiration)](#specification-patterns-the-inspiration)
+- [Linear Temporal Logic (LTL)](#linear-temporal-logic-ltl)
+- [Past-time temporal logic](#past-time-temporal-logic)
+- [Metric Temporal Logic (MTL)](#metric-temporal-logic-mtl)
+- [Timed Propositional Temporal Logic (TPTL) and freeze quantifiers](#timed-propositional-temporal-logic-tptl-and-freeze-quantifiers)
+- [Finite-trace semantics (LTLf) and strong vs. weak](#finite-trace-semantics-ltlf-and-strong-vs-weak)
+
 ## Specification patterns (the inspiration)
 
 REF's `globally` / `before` / `after` / `between … and …` scopes and its

@@ -4,6 +4,19 @@
 **Produced by:** `referee execute spec.ref trace.csv --explain run.json`
 **Consumed by:** anything. A Bokeh page is the intended first reader; a VCD exporter should also be possible from the same file, which is a constraint on the design rather than a nice-to-have.
 
+## Contents
+
+- [Shape: newline-delimited JSON](#shape-newline-delimited-json)
+- [The header](#the-header)
+- [Signals](#signals)
+  - [Dense or sparse, per signal](#dense-or-sparse-per-signal)
+- [A requirement](#a-requirement)
+- [Rows](#rows)
+  - [`kind`, which is the part a viewer must not ignore](#kind-which-is-the-part-a-viewer-must-not-ignore)
+- [Vacuity](#vacuity)
+- [What this deliberately does not have](#what-this-deliberately-does-not-have)
+- [Open questions](#open-questions)
+
 ## Shape: newline-delimited JSON
 
 One JSON document per line: a header, then the trace's signals, then one requirement per line.

@@ -9,6 +9,21 @@ rest of this document is the design the later phases build toward.
 a stream and emits a verdict per requirement per step, deciding the instant a
 requirement is settled rather than waiting for a finished trace.
 
+## Contents
+
+- [The gap](#the-gap)
+- [The verdict is three-valued](#the-verdict-is-three-valued)
+- [The monitor reports violations, not just a verdict](#the-monitor-reports-violations-not-just-a-verdict)
+- [What is online-friendly, and what is not](#what-is-online-friendly-and-what-is-not)
+- [Monitorability](#monitorability)
+- [End of stream](#end-of-stream)
+- [Dwyer scopes can make an unbounded operator bounded](#dwyer-scopes-can-make-an-unbounded-operator-bounded)
+- [Execution model: projected windows and a wait/yield operator](#execution-model-projected-windows-and-a-waityield-operator)
+- [What actually accumulates](#what-actually-accumulates)
+- [Shape](#shape)
+- [What does not fit yet, and is out of scope here](#what-does-not-fit-yet-and-is-out-of-scope-here)
+- [Relationship to the offline checker](#relationship-to-the-offline-checker)
+
 ## The gap
 
 Everything referee does today is *post-hoc*. `execute` and the AOT checkers

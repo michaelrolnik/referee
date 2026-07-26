@@ -18,6 +18,14 @@ else is reported the instant its prefix verdict turns false. The incremental
 evaluator, projection, segments, `wait`/`yield`/`refresh` and scopes remain the
 proposed work below.
 
+## Contents
+
+- [What it reuses, and what is new](#what-it-reuses-and-what-is-new)
+- [The pieces](#the-pieces)
+- [Build order](#build-order)
+- [Testing](#testing)
+- [Risks and open questions](#risks-and-open-questions)
+
 ## What it reuses, and what is new
 
 The monitor is a new front end over machinery that already exists, not a second

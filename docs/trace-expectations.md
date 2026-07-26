@@ -3,6 +3,18 @@
 **Status:** implemented — whole-trace and per-requirement expectations, multi-trace checking, named requirements and the suite manifest.
 **Scope:** `referee execute spec.ref --success good1.csv good2.csv --failure bad1.csv bad2.csv`, exiting 0 when every trace behaved as declared.
 
+## Contents
+
+- [The problem](#the-problem)
+- [Shape](#shape)
+  - [Why this needs multi-trace first](#why-this-needs-multi-trace-first)
+  - [CLI details worth settling](#cli-details-worth-settling)
+- [Granularity: the part that matters](#granularity-the-part-that-matters)
+  - [What was built](#what-was-built)
+- [Report](#report)
+- [Interaction with compiled checkers](#interaction-with-compiled-checkers)
+- [Open questions](#open-questions)
+
 ## The problem
 
 A specification is only as good as its ability to *reject* things. A requirement set that passes every trace it is shown may be correct, or may be vacuous — a requirement with a typo that makes it trivially true passes exactly as convincingly as one that holds.

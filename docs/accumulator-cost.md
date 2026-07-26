@@ -3,6 +3,16 @@
 **Status:** fixed for `Sum`, `Cnt` and `Itg`. All three fold in one pass.
 **Found:** by asking whether the O(N²) cost identified for run traces also applied to the compiled path. It does, for one family of operators.
 
+## Contents
+
+- [The measurement](#the-measurement)
+- [Scope: the windowed form is not affected](#scope-the-windowed-form-is-not-affected)
+- [The cause](#the-cause)
+- [The fix](#the-fix)
+  - [The windowed form is harder](#the-windowed-form-is-harder)
+- [Before rewriting: the boundaries are pinned](#before-rewriting-the-boundaries-are-pinned)
+- [Why it matters beyond speed](#why-it-matters-beyond-speed)
+
 ## The measurement
 
 Two requirements over the same traces, one using `Us` and one using `Cnt`:

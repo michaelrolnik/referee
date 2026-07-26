@@ -6,6 +6,17 @@ verdict, the shapes the code generator emits, the two backends (in-process JIT
 and ahead-of-time object), the on-disk trace format, and the online monitor
 built on top of all of it.
 
+## Contents
+
+- [The pipeline](#the-pipeline)
+- [Front end: source to typed AST](#front-end-source-to-typed-ast)
+- [Lowering to LLVM IR](#lowering-to-llvm-ir)
+  - [The state buffer](#the-state-buffer)
+- [Two backends](#two-backends)
+- [The trace format](#the-trace-format)
+- [The online monitor](#the-online-monitor)
+- [Components](#components)
+
 ## The pipeline
 
 ```mermaid

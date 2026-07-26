@@ -3,6 +3,29 @@
 **Status:** stages 1-3 built. A checker accepts `.rdb`, `.csv` and `.yaml`. Dropping the `--explain` companions from the object remains.
 **Scope:** `referee build spec.ref -o checker` producing a native executable that validates traces without compiling anything.
 
+## Contents
+
+- [What is built (stages 1 and 2)](#what-is-built-stages-1-and-2)
+- [The standalone executable (stage 3)](#the-standalone-executable-stage-3)
+- [CSV and YAML through a checker](#csv-and-yaml-through-a-checker)
+- [The problem](#the-problem)
+  - [Measured, before deciding anything](#measured-before-deciding-anything)
+  - [What remains after that](#what-remains-after-that)
+- [Shape](#shape)
+  - [1. An object file](#1-an-object-file)
+  - [2. A shared object](#2-a-shared-object)
+  - [3. A standalone executable](#3-a-standalone-executable)
+- [Why this is unusually cheap here](#why-this-is-unusually-cheap-here)
+- [What the executable contains](#what-the-executable-contains)
+  - [The requirement table](#the-requirement-table)
+  - [The embedded schema](#the-embedded-schema)
+- [Build pipeline](#build-pipeline)
+  - [The linking problem](#the-linking-problem)
+  - [Cross-compilation](#cross-compilation)
+- [What the checker accepts](#what-the-checker-accepts)
+- [Consequences worth stating](#consequences-worth-stating)
+- [Open questions](#open-questions)
+
 ## What is built (stages 1 and 2)
 
 ```bash

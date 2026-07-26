@@ -3,6 +3,28 @@
 **Status:** implemented, except where noted. `all` / `some` / `none` / `one`, `at least N` / `at most N` and the `.count` pseudo-member are in; load-sized arrays are in too. Only the per-state-varying case remains unbuilt.
 **Scope:** `all` / `some` / `none` / `one`, plus `at least N` / `at most N`, quantifying over the elements of an array.
 
+## Contents
+
+- [The problem](#the-problem)
+- [Syntax](#syntax)
+  - [Naming](#naming)
+  - [Binder forms](#binder-forms)
+  - [Multi-dimensional arrays](#multi-dimensional-arrays)
+- [Semantics](#semantics)
+  - [Why every form is boolean](#why-every-form-is-boolean)
+  - [Counting without combinatorial blow-up](#counting-without-combinatorial-blow-up)
+- [Interaction with the temporal layer: none](#interaction-with-the-temporal-layer-none)
+- [Implementation](#implementation)
+- [Interaction with arrays whose size is not in the `.ref`](#interaction-with-arrays-whose-size-is-not-in-the-ref)
+  - [Sized at load time — implemented](#sized-at-load-time--implemented)
+  - [Varying per state — a Pascal-string layout, and much cheaper than it looks](#varying-per-state--a-pascal-string-layout-and-much-cheaper-than-it-looks)
+- [Addressing an array's size from a requirement](#addressing-an-arrays-size-from-a-requirement)
+  - [The syntax already parses](#the-syntax-already-parses)
+  - [Choosing the name](#choosing-the-name)
+  - [Alternatives considered](#alternatives-considered)
+- [Explicitly out of scope](#explicitly-out-of-scope)
+- [Open questions](#open-questions)
+
 ## The problem
 
 REF has no way to say "for every element". Arrays are declared with a static size and indexed by an expression, but the size is a literal in the *type* and is not reachable as a value:
