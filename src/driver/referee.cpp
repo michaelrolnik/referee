@@ -4577,6 +4577,16 @@ bool    Referee::monitor(std::istream& refStream, std::string refName,
     std::istringstream  refForJit(refSrc);
     auto                js = buildJitFromRef(refForJit, refName, includePaths, Referee::Sizes{});
 
+    //  `buildJitFromRef`'s arena scope ended when it returned, so make this
+    //  module's arena current again for the rest of the monitor: classifying a
+    //  spec rewrites its pattern (`Rewrite::make`), which interns fresh AST nodes.
+    //  Without a current arena those land in the process-global (nullptr) bucket,
+    //  outlive this module, and -- once its arena is swept and the memory reused
+    //  -- collide by raw pointer with a later module, yielding a dangling node
+    //  ("bad type" on a garbage position). Bound to the module's arena, they are
+    //  keyed per module and die with it.
+    Arena::Scope        arenaScope(js.astOwner->arena);
+
     //  Which requirements are finalised only at end of stream (see above), keyed
     //  by the same label runOneTrace prints.  Dwyer specs all defer in phase 1.
     std::set<std::string>       deferred;

@@ -168,6 +168,15 @@ class TypeContext
     : public Visitable<TypeComposite, TypeContext>
 {
 public:
+    //  Types are interned process-globally because they are values -- `integer`
+    //  is `integer` forever. A context type is not: it holds a `Module*` and
+    //  means "the props of *this* module", so a global entry keyed by the module
+    //  pointer outlives the module and dangles the instant that address is reused
+    //  by the next compilation (a use-after-free surfacing as a garbage "bad
+    //  type"). Opting into the arena makes it die with its module, like the
+    //  expression nodes that reference it.
+    using factory_scoped = void;
+
     TypeContext(Module* module);
 
     Type*       member(std::string name) override;
