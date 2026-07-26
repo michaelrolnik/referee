@@ -4269,7 +4269,18 @@ bool    Referee::monitor(std::istream& refStream, std::string refName,
                 allAtoms = false;               //  not a single-state atom
                 break;
             }
-            auto*   e    = exprs[i];
+            auto*   e = exprs[i];
+
+            //  A bounded operator -- `F[a:b]`, `G[a:b]`, ... -- folds over a
+            //  `__time__` window, which the plain all/any latch cannot express:
+            //  `any` would settle on an event outside the deadline, `all` would
+            //  ignore one. Those take the prefix path, which respects the bound.
+            if (auto* t = dynamic_cast<Temporal<ExprUnary>*>(e); t != nullptr && t->time != nullptr)
+            {
+                allAtoms = false;
+                break;
+            }
+
             auto    fold = (dynamic_cast<ExprG*>(e) || dynamic_cast<ExprH*>(e)) ? FoldAll
                          : (dynamic_cast<ExprF*>(e) || dynamic_cast<ExprO*>(e)) ? FoldAny
                          :                                                        FoldFirst;

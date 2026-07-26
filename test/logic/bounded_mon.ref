@@ -1,0 +1,3 @@
+data x : integer;
+@deadline F[0:2000](x == 42);
+@cap G(x < 100);

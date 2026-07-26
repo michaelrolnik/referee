@@ -261,6 +261,37 @@ TEST(Rdb, MonitorPerStateAndStopAtFirst)
     }
 }
 
+// A bounded operator (`F[0:2000]`) folds over a __time__ window the atom
+// fast path's all/any latch cannot express -- `any` would settle on an event
+// past the deadline. So a spec carrying one must fall back to the prefix path
+// and agree with offline. Here `x == 42` arrives at t=5000, outside the
+// [0:2000] window, so the deadline is FAIL both ways (not a spurious PASS).
+TEST(Rdb, MonitorHandlesBoundedOperators)
+{
+    auto    refPath = std::string(REFEREE_TEST_DATA_DIR) + "/bounded_mon.ref";
+    auto    csvPath = std::string(REFEREE_TEST_DATA_DIR) + "/bounded_mon.csv";
+
+    auto    rdbPath = tmpFile("bounded");
+    referee::db::ingest(refPath, csvPath, /*conf=*/"", rdbPath);
+    std::ifstream       refA(refPath);
+    std::ostringstream  offOut;
+    bool                offline = Referee::executeRdb(refA, refPath, rdbPath, offOut);
+    std::remove(rdbPath.c_str());
+
+    std::ifstream       csvIn(csvPath);
+    std::stringstream   csvBuf;
+    csvBuf << csvIn.rdbuf();
+    std::istringstream  states(csvBuf.str());
+    std::ifstream       refB(refPath);
+    std::ostringstream  monOut;
+    bool                online = Referee::monitor(refB, refPath, states, "", monOut);
+
+    EXPECT_FALSE(offline) << offOut.str();                       // deadline missed
+    EXPECT_EQ(offline, online) << monOut.str();
+    //  the monitor did not settle the bounded deadline PASS on the late event
+    EXPECT_NE(monOut.str().find("FAIL  deadline"), std::string::npos) << monOut.str();
+}
+
 // The heavy one: the monitor must agree with the offline checker at *every*
 // prefix, not just at end of stream. Over a big generated trace, for each
 // prefix length k the first k rows are fed to both `executeRdb` and
