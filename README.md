@@ -33,9 +33,15 @@ In short: Referee connects human-readable requirement intent to executable verif
 
 **What is missing**
 
-- **Streaming / online ingestion.** `referee execute` currently materialises the whole trace before invoking the JIT functions (CSV/YAML are parsed top-to-bottom into per-state blobs; `.rdb` is read into a single buffer). A streaming driver that feeds records to the JIT-compiled requirement functions as they arrive (and reports violation locations live) is not implemented yet — the on-disk `.rdb` layout is already mmap-friendly, so this is a Reader-side change rather than a format change.
+- **Streaming / online monitoring.** `referee monitor spec.ref` reads states one CSV row at a time from stdin and checks every requirement as the trace unfolds, reporting a violation the instant an invariant breaks (rather than after the run). It reuses the same compiled requirement functions as `execute`; for a spec of invariants it takes an O(1)-per-state fast path via the single-state `__atom__` companions the code generator emits, and falls back to re-checking the prefix for anything else, so online and offline verdicts agree at every prefix. See *`referee monitor`* below, `examples/monitor/`, and `docs/monitor.md`.
 - **A fuller language server.** `referee-lsp` now provides live in-editor **diagnostics** (parse + type errors), **completion** (names in scope + keywords, narrowing to members after a `.`), **hover** (a name's declaration), **go-to-definition** (following `import`s across files), **document symbols** (the outline view), **find-references** (every use of a name, across imports), **rename** (rewrite a name and all its uses, across imports), and **signature help** (the parameters of the call you are typing, `func`s and `std::…` built-ins alike), wired into the VS Code extension — see *Language server (LSP)*. Find-references and rename are **type-aware**: a struct field or enum case is distinguished from a signal of the same name, and a field is matched only where the accessed value has its owning type. A full IDE feature set is in place.
 - **Product-specific model exporters/importers** to adapt arbitrary system logs into the canonical trace format.
+
+## Architecture
+
+The pipeline is: REF source → ANTLR4 parse → typed AST → semantic visitors (typecalc, rewrite, canonic, negated) → **LLVM IR** → O2 → either the in-process ORC JIT (`execute`, `monitor`) or an ahead-of-time object exporting the `referee_module` ABI (`build`). Independently, a trace (CSV/YAML) is ingested into a `.rdb` — a `state_t[]` buffer the compiled code reads directly. The code generator emits several function shapes per requirement (`(frst,last,conf)`, the per-state `__col__`/`__atom__` companions, `__prepare__`, the `referee_module` table).
+
+**[docs/architecture.md](docs/architecture.md)** is the full map — the pipeline, the function shapes and `state_t` layout, the JIT and AOT backends, the trace format, and the online monitor.
 
 ## Design rationale
 
@@ -865,7 +871,28 @@ The general recipe is:
 
 > **Every row must be complete.** Values are held between samples but *not* within a row: an empty cell reads as the type's zero rather than carrying forward from the row above, and does so silently. If your source only emits a signal when it changes, expand it into full rows before handing it to Referee. See *What a trace means between samples* above — it also covers why the spacing of your samples changes what unbounded operators like `Xs` mean.
 
-> **Limitation.** The driver currently reads the entire trace into memory and runs each requirement function across the whole trace. Streaming / online evaluation (consuming records as they arrive, reporting per-violation timestamps) is on the roadmap — see the *What is missing* section above.
+## `referee monitor` — check a trace online, as it streams
+
+Where `execute` waits for a finished trace, `monitor` checks one as it arrives: it reads states one CSV row at a time from stdin and evaluates every requirement as the trace unfolds, printing a violation the instant an invariant breaks.
+
+```bash
+producer | ./build/referee monitor spec.ref [--conf conf.csv] [--stop-at-first]
+```
+
+Input is the same CSV `execute` accepts — a header row, then one state per line — so a live producer pipes straight in, or you feed a file with `< trace.csv`. It speaks stdin/stdout, so a socket bridges with `nc` (`nc -l 9000 | referee monitor spec.ref`); no network code of its own.
+
+Per state it writes a line of three-valued verdicts, a column per requirement:
+
+```
+__time__=2000  never_overheat=?  heater_off_hot=?  reaches_comfort=PASS
+VIOLATION  heater_off_hot  @ __time__=5000  5000,90,true
+```
+
+A **safety** requirement (an invariant) reads `?` while it holds and `FAIL` the instant it breaks — with a `VIOLATION` line naming the offending state and its time. A **liveness** requirement (an eventually) reads `?` until it is met, then settles `PASS`, and is never mistaken for a violation while merely unmet; it is finalised at end of stream. Output is coloured on a terminal, plain when piped. `--stop-at-first` exits non-zero at the first violation, for a supervisor halting the system under test; otherwise a single pass collects every violation and the exit code reflects the end-of-stream result.
+
+Under the hood there are two routes over the *same* compiled code `execute` uses. When every requirement is a single-state atom — an invariant, a bare predicate, or an eventually — the monitor takes an **O(1)-per-state fast path**: it evaluates the `__atom__` companion the code generator emits on the one incoming state and folds the result into a per-requirement latch. Anything else — a bounded operator, a Dwyer scope, a computed signal, an `until` — falls back to re-checking the growing prefix. Either way the monitor's verdict agrees with `execute`'s at every prefix, which the tests pin.
+
+A runnable demo is in [`examples/monitor/`](examples/monitor/) (a thermostat plus a feeder script); the design is [`docs/monitor.md`](docs/monitor.md) and the build [`docs/monitor-implementation.md`](docs/monitor-implementation.md).
 
 ## Checking several traces
 
