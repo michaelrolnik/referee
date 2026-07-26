@@ -192,6 +192,26 @@ weak/strong flag the base value at the start, exactly as `O φ = true Ss φ` and
 nested under a `G` and as an antecedent, against `executeRdb` at every prefix.
 Still deferred: multi-step `Ys`, and bounded past.
 
+**Dwyer scopes — `globally`.** A pattern spec is a Dwyer *pattern* (universality,
+absence, existence, response, until, precedence, ...) under a *scope*
+(`globally`, `before R`, `after Q`, `between Q and R`, `after Q until R`,
+`while`). The pattern desugars to an LTL formula (`Rewrite`), and the scope
+restricts where it is checked. The `globally` scope is **built** on the fast path:
+the pattern applies over the whole trace, which is exactly a residual. Two pieces
+made it work. (1) The code generator now emits the `__atom__`/`__ap__` companions
+for *specs* too, not just expression requirements — the same `emitCompanions`
+helper, called on the scope body rewritten to a formula. (2) The monitor
+classifies each `SpecGlobally`, rewrites its body the identical way
+(`Rewrite::make`, which also canonicalises — so `always a` becomes `false Rw a`
+and the atoms are numbered alike on both sides), and builds a residual. Because
+the pattern rewrites into the fragment the residual evaluator already covers
+(`Rw`/`Us`/booleans/past), universality, absence, existence, response, until and
+past-precedence patterns all progress with no new code.
+`MonitorGloballyScopeAgreesAtEveryPrefix` pins all six shapes against
+`executeRdb` at every prefix. The other scopes — which need per-interval
+open/close state machines over the `__scopeA__`/`__scopeB__` boundary columns the
+generator already emits — remain on the prefix path.
+
 **Bounded operators.** A *top-level* bounded `F[lo:hi]` / `G[lo:hi]` over a state
 predicate is **built** on the fast path (`Referee::monitor`, the `BoundedF` /
 `BoundedG` kinds) — one window `[t0+lo, t0+hi)` in absolute `__time__`, anchored

@@ -3789,6 +3789,73 @@ void Compile::make(llvm::LLVMContext* context, llvm::Module* module, Module* ref
     auto    propPtrType = llvm::PointerType::get(*context, 0);
     module->getOrInsertGlobal("__prop__", propPtrType);
 
+    //  A single-state atom `__atom__<name>(curr, conf)`: the requirement's
+    //  per-state predicate, compiled to evaluate one state with no trace. It
+    //  exists when the requirement is that predicate directly (a non-temporal
+    //  requirement) or one ranging operator over it -- `G`, `F`, `H`, `O` --
+    //  whose body is non-temporal; an invariant `G(P)` yields `P`. `Xs`/`Ys` are
+    //  excluded -- they shift the state -- as is anything with a freeze.
+    auto    atomOf = [](Expr* e) -> Expr*
+    {
+        if(readsOnlyCurrent(e))     return e;
+        if(dynamic_cast<ExprG*>(e) || dynamic_cast<ExprF*>(e) ||
+           dynamic_cast<ExprH*>(e) || dynamic_cast<ExprO*>(e))
+            if(auto* u = dynamic_cast<ExprUnary*>(e); u && readsOnlyCurrent(u->arg))
+                return u->arg;
+        return nullptr;
+    };
+
+    //  Emit the single-state companions a monitor evaluates per state: `__atom__`
+    //  for a reducible requirement, else one `__ap__<k>__` per atomic proposition
+    //  (numbered by the same pre-order walk the monitor uses). Shared by the
+    //  expression and spec requirement loops -- a `globally` pattern's atoms are
+    //  the atoms of its rewritten body, so the spec loop calls this on that body.
+    auto    emitCompanions = [&](std::string const& funcName, Expr* reqExpr)
+    {
+        if(auto* atom = atomOf(reqExpr); atom != nullptr)
+        {
+            auto    atomTemp = Rewrite::make(atom);
+            TypeCalc::make(refmod, atomTemp);
+
+            auto    atomType = llvm::FunctionType::get(builder->getInt1Ty(),
+                                {propPtrType, confPtrType}, false);     //  (curr, conf)
+            auto    atomBody = llvm::Function::Create(atomType, llvm::Function::ExternalLinkage,
+                                "__atom__" + funcName, module);
+            auto    atomArg  = atomBody->args().begin();
+            atomArg->setName("curr"); atomArg++;
+            atomArg->setName("conf");
+
+            builder->SetInsertPoint(llvm::BasicBlock::Create(*context, "entry", atomBody));
+
+            CompileExprImpl compAtom(context, module, builder.get(), atomBody, refmod, propType, confType);
+            builder->CreateRet(compAtom.make(atomTemp));
+        }
+
+        if(atomOf(reqExpr) == nullptr && !containsFreeze(reqExpr))
+        {
+            std::vector<Expr*>  aps;
+            collectAPs(reqExpr, aps);
+            for(std::size_t k = 0; k < aps.size(); k++)
+            {
+                auto    apTemp = Rewrite::make(aps[k]);
+                TypeCalc::make(refmod, apTemp);
+
+                auto    apType = llvm::FunctionType::get(builder->getInt1Ty(),
+                                    {propPtrType, confPtrType}, false);
+                auto    apBody = llvm::Function::Create(apType, llvm::Function::ExternalLinkage,
+                                    "__ap__" + std::to_string(k) + "__" + funcName, module);
+                auto    apArg  = apBody->args().begin();
+                apArg->setName("curr"); apArg++;
+                apArg->setName("conf");
+
+                builder->SetInsertPoint(llvm::BasicBlock::Create(*context, "entry", apBody));
+
+                CompileExprImpl compAp(context, module, builder.get(), apBody, refmod, propType, confType);
+                builder->CreateRet(compAp.make(apTemp));
+            }
+        }
+    };
+
     auto    exprs   = refmod->getExprs();
     for(std::size_t ei = 0; ei < exprs.size(); ei++)
     {
@@ -3819,75 +3886,8 @@ void Compile::make(llvm::LLVMContext* context, llvm::Module* module, Module* ref
         compExpr.compileTemporalLoops(temp);
         builder->CreateRet(compExpr.make(temp));
 
-        //  A single-state atom `__atom__<name>(curr, conf)`: the requirement's
-        //  per-state predicate, compiled to evaluate one state with no trace.
-        //  It exists when the requirement is that predicate directly (a
-        //  non-temporal requirement) or one ranging operator over it -- `G`,
-        //  `F`, `H`, `O` -- whose body is non-temporal; an invariant `G(P)`
-        //  yields `P`. A monitor evaluates it per state instead of re-running
-        //  the whole trace: for an invariant, `P` false at any state is the
-        //  violation. `Xs`/`Ys` are excluded -- they shift the state, so their
-        //  body at `curr` is not what they mean -- as is anything with a freeze,
-        //  which needs the frozen state the atom does not carry.
-        auto    atomOf = [](Expr* e) -> Expr*
-        {
-            if(readsOnlyCurrent(e))     return e;
-            if(dynamic_cast<ExprG*>(e) || dynamic_cast<ExprF*>(e) ||
-               dynamic_cast<ExprH*>(e) || dynamic_cast<ExprO*>(e))
-                if(auto* u = dynamic_cast<ExprUnary*>(e); u && readsOnlyCurrent(u->arg))
-                    return u->arg;
-            return nullptr;
-        };
-
-        if(auto* atom = atomOf(expr); atom != nullptr)
-        {
-            auto    atomTemp = Rewrite::make(atom);
-            TypeCalc::make(refmod, atomTemp);
-
-            auto    atomType = llvm::FunctionType::get(builder->getInt1Ty(),
-                                {propPtrType, confPtrType}, false);     //  (curr, conf)
-            auto    atomBody = llvm::Function::Create(atomType, llvm::Function::ExternalLinkage,
-                                "__atom__" + funcName, module);
-            auto    atomArg  = atomBody->args().begin();
-            atomArg->setName("curr"); atomArg++;
-            atomArg->setName("conf");
-
-            builder->SetInsertPoint(llvm::BasicBlock::Create(*context, "entry", atomBody));
-
-            CompileExprImpl compAtom(context, module, builder.get(), atomBody, refmod, propType, confType);
-            builder->CreateRet(compAtom.make(atomTemp));
-        }
-
-        //  Atomic-proposition companions for progression. A nested future
-        //  formula (not a single-fold atom, no freeze) is evaluated online by
-        //  formula progression, which needs each of its atomic propositions --
-        //  `a` and `b` in `G(a => F b)` -- as its own single-state function.
-        //  Each maximal current-state subexpression gets a
-        //  `__ap__<k>__<name>(curr, conf)`, the same shape as `__atom__`,
-        //  numbered by the same pre-order walk the monitor will use.
-        if(atomOf(expr) == nullptr && !containsFreeze(expr))
-        {
-            std::vector<Expr*>  aps;
-            collectAPs(expr, aps);
-            for(std::size_t k = 0; k < aps.size(); k++)
-            {
-                auto    apTemp = Rewrite::make(aps[k]);
-                TypeCalc::make(refmod, apTemp);
-
-                auto    apType = llvm::FunctionType::get(builder->getInt1Ty(),
-                                    {propPtrType, confPtrType}, false);
-                auto    apBody = llvm::Function::Create(apType, llvm::Function::ExternalLinkage,
-                                    "__ap__" + std::to_string(k) + "__" + funcName, module);
-                auto    apArg  = apBody->args().begin();
-                apArg->setName("curr"); apArg++;
-                apArg->setName("conf");
-
-                builder->SetInsertPoint(llvm::BasicBlock::Create(*context, "entry", apBody));
-
-                CompileExprImpl compAp(context, module, builder.get(), apBody, refmod, propType, confType);
-                builder->CreateRet(compAp.make(apTemp));
-            }
-        }
+        //  Emit `__atom__` / `__ap__` companions the monitor evaluates per state.
+        emitCompanions(funcName, expr);
 
         //  A run trace names a requirement vacuous when its antecedent never
         //  fires: `G(a => b)` proves nothing about `b` on a trace where `a` is
@@ -4095,6 +4095,20 @@ void Compile::make(llvm::LLVMContext* context, llvm::Module* module, Module* ref
         CompileExprImpl compExpr(context, module, builder.get(), funcBody, refmod, propType, confType);
 
         builder->CreateRet(compExpr.make(spec));
+
+        //  Pattern companions for the monitor, exactly as for an expression
+        //  requirement: a scope's wrapped pattern, rewritten to a plain formula,
+        //  has the same atoms the monitor progresses. A scope wrapping another
+        //  scope has no plain pattern here (its body is itself a scope), so only
+        //  the simple scope-over-pattern shape gets companions; the rest stay on
+        //  the prefix path.
+        if(auto* scoped = dynamic_cast<SpecScoped*>(spec);
+           scoped != nullptr && dynamic_cast<SpecScoped*>(scoped->spec) == nullptr)
+        {
+            auto    pat = Rewrite::make(scoped->spec);
+            TypeCalc::make(refmod, pat);
+            emitCompanions(funcName, pat);
+        }
 
         //  A Dwyer pattern's scope decides where it is even checked, and a
         //  scope that never opens is the vacuity a run trace exists to show.

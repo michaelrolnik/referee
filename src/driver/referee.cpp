@@ -26,6 +26,7 @@
 #include "core/factory.hpp"
 #include "core/json.hpp"
 #include "core/colormod.hpp"
+#include "core/visitors/rewrite.hpp"
 
 #include <fmt/format.h>
 
@@ -4629,7 +4630,11 @@ bool    Referee::monitor(std::istream& refStream, std::string refName,
             int                 pslots = 0;     //  Residual: past-memory slots
         };
 
-        bool    allAtoms = js.astModule->getSpecs().empty();
+        //  A `globally`-scoped Dwyer pattern applies over the whole trace, so it
+        //  is just its pattern as a residual -- no scope window. Other scopes
+        //  (before/after/between/...) still take the prefix path. A computed
+        //  temporal prop cannot be materialised from one row, so it does too.
+        bool    allAtoms = true;
         for (auto const& name : js.astModule->getPropNames())
             if (js.astModule->isExprData(name)) { allAtoms = false; break; }
 
@@ -4686,6 +4691,47 @@ bool    Referee::monitor(std::istream& refStream, std::string refName,
             int                 pslots = 0;
             std::vector<PPtr>   pasts;
             RPtr                tmpl = buildResidual(e, apc, pslots, pasts);
+            if (tmpl)
+            {
+                std::vector<AtomFn>     aps;
+                bool                    ok = true;
+                for (int k = 0; k < apc; k++)
+                {
+                    auto    sym = js.jit->lookup("__ap__" + std::to_string(k) + "__" + label);
+                    if (!sym)   { llvm::consumeError(sym.takeError()); ok = false; break; }
+                    aps.push_back((*sym).toPtr<AtomFn>());
+                }
+                if (ok)
+                {
+                    atomReqs.push_back({label, Residual, nullptr, 0, 0, tmpl,
+                                        std::move(aps), std::move(pasts), pslots});
+                    continue;
+                }
+            }
+            allAtoms = false;
+            break;
+        }
+
+        //  Dwyer-pattern specs. Only `globally` is incremental so far: its
+        //  pattern applies over the whole trace, exactly what a residual is. The
+        //  pattern is the scope's body rewritten (and canonicalised, as the
+        //  compiler did when emitting its `__ap__` companions), so `buildResidual`
+        //  sees the same `Rw`/`Us`/... form and numbers the atoms alike. Any other
+        //  scope, or a pattern outside the progressable fragment, drops the whole
+        //  spec set to the prefix path.
+        auto&   specs = js.astModule->getSpecs();
+        for (std::size_t i = 0; allAtoms && i < specs.size(); i++)
+        {
+            auto    label = js.astModule->getSpecName(i);
+            if (label.empty())  label = specs[i]->where().text();
+
+            auto*   glob = dynamic_cast<SpecGlobally*>(specs[i]);
+            if (glob == nullptr)    { allAtoms = false; break; }        //  a real scope -> prefix path
+
+            int                 apc    = 0;
+            int                 pslots = 0;
+            std::vector<PPtr>   pasts;
+            RPtr                tmpl = buildResidual(Rewrite::make(glob->spec), apc, pslots, pasts);
             if (tmpl)
             {
                 std::vector<AtomFn>     aps;

@@ -845,6 +845,73 @@ TEST(Rdb, MonitorSinceTriggerAgreesAtEveryPrefix)
     }
 }
 
+// A `globally`-scoped Dwyer pattern applies over the whole trace, so it is just
+// its pattern as a residual -- the first scope wired to the incremental path.
+// The compiler now emits the pattern's `__ap__` companions (as for an expression
+// requirement), and the monitor rewrites the scope body the same way, so the
+// atoms line up. Every one of these pattern shapes -- universality, absence,
+// existence, response, until, and a past precedence -- must agree with the
+// offline checker at EVERY prefix. Other scopes still take the prefix path.
+TEST(Rdb, MonitorGloballyScopeAgreesAtEveryPrefix)
+{
+    constexpr int   N = 26;
+
+    std::string                 header = "__time__,a,b";
+    std::vector<std::string>    rows;
+    for (int k = 0; k < N; k++)
+    {
+        bool    a = (k % 3) != 1;
+        bool    b = (k % 4) == 2;
+        rows.push_back(std::to_string(k * 1000) + "," + (a ? "true" : "false")
+                     + "," + (b ? "true" : "false"));
+    }
+
+    char const* specs[] = {
+        "data a:boolean;\ndata b:boolean;\nglobally, it is always the case that a holds;\n",
+        "data a:boolean;\ndata b:boolean;\nglobally, it is never the case that a holds;\n",
+        "data a:boolean;\ndata b:boolean;\nglobally, a eventually holds;\n",
+        "data a:boolean;\ndata b:boolean;\nglobally, b eventually holds;\n",
+        "data a:boolean;\ndata b:boolean;\nglobally, if a has occurred, then in response b eventually holds;\n",
+        "data a:boolean;\ndata b:boolean;\nglobally, a holds without interruption until b holds;\n",
+        "data a:boolean;\ndata b:boolean;\nglobally, if a holds, then it must have been the case that b has occurred before it;\n",
+    };
+
+    for (auto const* spec : specs)
+    {
+        auto    refPath = tmpFile("glob") + ".ref";
+        { std::ofstream f(refPath); f << spec; }
+
+        for (int k = 1; k <= N; k++)
+        {
+            std::string     csv = header;
+            for (int j = 0; j < k; j++)  csv += "\n" + rows[j];
+
+            auto            csvPath = tmpFile("glob-csv") + ".csv";
+            { std::ofstream f(csvPath); f << csv << "\n"; }
+
+            auto                rdbPath = tmpFile("glob-rdb");
+            referee::db::ingest(refPath, csvPath, /*conf=*/"", rdbPath);
+            std::ifstream       refA(refPath);
+            std::ostringstream  offOut;
+            bool                offline = Referee::executeRdb(refA, refPath, rdbPath, offOut);
+
+            std::istringstream  states(csv);
+            std::ifstream       refB(refPath);
+            std::ostringstream  monOut;
+            bool                online = Referee::monitor(refB, refPath, states, "", monOut);
+
+            std::remove(rdbPath.c_str());
+            std::remove(csvPath.c_str());
+
+            ASSERT_EQ(offline, online)
+                << "globally scope disagree at prefix " << k << " of " << N
+                << "\nspec:\n" << spec
+                << "\noffline:\n" << offOut.str() << "\nmonitor:\n" << monOut.str();
+        }
+        std::remove(refPath.c_str());
+    }
+}
+
 // The atom fast path (all requirements single-state atoms: invariants and an
 // eventually) must agree with the offline checker. This exercises the O(1)
 // per-state route -- ingest one row, call `__atom__`, fold a latch -- rather
