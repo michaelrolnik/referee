@@ -26,8 +26,11 @@ unambiguously, in a form suitable for automated checking.
 
 ## Language & semantics
 
+- [The REF language](language.md) — the whole surface syntax: statements, declarations, types, operators, temporal operators, specification patterns
 - [Bounded quantifiers](quantifiers.md) — quantification over arrays
+- [Ragged arrays](ragged-arrays.md) — `T[]`, whose extent comes from the trace
 - [External functions](external-functions.md) — calling out from REF
+- [References](references.md) — the temporal-logic and pattern literature behind it
 
 ## Traces
 
@@ -37,12 +40,7 @@ unambiguously, in a form suitable for automated checking.
 
 ## Implementation notes
 
-- [Ragged arrays](ragged-arrays.md) — `{count, T[]}` per row
 - [Accumulator cost](accumulator-cost.md) — why accumulators go quadratic under a temporal scope
 - [Signal-node leak](signal-node-leak.md) — a bug: AST signal nodes leaking between specifications
-
-## Reference
-
-- [References](references.md)
 
 Source: [github.com/michaelrolnik/referee](https://github.com/michaelrolnik/referee)

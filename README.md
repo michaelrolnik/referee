@@ -103,6 +103,7 @@ Everything under `docs/`:
 
 - **[architecture.md](docs/architecture.md)** — the whole pipeline (parse → AST → LLVM → JIT/AOT), the per-requirement function shapes, the `state_t` layout, the trace format, and the monitor.
 - **Language & semantics**
+  - [language.md](docs/language.md) — the whole surface syntax in one place: statements, declarations, types, operators, temporal operators, specification patterns.
   - [references.md](docs/references.md) — the temporal-logic and specification-pattern literature the language is built on.
   - [quantifiers.md](docs/quantifiers.md) — bounded quantifiers over array elements.
   - [ragged-arrays.md](docs/ragged-arrays.md) — unbounded `T[]` arrays that carry their own length.
