@@ -4787,14 +4787,17 @@ bool    Referee::monitor(std::istream& refStream, std::string refName,
             break;
         }
 
-        //  Dwyer-pattern specs. `globally` (whole trace), `before R` and
-        //  `after Q` are incremental; their pattern is the scope body rewritten
-        //  (and canonicalised, as the compiler did when emitting its `__ap__`
-        //  companions), so `buildResidual` sees the same `Rw`/`Us`/... form and
-        //  numbers the atoms alike. A scope's boundary is one of the
-        //  `__scope*__<name>` column functions the generator emits; the monitor
-        //  folds the interval out of it. `between`/`after-until`/`while` (multi
-        //  interval) and any pattern outside the fragment drop to the prefix path.
+        //  Dwyer-pattern specs. Every scope is incremental -- `globally` over
+        //  the whole trace, `before R` and `after Q` over one interval, and
+        //  `between`/`after-until`/`while` over a run of them. The pattern is
+        //  the scope body rewritten (and canonicalised, as the compiler did
+        //  when emitting its `__ap__` companions), so `buildResidual` sees the
+        //  same `Rw`/`Us`/... form and numbers the atoms alike. A scope's
+        //  boundary is one of the `__scope*__<name>` column functions the
+        //  generator emits; the monitor folds the intervals out of it. What
+        //  still drops to the prefix path: a pattern outside the residual
+        //  fragment, and a past-bearing one under any scope that restarts
+        //  (`pastOK` below).
         auto&   specs = js.astModule->getSpecs();
         for (std::size_t i = 0; allAtoms && i < specs.size(); i++)
         {
@@ -4813,8 +4816,6 @@ bool    Referee::monitor(std::istream& refStream, std::string refName,
             else if (sc->kind == "after_until") scope = ScAfterUntil;
             else if (sc->kind == "while")       scope = ScWhile;
             else    { allAtoms = false; break; }
-
-            bool    multi = scope == ScBetween || scope == ScAfterUntil || scope == ScWhile;
 
             int                 apc    = 0;
             int                 pslots = 0;
