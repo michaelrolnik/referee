@@ -210,9 +210,6 @@ public:
     std::any visitNoTimeBound(              referee::refereeParser::NoTimeBoundContext*             ctx) override;
 
 private:
-    void    assert_non_temporal(Expr* expr);
-
-private:
     template<typename Type, typename Ctxt>
     std::any    acceptTernary(Ctxt* ctxt);
 

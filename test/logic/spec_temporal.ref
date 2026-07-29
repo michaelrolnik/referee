@@ -1,0 +1,109 @@
+# A temporal operator inside a Dwyer pattern.
+#
+# Pattern operands used to have to be state formulas: `O(...)` in a body was
+# rejected outright, while `Xs`/`Ys` were let through, so a one-step lookback
+# compiled and an unbounded one did not. Both are allowed now, and the lowering
+# decides where the operator is evaluated: under `globally` a pattern spans the
+# whole trace and the operator is buffered as usual, while inside a scope the
+# body is re-evaluated over each segment and the operator reads only that
+# segment.
+#
+# The trace is 26 states, state k having only the k-th letter true, so `a`
+# holds exactly at the first state and `z` exactly at the last. Every
+# requirement below must hold.
+
+data    a:  boolean;
+data    b:  boolean;
+data    c:  boolean;
+data    d:  boolean;
+data    e:  boolean;
+data    f:  boolean;
+data    g:  boolean;
+data    h:  boolean;
+data    i:  boolean;
+data    j:  boolean;
+data    k:  boolean;
+data    l:  boolean;
+data    m:  boolean;
+data    n:  boolean;
+data    o:  boolean;
+data    p:  boolean;
+data    q:  boolean;
+data    r:  boolean;
+data    s:  boolean;
+data    t:  boolean;
+data    u:  boolean;
+data    v:  boolean;
+data    w:  boolean;
+data    x:  boolean;
+data    y:  boolean;
+data    z:  boolean;
+
+#   Whole trace: `a` is the first state, so it is in the past of every state.
+@glob_once
+globally, it is always the case that O(a) holds;
+
+#   `b` is false at the first state, so "b has always held" is false everywhere.
+@glob_hist
+globally, it is never the case that H(b) holds;
+
+#   Every state has `z` either ahead of it or behind it.
+@glob_fut
+globally, it is always the case that F(z) || O(z) holds;
+
+#   A temporal operand in a response, not just in a universality body.
+@glob_response
+globally, if b, then in response O(a) eventually holds;
+
+#   An accumulator is a temporal operand too: from any state, at least one
+#   state remains to be counted.
+@glob_count
+globally, it is always the case that Cnt(true) >= 1 holds;
+
+#   The step operators stay as they were -- `z` is the last state, so no state
+#   has it as its predecessor.
+@glob_step
+globally, it is never the case that Ys(z) holds;
+
+#   Scoped: the operator sees the segment, not the trace. `a` is at the first
+#   state, which is outside every segment below, so a whole-trace `O(a)` would
+#   be true at each of them and the segment-relative one is false.
+@after_once
+after c, it is never the case that O(a) holds;
+
+@after_hist
+after c, it is always the case that H(!a) holds;
+
+#   A future operator under a scope whose segment runs to the end of the trace.
+@after_fut
+after c, z eventually holds;
+
+#   `before` opens at the start of the trace, so `a` *is* in this segment.
+@before_once
+before c, it is always the case that O(a) holds;
+
+#   A `between` segment opens at `c`, which is therefore in its own past.
+@between_once
+between c and e, it is always the case that O(c) holds;
+
+@between_none
+between c and e, it is never the case that O(a) holds;
+
+#   An accumulator inside a segment counts only the segment's states.
+@between_count
+between c and e, it is always the case that Cnt(a) == 0 holds;
+
+@while_once
+while c, it is always the case that O(c) holds;
+
+@after_until_none
+after c until e, it is never the case that O(a) holds;
+
+#   Nested scopes: the innermost segment is what the operator reads.
+@nested
+after c, between d and f, it is never the case that O(a) holds;
+
+#   A `before` nested inside another scope: it pushes the segment's `last`, and
+#   used to pop the enclosing one along with it.
+@nested_before
+after c, before f, it is never the case that O(a) holds;

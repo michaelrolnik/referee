@@ -333,3 +333,12 @@ TEST_F(LogicTest, Fail)
 {
     runRefFile(std::string(REFEREE_TEST_DATA_DIR) + "/fail.ref", false);
 }
+
+//  A temporal operator is legal in a specification pattern's operands. Under
+//  `globally` it spans the whole trace, exactly as the equivalent formula
+//  does; inside a scope it reads only the segment the scope opened, which is
+//  what the file's `after`/`between`/`while` cases pin down.
+TEST_F(LogicTest, SpecTemporal)
+{
+    runRefFile(std::string(REFEREE_TEST_DATA_DIR) + "/spec_temporal.ref", true);
+}

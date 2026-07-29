@@ -568,6 +568,8 @@ after lock.ON, if lock.OFF, then it must have been the case that button.DEPRESSE
 
 Each of these lines compiles to a boolean-valued function over the trace; the runtime asserts that every such function returns `true` for every valid trace of the system.
 
+**A pattern's operands may be temporal.** `P`, `S`, `T` and the scope conditions are ordinary expressions, so `O(...)`, `F(...)`, `Us(...)` and the accumulators are all allowed in them — and what the scope changes is which states such an operator sees. Under `globally` (or with no scope) it spans the whole trace, exactly as the formula the pattern desugars to. Under `before` / `after` / `while` / `between … and …` / `after … until …` the body is re-evaluated over each segment the scope opens, and the operator reads only that segment: `after c, it is never the case that O(a) holds;` asks whether `a` occurred *since `c`*, not anywhere in the trace. To get the whole-trace reading inside a scope, name the sub-formula as a computed signal (`data seen_a = O(a);`) and use that instead — which also keeps it linear, since a scoped operator falls back to the O(N²) scan. See `docs/language.md`.
+
 ### Evaluation Model
 
 A REF program does not describe a computation that produces outputs; it describes **predicates over a trace**. The compiler and runtime together work as follows.
@@ -668,6 +670,7 @@ in the trace length has been.
 | `Sum` `Cnt` `Itg`, unbounded | O(N) each | one backward fold, the same recurrence weighted by value / one / duration |
 | the same, **windowed** `[lo:hi]` | O(N × w) | linear in the trace, `w` = states per window |
 | freeze `t@(…)` with a temporal body | O(N²) for that subtree | the frozen state is a different binding at each evaluation point, so it cannot be buffered |
+| a temporal operator inside a **scoped** pattern (`before`, `after`, `while`, `between`, `after … until`) | O(N²) for that subtree | the segment bounds are loop values, so the operator is evaluated per segment by the scan rather than buffered once; under `globally` it is buffered as usual |
 | quantifier over `T[N]` (sized) | compile-time | expands to conjunction / disjunction / indicator sum; no runtime cost |
 | quantifier over `T[]` (unbounded) | O(length) per state | a runtime loop; under `G`, O(N × length) |
 | array index / slice / `.count` | O(1) | a load and, for an index, a bounds check LLVM often proves away |

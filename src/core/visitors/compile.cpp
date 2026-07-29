@@ -480,6 +480,15 @@ struct CompileExprImpl
     //  function (see __prepare__) must drop them between nests.
     void            resetTemporalBuffers()  {m_temporalBuffers.clear(); m_accumBuffers.clear();}
 
+    //  Nesting depth in a scope that walks segments of the trace -- `before`,
+    //  `after`, `while`, `between .. and ..`, `after .. until ..`. Nonzero
+    //  means the body being compiled is evaluated over a segment whose bounds
+    //  are loop values, so the buffered O(N) lowering (built once, keyed on
+    //  the state index of the *whole* trace) does not apply and the operator
+    //  takes its scan path instead. `globally` does not count: it is a
+    //  pass-through over the same bounds the requirement function was given.
+    int             m_scoped    = 0;
+
     std::vector<llvm::Value*>   m_frst;
     std::vector<llvm::Value*>   m_last;
     std::vector<llvm::Value*>   m_curr;
@@ -2555,7 +2564,13 @@ void    CompileExprImpl::visit(Spec*             spec)
     auto    expr    = Rewrite::make(spec);
     TypeCalc::make(m_refmod, expr);
 
-    compileTemporalLoops(expr);
+    //  Buffer the unbounded operators only when this pattern spans the whole
+    //  trace. Inside a scope the body is re-evaluated over each segment, and a
+    //  buffer is built once, before the segment is known -- so a scoped body
+    //  stays on the scan, which reads `m_frst`/`m_last` and is therefore
+    //  segment-relative by construction. See `m_scoped`.
+    if(m_scoped == 0)
+        compileTemporalLoops(expr);
 
     m_value = make(expr);
 }
@@ -2620,8 +2635,14 @@ void    CompileExprImpl::visit(SpecBefore*       spec)
     m_builder->SetInsertPoint(bbBodyHi);
     m_curr.push_back(curr0);
     m_last.push_back(curr);
+    m_scoped++;
     auto    body    = make(spec->spec);
-    m_last.pop_back();
+    m_scoped--;
+    //  Pop what was pushed: `m_curr` then `m_last`. This used to pop `m_last`
+    //  twice, which left the body's `curr0` on `m_curr` and took the enclosing
+    //  `last` off with it -- harmless only as long as nothing after the body
+    //  read either stack.
+    m_curr.pop_back();
     m_last.pop_back();
     bbBodyLo    = m_builder->GetInsertBlock();
     m_builder->CreateBr(bbTail);
@@ -2701,7 +2722,9 @@ void    CompileExprImpl::visit(SpecAfter*        spec)
     m_builder->SetInsertPoint(bbBodyHi);
     m_frst.push_back(getPrev(curr));
     m_curr.push_back(curr);
+    m_scoped++;
     auto    body    = make(spec->spec);
+    m_scoped--;
     m_curr.pop_back();
     m_frst.pop_back();
     bbBodyLo    = m_builder->GetInsertBlock();
@@ -2792,7 +2815,9 @@ void    CompileExprImpl::visit(SpecBetweenAnd*   spec)
     m_frst.push_back(bodyInnerFrst);
     m_last.push_back(bodyInnerLast);
     m_curr.push_back(getNext(m_frst.back()));
+    m_scoped++;
     auto    body        = make(spec->spec);
+    m_scoped--;
     m_curr.pop_back();
     m_frst.pop_back();
     m_last.pop_back();
@@ -2905,7 +2930,9 @@ void    CompileExprImpl::visit(SpecAfterUntil*   spec)
     m_frst.push_back(innerFrst1);
     m_last.push_back(innerLast);
     m_curr.push_back(getNext(innerFrst1));
+    m_scoped++;
     auto    body        = make(spec->spec);
+    m_scoped--;
     m_curr.pop_back();
     m_frst.pop_back();
     m_last.pop_back();

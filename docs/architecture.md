@@ -63,7 +63,13 @@ with it. A set of visitors then operate on the AST:
 
 `src/core/visitors/compile.cpp` (`Compile::make`) lowers the AST to an LLVM
 module. Temporal operators are lowered to **linear passes** over the trace
-(a buffered O(N) fold), not the naive nested scan. The module the code
+(a buffered O(N) fold), not the naive nested scan. Two contexts opt out and take
+the scan instead, because a buffer keyed on the state index of the whole trace
+does not answer their question: the body of a freeze (`t@(…)`), whose operators
+mean something different at each evaluation point, and the body of a Dwyer
+*scope* (`before`, `after`, `while`, `between … and …`, `after … until …`),
+which is re-evaluated over each segment the scope opens and must read only that
+segment. The module the code
 generator emits carries, per requirement, several functions distinguished by
 arity and name prefix:
 

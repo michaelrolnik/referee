@@ -101,7 +101,10 @@ data next_both = Xs(both);    // computed signals may build on each other
 ```
 
 The type is inferred. A computed signal is evaluated once per state for the whole
-trace, so a sub-formula used by ten requirements costs one pass, not ten. Two
+trace, so a sub-formula used by ten requirements costs one pass, not ten — which
+is also how a temporal operator keeps its whole-trace meaning, and its linear
+cost, inside a scoped specification pattern (see
+[Temporal operators in a pattern](#temporal-operators-in-a-pattern)). Two
 consequences: **declaration order matters** (no forward or circular references),
 and computed signals are **not stored in `.rdb` files** — they are a property of
 the specification, recomputed from the `.ref` at run time.
@@ -360,6 +363,52 @@ after lock.ON, if door.OPENED, then it must have been the case that lock.OFF has
 Each such line compiles to the same kind of boolean-valued function over the
 trace as a raw formula does; the patterns are surface syntax for the temporal
 logic, not a separate mechanism.
+
+### Temporal operators in a pattern
+
+A pattern's operands — the `P`, `S`, `T` and `Z` above — may be any expression,
+temporal operators included, and so may the expressions in a scope. What changes
+with the scope is *which states the operator sees*.
+
+Under `globally`, or with no scope at all, a pattern body spans the whole trace
+and behaves exactly like the formula it desugars to:
+
+```text
+globally, it is never the case that O(a) && !b;   // same as G(!(O(a) && !b))
+```
+
+Under a scope — `before`, `after`, `while`, `between … and …`, `after … until …`
+— the body is re-evaluated over each segment the scope opens, and a temporal
+operator in it **reads only that segment**. `O(...)` looks back no further than
+the segment's first state, `F(...)` no further than its last, and an accumulator
+totals the segment's states:
+
+```text
+after c, it is never the case that O(a) holds;
+```
+
+That holds on a trace where `a` occurs only before `c` — the segment starts at
+`c`, so `a` is not in its past. Read the scope as choosing the stretch of trace
+the pattern is about; the body then means over that stretch what it would mean
+over a whole trace of the same shape. `Xs`/`Ys`/`Xw`/`Yw` have always worked
+this way, and the unbounded operators now agree with them.
+
+**Cost.** A temporal operator directly under `globally` is buffered as usual and
+stays O(N) (see [Accumulator cost](accumulator-cost.md) for the accumulators'
+exception). Inside a scope it cannot be — the segment bounds are not known until
+the scope loop runs — so it falls back to the scan, which is O(N²) for that
+subtree. Where the whole-trace reading is what you meant anyway, naming the
+sub-formula as a computed signal keeps it linear and reads better:
+
+```text
+data seen_a = O(a);
+
+after c, it is never the case that seen_a holds;   // `a` anywhere in the trace
+```
+
+Note the two spellings mean different things: the scoped `O(a)` above asks
+whether `a` occurred since the scope opened, `seen_a` whether it occurred at
+all.
 
 ## What a trace means between samples
 
