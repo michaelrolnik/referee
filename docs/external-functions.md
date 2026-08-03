@@ -1,3 +1,7 @@
+---
+title: External functions
+---
+
 # Design: external functions
 
 **Status:** built -- `func` declarations, `referee header`/`--stub`, `-L` loading, overloading, slices, the whole-state form. Kept as the design record.

@@ -1,3 +1,7 @@
+---
+title: Online monitoring
+---
+
 # Design: online monitoring — a verdict as the trace unfolds
 
 **Status:** phase 1 built — `referee monitor spec.ref` streams CSV states from

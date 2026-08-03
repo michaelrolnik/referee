@@ -1,3 +1,7 @@
+---
+title: Run traces
+---
+
 # Design: run traces, and why they are mostly not about failures
 
 **Status:** built, except `quantifier_empty` vacuity and the bottom-up column evaluator. Header, signal and requirement lines are written; bare requirements carry their own per-state column plus subexpression rows; Dwyer patterns carry verdict, scope intervals and scope vacuity; implication vacuity is computed.

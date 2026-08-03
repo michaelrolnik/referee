@@ -1,3 +1,7 @@
+---
+title: Accumulator cost
+---
+
 # Accumulators are quadratic under a temporal scope
 
 **Status:** fixed for `Sum`, `Cnt` and `Itg`. All three fold in one pass.

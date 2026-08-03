@@ -1,3 +1,7 @@
+---
+title: Trace expectations
+---
+
 # Design: trace expectations
 
 **Status:** implemented — whole-trace and per-requirement expectations, multi-trace checking, named requirements and the suite manifest.

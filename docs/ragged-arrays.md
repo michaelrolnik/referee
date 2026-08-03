@@ -1,3 +1,7 @@
+---
+title: Ragged arrays
+---
+
 # Ragged arrays: `{count, T[]}` per row
 
 **Status:** built and merged to main. `T[]` means unbounded: the loader

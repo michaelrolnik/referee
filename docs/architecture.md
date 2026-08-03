@@ -1,3 +1,7 @@
+---
+title: Architecture
+---
+
 # Architecture
 
 Referee compiles a requirement specification (the REF language) to native code

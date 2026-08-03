@@ -1,3 +1,7 @@
+---
+title: Monitor implementation
+---
+
 # Building the monitor — an implementation plan
 
 **Status:** phase 1 built; the rest proposed. Companion to

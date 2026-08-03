@@ -1,3 +1,7 @@
+---
+title: Bounded quantifiers
+---
+
 # Design: bounded quantifiers over arrays
 
 **Status:** implemented, except where noted. `all` / `some` / `none` / `one`, `at least N` / `at most N` and the `.count` pseudo-member are in; load-sized arrays are in too. Only the per-state-varying case remains unbuilt.

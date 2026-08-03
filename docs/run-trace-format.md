@@ -1,3 +1,7 @@
+---
+title: Run trace format
+---
+
 # Run trace format
 
 **Status:** implemented and enforced -- the producer validates against `schema/run-trace.schema.json`, and the CLI test runs the validator. `witnesses` on temporal rows are optional (derived on demand; omitted today).

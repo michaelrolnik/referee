@@ -1,3 +1,7 @@
+---
+title: References
+---
+
 # References
 
 The logics and formalisms REF draws on, with the primary sources for each. The

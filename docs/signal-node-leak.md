@@ -1,3 +1,7 @@
+---
+title: Signal node leak
+---
+
 # Bug: AST signal nodes leak between specifications
 
 **Status:** FIXED. Kept as the record of what the bug was, why it survived, and how it was resolved.
