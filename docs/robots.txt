@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://michaelrolnik.github.io/referee/sitemap.xml

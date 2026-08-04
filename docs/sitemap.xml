@@ -1,18 +1,14 @@
+---
+# Front matter (even empty) is required so Jekyll renders the Liquid below.
+---
 <?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-  <url><loc>https://michaelrolnik.github.io/referee/</loc><lastmod>2026-08-03</lastmod><changefreq>monthly</changefreq><priority>1.0</priority></url>
-  <url><loc>https://michaelrolnik.github.io/referee/language.html</loc><lastmod>2026-08-03</lastmod><changefreq>monthly</changefreq><priority>0.7</priority></url>
-  <url><loc>https://michaelrolnik.github.io/referee/native-checkers.html</loc><lastmod>2026-08-03</lastmod><changefreq>monthly</changefreq><priority>0.7</priority></url>
-  <url><loc>https://michaelrolnik.github.io/referee/accumulator-cost.html</loc><lastmod>2026-08-03</lastmod><changefreq>monthly</changefreq><priority>0.7</priority></url>
-  <url><loc>https://michaelrolnik.github.io/referee/architecture.html</loc><lastmod>2026-08-03</lastmod><changefreq>monthly</changefreq><priority>0.7</priority></url>
-  <url><loc>https://michaelrolnik.github.io/referee/external-functions.html</loc><lastmod>2026-08-03</lastmod><changefreq>monthly</changefreq><priority>0.7</priority></url>
-  <url><loc>https://michaelrolnik.github.io/referee/monitor.html</loc><lastmod>2026-08-03</lastmod><changefreq>monthly</changefreq><priority>0.7</priority></url>
-  <url><loc>https://michaelrolnik.github.io/referee/monitor-implementation.html</loc><lastmod>2026-08-03</lastmod><changefreq>monthly</changefreq><priority>0.7</priority></url>
-  <url><loc>https://michaelrolnik.github.io/referee/quantifiers.html</loc><lastmod>2026-08-03</lastmod><changefreq>monthly</changefreq><priority>0.7</priority></url>
-  <url><loc>https://michaelrolnik.github.io/referee/ragged-arrays.html</loc><lastmod>2026-08-03</lastmod><changefreq>monthly</changefreq><priority>0.7</priority></url>
-  <url><loc>https://michaelrolnik.github.io/referee/references.html</loc><lastmod>2026-08-03</lastmod><changefreq>monthly</changefreq><priority>0.7</priority></url>
-  <url><loc>https://michaelrolnik.github.io/referee/run-trace-format.html</loc><lastmod>2026-08-03</lastmod><changefreq>monthly</changefreq><priority>0.7</priority></url>
-  <url><loc>https://michaelrolnik.github.io/referee/run-traces.html</loc><lastmod>2026-08-03</lastmod><changefreq>monthly</changefreq><priority>0.7</priority></url>
-  <url><loc>https://michaelrolnik.github.io/referee/signal-node-leak.html</loc><lastmod>2026-08-03</lastmod><changefreq>monthly</changefreq><priority>0.7</priority></url>
-  <url><loc>https://michaelrolnik.github.io/referee/trace-expectations.html</loc><lastmod>2026-08-03</lastmod><changefreq>monthly</changefreq><priority>0.7</priority></url>
+{%- for page in site.html_pages -%}
+{%- if page.sitemap != false and page.url != '/404.html' %}
+  <url>
+    <loc>{{ page.url | absolute_url }}</loc>
+    <lastmod>{{ site.time | date_to_xmlschema }}</lastmod>
+  </url>
+{%- endif -%}
+{%- endfor %}
 </urlset>
