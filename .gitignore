@@ -1,6 +1,7 @@
 build*/
 **/.DS_Store
 **/._*
+/HANDOFF.md
 .idea
 .vscode
 node_modules/
