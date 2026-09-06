@@ -1,9 +1,9 @@
 ---
-title: Specification patterns
+title: "Dwyer specification patterns in REF"
 description: "Dwyer specification patterns and the real-time PSP catalogue as a compiled DSL — absence, existence, universality, response, precedence, duration and recurrence, across five scopes, lowered to LLVM IR and checked over traces."
 ---
 
-# Specification patterns
+# Dwyer specification patterns in REF
 
 Referee's pattern language is an executable implementation of the property
 specification patterns literature. You write a requirement in structured English;

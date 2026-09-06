@@ -5,15 +5,25 @@ description: "Referee (REF) — a runtime-verification language and compiler: wr
 
 # Referee
 
-**Referee** is a C++ compiler toolchain for the **REF** language — built to make
-formal requirement verification practical for real systems. It parses REF source
-with ANTLR4, builds an AST, and lowers programs to optimized LLVM IR, so
-human-readable requirement intent compiles to executable checkers that run
-**online over traces and logs**.
+Write a behavioural requirement in structured English, and Referee compiles it to a checker:
 
-The language is inspired by temporal-logic verification (LTL/TPTL-style reasoning
-and requirement patterns), aimed at expressing behavioral constraints clearly and
-unambiguously, in a form suitable for automated checking.
+```text
+globally, it is never the case that door.CLOSED && alarm.ON;
+globally, if button.DEPRESSED, then in response lock.ON after 100 milliseconds;
+after lock.ON, if door.OPENED, then it must have been the case that lock.OFF has occurred before it;
+```
+
+**Referee (REF)** is a C++ compiler toolchain for the **REF** language — built to make
+formal requirement verification practical for real systems. You write requirements as
+**Dwyer specification patterns** — absence, existence, universality, response, precedence,
+and their real-time variants — in structured English; Referee parses them with **ANTLR4**,
+builds an AST, and lowers them to optimized **LLVM IR**, so a requirement compiles to an
+executable **monitor** that runs **online over traces and logs**.
+
+The patterns desugar to **LTL / MTL** temporal-logic formulas (LTL/TPTL-style reasoning),
+expressing behavioural constraints clearly and unambiguously, in a form suitable for
+automated checking. See **[Dwyer specification patterns in REF](specification-patterns.md)**
+for the full catalogue and the formula each desugars to.
 
 ## Architecture
 
