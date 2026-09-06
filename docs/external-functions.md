@@ -1,5 +1,6 @@
 ---
 title: External functions
+description: "External functions in REF — func declarations bound to native .so plugins and called from requirements."
 ---
 
 # Design: external functions

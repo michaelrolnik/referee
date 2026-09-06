@@ -1,5 +1,6 @@
 ---
 title: Trace expectations
+description: "Trace expectations in Referee — a corpus of traces that declare which requirements they must violate, for testing the monitor."
 ---
 
 # Design: trace expectations

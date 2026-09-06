@@ -1,5 +1,6 @@
 ---
 title: Bounded quantifiers
+description: "Bounded quantifiers in REF — quantifying over array elements inside temporal requirements."
 ---
 
 # Design: bounded quantifiers over arrays

@@ -1,5 +1,6 @@
 ---
 title: Accumulator cost
+description: "Accumulator cost in REF — why Itg / Sum / Cnt go quadratic under a temporal scope, and how to keep them linear."
 ---
 
 # Accumulators are quadratic under a temporal scope

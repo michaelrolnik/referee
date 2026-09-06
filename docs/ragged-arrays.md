@@ -1,5 +1,6 @@
 ---
 title: Ragged arrays
+description: "Ragged arrays in REF — unbounded T[] arrays whose length is carried by the trace."
 ---
 
 # Ragged arrays: `{count, T[]}` per row

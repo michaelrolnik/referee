@@ -1,5 +1,6 @@
 ---
 title: References
+description: "References behind Referee (REF) — the temporal-logic (LTL / MTL / TPTL) and specification-pattern literature the language builds on."
 ---
 
 # References
@@ -21,12 +22,25 @@ operators beneath it come from the classical temporal-logic literature.
 
 REF's `globally` / `before` / `after` / `between … and …` scopes and its
 absence / existence / universality / response / precedence patterns are the
-Dwyer–Avrunin–Corbett *property specification patterns*.
+Dwyer–Avrunin–Corbett *property specification patterns*. REF's real-time bodies —
+transient state, steady state, minimum/maximum **duration**, **recurrence**,
+response invariance, and the `while` scope — come from the real-time extension of
+Konrad and Cheng; the unified structured-English phrasing follows Autili et al.
 
 - **M. B. Dwyer, G. S. Avrunin, J. C. Corbett.** *Patterns in Property
   Specifications for Finite-State Verification.* Proceedings of the 21st
   International Conference on Software Engineering (ICSE 1999), pp. 411–420.
   [PDF](https://www.cs.colostate.edu/~france/CS614/Readings/Readings2011/propPatterns1-p7-dwyer.pdf)
+- **S. Konrad, B. H. C. Cheng.** *Real-Time Specification Patterns.* Proceedings
+  of the 27th International Conference on Software Engineering (ICSE 2005),
+  pp. 372–381. The duration, recurrence and steady-state patterns with explicit
+  time bounds.
+- **M. Autili, L. Grunske, M. Lumpe, P. Pelliccione, A. Tang.** *Aligning
+  Qualitative, Real-Time, and Probabilistic Property Specification Patterns Using
+  a Structured English Grammar.* IEEE Transactions on Software Engineering 41(7),
+  2015, pp. 620–638. The structured-English grammar that unifies the qualitative
+  and real-time catalogues into one phrasing system.
+  <!-- TODO(michael): confirm the author list against IEEE Xplore before relying on it. -->
 - The Specification Patterns System (the pattern catalogue, mappings to LTL,
   CTL and other formalisms): <https://matthewbdwyer.github.io/psp/>
 

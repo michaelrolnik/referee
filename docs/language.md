@@ -1,5 +1,6 @@
 ---
 title: The REF language
+description: "The REF language reference — statements, declarations, types, expressions, LTL/MTL temporal operators (G/F/O/H, bounded MTL windows), and the Dwyer specification patterns they desugar to."
 ---
 
 # The REF language
@@ -311,8 +312,8 @@ temporal scope can go quadratic.
 
 ## Specification patterns
 
-A pattern statement is a **scope**, then a **body**. Scopes nest to the left of
-the body, separated by commas:
+A pattern statement is a **scope**, then a **body** (the pattern), separated by a
+comma. The scopes:
 
 ```text
 globally, …
@@ -323,46 +324,20 @@ between P and Q, …
 after P until Q, …
 ```
 
-The bodies, in grammar order (`?` marks optional words):
-
-| Pattern | Form |
-| --- | --- |
-| Universality | `it is always the case that P holds? <bound>` |
-| Absence | `it is never the case that P holds? <bound>` |
-| Existence | `P eventually holds? <bound>` |
-| Transient state | `P holds after N units` |
-| Steady state | `P holds in the long run` |
-| Minimum duration | `once P becomes satisfied? it remains so for at least N units` |
-| Maximum duration | `once P becomes satisfied? it remains so for less than N units` |
-| Recurrence | `P holds? repeatedly (every N units)?` |
-| Precedence | `if P holds?, then it must have been the case that S has occurred? <interval> before it?` |
-| Precedence chain 1-2 | `if S and afterwards T <upper> holds?, then it must have been the case that P has occurred? <interval> before it?` |
-| Precedence chain 2-1 | `if P holds?, then it must have been the case that S and afterwards T <upper> have occurred? <interval> before it?` |
-| Response | `if P has occurred?, then in response S eventually holds? <bound> <constraint>` |
-| Response chain 1-2 | `if P has occurred?, then in response <bound> <constraint> S followed by T <bound> <constraint> eventually holds?` |
-| Response chain 2-1 | `if S followed by T <bound> <constraint> have occurred?, then in response P eventually holds? <bound> <constraint>` |
-| Response invariance | `if P has occurred?, then in response S holds? continually <bound>` |
-| Until | `P holds? without interruption until S holds? <bound>` |
-
-**Time bounds** are `within N units`, `after N units`, `between N and M units`,
-or nothing at all. `units` is one of `nanoseconds`, `microseconds`,
-`milliseconds`, `seconds`, `minutes`.
-
-**Constraints** are `without Z holding in between`, or nothing.
+The bodies are the Dwyer / real-time property-specification patterns —
+universality, absence, existence, response, precedence (and their chains),
+duration, recurrence, and until — each with an optional time bound. A line
+compiles to the same kind of boolean-valued function over the trace as a raw
+formula does: the patterns are surface syntax for the temporal logic, not a
+separate mechanism.
 
 ```text
-before button.DEPRESSED, lock.ON eventually holds after 100 milliseconds;
-globally, it is never the case that door.CLOSED && alarm.ON;
-while door.OPENED, it is always the case that alarm.ON after 30 seconds;
 globally, if button.DEPRESSED, then in response lock.ON after 100 milliseconds;
-globally, once lock.ON becomes satisfied it remains so for at least 2 seconds;
-between door.CLOSED and lock.OFF, it is always the case that door.CLOSED;
-after lock.ON, if door.OPENED, then it must have been the case that lock.OFF has occurred before it;
 ```
 
-Each such line compiles to the same kind of boolean-valued function over the
-trace as a raw formula does; the patterns are surface syntax for the temporal
-logic, not a separate mechanism.
+**The full catalogue — every pattern body, its origin, the scope grid, and the
+LTL/MTL each desugars to — is
+[Dwyer specification patterns in REF](specification-patterns.md).**
 
 ### Temporal operators in a pattern
 

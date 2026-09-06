@@ -1,5 +1,6 @@
 ---
 title: Referee
+description: "Referee (REF) — a runtime-verification language and compiler: write Dwyer specification patterns in English, compiled via ANTLR4 + LLVM IR to a monitor that checks LTL/MTL properties over traces and logs."
 ---
 
 # Referee
@@ -27,6 +28,7 @@ unambiguously, in a form suitable for automated checking.
 ## Language & semantics
 
 - [The REF language](language.md) — the whole surface syntax: statements, declarations, types, operators, temporal operators, specification patterns
+- [Dwyer specification patterns in REF](specification-patterns.md) — the pattern × scope grid (absence, existence, response, precedence, chains) and the LTL/MTL each desugars to
 - [Bounded quantifiers](quantifiers.md) — quantification over arrays
 - [Ragged arrays](ragged-arrays.md) — `T[]`, whose extent comes from the trace
 - [External functions](external-functions.md) — calling out from REF

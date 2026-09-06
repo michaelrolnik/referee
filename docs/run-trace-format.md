@@ -1,5 +1,6 @@
 ---
 title: Run trace format
+description: "The Referee run-trace format — the --explain NDJSON schema for requirement evaluation over a trace."
 ---
 
 # Run trace format

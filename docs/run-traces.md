@@ -1,5 +1,6 @@
 ---
 title: Run traces
+description: "Run traces in Referee — recording requirement coverage across a run, not just failures."
 ---
 
 # Design: run traces, and why they are mostly not about failures

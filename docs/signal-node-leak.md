@@ -1,5 +1,6 @@
 ---
 title: Signal node leak
+description: "A fixed AST-interning bug in Referee, kept as an engineering record."
 ---
 
 # Bug: AST signal nodes leak between specifications

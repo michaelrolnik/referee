@@ -1,5 +1,6 @@
 ---
 title: Online monitoring
+description: "Online runtime monitoring in Referee — streaming LTL3 verdicts over a trace as it unfolds: the verdict domain and the streaming evaluation model."
 ---
 
 # Design: online monitoring — a verdict as the trace unfolds

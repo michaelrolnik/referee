@@ -1,5 +1,6 @@
 ---
 title: Architecture
+description: "How Referee compiles a REF requirement — ANTLR4 parse → AST → LLVM IR → JIT/AOT monitor: the pipeline end to end, per-requirement function shapes, the state layout, and the trace format."
 ---
 
 # Architecture

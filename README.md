@@ -1,10 +1,26 @@
-# Referee
+# Referee (REF)
 
-Referee is a C++ compiler toolchain for the REF language, created to make formal requirement verification practical for real systems. It parses REF source files with ANTLR4, builds an abstract syntax tree, and lowers programs to LLVM IR with optimization passes.
+Write a requirement a reviewer can sign off on, and compile it to a checker:
 
-The language and tooling are inspired by temporal-logic-based verification workflows (for example LTL/TPTL-style reasoning and requirement patterns), with the goal of expressing behavior constraints clearly, unambiguously, and in a way that is suitable for automated checking over traces and logs.
+```text
+@lock_engages  globally, if button.DEPRESSED, then in response lock.ON after 100 milliseconds;
+```
 
-In short: Referee connects human-readable requirement intent to executable verification infrastructure through a dedicated domain language, compiler pipeline, and runtime-oriented architecture.
+**Referee (REF)** is a C++ **runtime-verification** toolchain for the REF
+requirement-specification language. You write behavioural requirements as
+**Dwyer-style property specification patterns** in structured English (or as raw
+**LTL / MTL** formulas); Referee parses them with **ANTLR4** and lowers them to
+**LLVM IR**, emitting a **monitor** that checks the requirement over a trace or log —
+offline or as it streams. The English phrasing is the *source language of a compiler*,
+not a form you paste a formula into.
+
+📖 **[Documentation](https://michaelrolnik.github.io/referee/)** ·
+[The REF language](https://michaelrolnik.github.io/referee/language.html) ·
+[Specification patterns](https://michaelrolnik.github.io/referee/specification-patterns.html) ·
+[Architecture](https://michaelrolnik.github.io/referee/architecture.html) ·
+[Online monitoring](https://michaelrolnik.github.io/referee/monitor.html)
+
+*(Written "Referee (REF)" to disambiguate from other projects called* referee*.)*
 
 ## Contents
 
@@ -99,11 +115,12 @@ The pipeline is: REF source → ANTLR4 parse → typed AST → semantic visitors
 
 ## Documentation
 
-Everything under `docs/`:
+Published: **<https://michaelrolnik.github.io/referee/>**. Sources under `docs/`:
 
 - **[architecture.md](docs/architecture.md)** — the whole pipeline (parse → AST → LLVM → JIT/AOT), the per-requirement function shapes, the `state_t` layout, the trace format, and the monitor.
 - **Language & semantics**
   - [language.md](docs/language.md) — the whole surface syntax in one place: statements, declarations, types, operators, temporal operators, specification patterns.
+  - [specification-patterns.md](docs/specification-patterns.md) — Dwyer's property specification patterns in REF: the pattern × scope grid (absence, existence, universality, response, precedence, chains) mapped to the LTL/MTL each desugars to.
   - [references.md](docs/references.md) — the temporal-logic and specification-pattern literature the language is built on.
   - [quantifiers.md](docs/quantifiers.md) — bounded quantifiers over array elements.
   - [ragged-arrays.md](docs/ragged-arrays.md) — unbounded `T[]` arrays that carry their own length.

@@ -1,3 +1,8 @@
+---
+title: "Native checkers"
+description: "Native checkers in Referee — ahead-of-time compiled, LLVM-free requirement checkers built with referee build (referee build spec.ref -o checker) that validate traces with no compile step."
+---
+
 # Design: ahead-of-time compiled checkers
 
 **Status:** stages 1-3 built. A checker accepts `.rdb`, `.csv` and `.yaml`. Dropping the `--explain` companions from the object remains.

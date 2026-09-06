@@ -1,5 +1,6 @@
 ---
 title: Monitor implementation
+description: "How Referee's runtime monitor is built — the evaluation phases and the single-state atom path from a REF requirement to a streaming checker."
 ---
 
 # Building the monitor — an implementation plan
