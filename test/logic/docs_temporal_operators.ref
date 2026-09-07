@@ -1,0 +1,22 @@
+# Extracted verbatim from docs/temporal-operators.md.
+#
+# Trace (docs_temporal_operators.csv), 5 states at 100ms spacing:
+#   t=0     a=F b=F v=1
+#   t=1e8   a=T b=F v=2
+#   t=2e8   a=T b=T v=3
+#   t=3e8   a=F b=T v=4
+#   t=4e8   a=F b=F v=5
+data a : boolean;
+data b : boolean;
+data v : integer;
+
+@eventually_a          F(a);
+@always_positive       G(v > 0);
+@a_before_b            !b && F(a);
+@count_of_a            Cnt(a) == 2;
+@total_v_while_a       Sum(a, v) == 5;
+@records               Cnt(true) == 5;
+@a_within_200ms        F[0:200000000](a);
+@b_holds_after_a       G(b => O(a));
+@a_until_b             Us(!b, b);
+@strong_next           Xs(a);

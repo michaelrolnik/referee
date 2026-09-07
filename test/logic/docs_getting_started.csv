@@ -1,0 +1,5 @@
+__time__,button_pressed,door_open,locked
+0,false,true,false
+100000000,true,false,false
+150000000,false,false,true
+300000000,false,false,true

@@ -1078,3 +1078,30 @@ TEST(Cli, RdbBuildWithIncludePath)
 
     std::remove(out.c_str());
 }
+
+// Documentation rot guard. Every REF example printed in docs/getting-started.md,
+// docs/cookbook.md and docs/temporal-operators.md is kept verbatim as a fixture
+// beside its trace. A documented example that stops compiling -- or stops
+// holding against the trace the page claims it holds against -- fails here
+// rather than misleading a reader who copies it.
+TEST(Cli, DocumentedExamplesCompileAndPass)
+{
+    struct  Case { char const* ref; char const* csv; char const* page; };
+
+    static Case const   cases[] = {
+        { "docs_getting_started.ref",   "docs_getting_started.csv",   "docs/getting-started.md"     },
+        { "docs_cookbook.ref",          "docs_cookbook.csv",          "docs/cookbook.md"            },
+        { "docs_temporal_operators.ref","docs_temporal_operators.csv","docs/temporal-operators.md"  },
+    };
+
+    for (auto const& c : cases)
+    {
+        auto    r = run(quote(REFEREE_BIN) + " execute "
+                      + quote(data(c.ref)) + " " + quote(data(c.csv)));
+
+        EXPECT_EQ(r.status, 0)
+            << c.page << " documents an example that no longer holds:\n" << r.output;
+        EXPECT_EQ(r.output.find("FAIL"), std::string::npos)
+            << c.page << " -- a documented requirement failed:\n" << r.output;
+    }
+}

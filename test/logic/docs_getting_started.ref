@@ -1,0 +1,11 @@
+# Extracted verbatim from docs/getting-started.md. Kept as a fixture so the
+# documented first example cannot rot.
+data button_pressed : boolean;
+data door_open      : boolean;
+data locked         : boolean;
+
+@never_open_and_locked
+globally, it is never the case that door_open && locked;
+
+@locks_promptly
+globally, if button_pressed, then in response locked within 100 milliseconds;

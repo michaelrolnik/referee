@@ -1,0 +1,6 @@
+__time__,a,b,v
+0,false,false,1
+100000000,true,false,2
+200000000,true,true,3
+300000000,false,true,4
+400000000,false,false,5

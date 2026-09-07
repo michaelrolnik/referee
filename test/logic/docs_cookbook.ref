@@ -1,0 +1,33 @@
+# Extracted verbatim from docs/cookbook.md. Every recipe on that page is a
+# requirement here, so a documented recipe that stops compiling -- or stops
+# holding against the fixture trace -- fails the build.
+data self_test_passed : boolean;
+data motor_on         : boolean;
+data request          : boolean;
+data reply            : boolean;
+data in_flight        : boolean;
+data door_open        : boolean;
+data relay_on         : boolean;
+data alarm            : boolean;
+data ack              : boolean;
+data reset            : boolean;
+data charging         : boolean;
+data full             : boolean;
+
+@motor_after_selftest
+globally, if motor_on, then it must have been the case that self_test_passed has occurred before it;
+
+@reply_in_time
+globally, if request, then in response reply within 250 milliseconds;
+
+@door_shut_in_flight
+while in_flight, it is always the case that !door_open;
+
+@relay_debounce
+globally, once relay_on becomes satisfied it remains so for at least 50 milliseconds;
+
+@alarm_acked
+globally, if alarm, then in response ack within 5 seconds without reset holding in between;
+
+@charge_until_full
+globally, charging holds without interruption until full holds;

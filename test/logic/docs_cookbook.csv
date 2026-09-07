@@ -1,0 +1,11 @@
+__time__,self_test_passed,motor_on,request,reply,in_flight,door_open,relay_on,alarm,ack,reset,charging,full
+0,false,false,false,false,false,true,false,false,false,false,true,false
+100000000,true,false,false,false,false,true,false,false,false,false,true,false
+200000000,true,true,false,false,false,false,true,false,false,false,true,false
+300000000,true,true,true,false,true,false,true,false,false,false,true,false
+400000000,true,true,false,true,true,false,true,false,false,false,true,false
+500000000,true,true,false,false,true,false,false,true,false,false,true,false
+600000000,true,true,false,false,true,false,false,false,true,false,false,true
+700000000,true,true,false,false,false,false,false,false,false,false,false,true
+800000000,true,true,false,false,false,true,false,false,false,false,false,true
+900000000,true,true,false,false,false,true,false,false,false,false,false,true

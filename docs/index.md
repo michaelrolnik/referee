@@ -25,6 +25,11 @@ expressing behavioural constraints clearly and unambiguously, in a form suitable
 automated checking. See **[Dwyer specification patterns in REF](specification-patterns.md)**
 for the full catalogue and the formula each desugars to.
 
+## Start here
+
+- [Getting started](getting-started.md) — install, build, and check your first trace in ten minutes
+- [Requirements cookbook](cookbook.md) — worked requirements for real systems: watchdogs, startup ordering, bounded response, mode invariants
+
 ## Architecture
 
 - [Architecture](architecture.md) — the compiler pipeline end to end
@@ -39,6 +44,7 @@ for the full catalogue and the formula each desugars to.
 
 - [The REF language](language.md) — the whole surface syntax: statements, declarations, types, operators, temporal operators, specification patterns
 - [Dwyer specification patterns in REF](specification-patterns.md) — the pattern × scope grid (absence, existence, response, precedence, chains) and the LTL/MTL each desugars to
+- [Temporal operators](temporal-operators.md) — `G`/`F`/`X`/`U`/`R`, past-time `H`/`O`/`Y`/`S`/`T`, strong vs weak on finite traces, MTL windows, accumulators and the TPTL freeze
 - [Bounded quantifiers](quantifiers.md) — quantification over arrays
 - [Ragged arrays](ragged-arrays.md) — `T[]`, whose extent comes from the trace
 - [External functions](external-functions.md) — calling out from REF
