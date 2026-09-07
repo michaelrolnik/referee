@@ -28,16 +28,7 @@ not a form you paste a formula into.
 - [Architecture](#architecture)
 - [Documentation](#documentation)
 - [Design rationale](#design-rationale)
-- [The REF Language](#the-ref-language)
-  - [Lexical details](#lexical-details)
-  - [Declarations and Types](#declarations-and-types)
-  - [Expressions](#expressions)
-  - [External functions](#external-functions)
-  - [Specification Patterns](#specification-patterns)
-  - [Evaluation Model](#evaluation-model)
-  - [What a trace means between samples](#what-a-trace-means-between-samples)
-  - [Temporal lowering](#temporal-lowering)
-  - [Computational complexity](#computational-complexity)
+- [The REF language](#the-ref-language)
 - [Installation](#installation)
 - [Linux](#linux)
 - [MacOS](#macos)
@@ -117,10 +108,14 @@ The pipeline is: REF source → ANTLR4 parse → typed AST → semantic visitors
 
 Published: **<https://michaelrolnik.github.io/referee/>**. Sources under `docs/`:
 
+- **Start here**
+  - [getting-started.md](docs/getting-started.md) — install, build, write a first requirement, check a first trace.
+  - [cookbook.md](docs/cookbook.md) — worked requirements for real systems: watchdogs, startup ordering, bounded response, mode invariants, debounce, acknowledgement.
 - **[architecture.md](docs/architecture.md)** — the whole pipeline (parse → AST → LLVM → JIT/AOT), the per-requirement function shapes, the `state_t` layout, the trace format, and the monitor.
 - **Language & semantics**
   - [language.md](docs/language.md) — the whole surface syntax in one place: statements, declarations, types, operators, temporal operators, specification patterns.
   - [specification-patterns.md](docs/specification-patterns.md) — Dwyer's property specification patterns in REF: the pattern × scope grid (absence, existence, universality, response, precedence, chains) mapped to the LTL/MTL each desugars to.
+  - [temporal-operators.md](docs/temporal-operators.md) — the operator set: `G`/`F`/`X`/`U`/`R`, past-time `H`/`O`/`Y`/`S`/`T`, strong vs weak on finite traces, MTL `[lo:hi]` windows, accumulators, and the TPTL freeze.
   - [references.md](docs/references.md) — the temporal-logic and specification-pattern literature the language is built on.
   - [quantifiers.md](docs/quantifiers.md) — bounded quantifiers over array elements.
   - [ragged-arrays.md](docs/ragged-arrays.md) — unbounded `T[]` arrays that carry their own length.
@@ -149,418 +144,12 @@ The usual way to check behavioural requirements against a log is to hand-write a
 6. **Separation of concerns.** Recording what the system did and checking that it was allowed to are fully decoupled. The same compiled requirements apply to real logs, simulated traces, offline batches, or (once streaming lands) a live feed, with no change to the requirement source.
 7. **Reviewable by the people who own the requirements.** Reading and writing a REF file needs an understanding of the system, not programming fluency. A requirement that a test engineer can review is a requirement that gets reviewed.
 
-## The REF Language
-
-REF is a small domain-specific language for describing system requirements as properties over timed traces. The authoritative grammar lives in `core/referee.g4`; this section is a tour of the surface syntax.
-
-A REF program is a semicolon-terminated sequence of three kinds of statements:
-
-- **Declarations** — define the vocabulary used by the requirements.
-- **Expressions** — plain temporal-logic formulas that must hold on the trace.
-- **Specification patterns** — English-like Dwyer-style phrasings that desugar to temporal-logic formulas.
-
-Every non-declaration statement in a REF file is a first-class **requirement**: the compiler emits one LLVM function per statement, and each such function must evaluate to `true` on every valid trace of the system. Declarations produce no runtime functions of their own — they only introduce names and shapes that the requirement expressions refer to.
-
-Comments use `//`, `#`, or C-style `/* ... */`. Identifiers follow the usual C convention (`[a-zA-Z_][a-zA-Z0-9_]*`). Whitespace is insignificant; statements are terminated by `;`.
-
-### Lexical details
-
-- **Boolean literals:** `true`, `false`.
-- **Integer literals:** decimal (`42`), binary (`0b1010`), octal (`0o755`), and hexadecimal (`0xFF` / `0xff`). Integers are arbitrary-width at the source level and lowered to 64-bit at runtime.
-- **Floating-point literals:** `1.5`, `.25`, `3.14e-2`, `1E6`. Used wherever the `number` type is expected.
-- **String literals:** `"..."` containing ASCII letters, digits, `_`, `.`, `?`, `!`, `/`, `-`, and spaces (the last three so that `import` targets can name paths). Strings are first-class values of type `string` and participate in `==` / `!=` comparisons.
-- **Signed literals:** a leading `+` / `-` in front of a numeric literal is part of the literal, not a separate unary operator, so `-3` is an integer constant while `- x` is unary negation on `x`.
-- **Reserved keywords.** In addition to the temporal-logic operator names (`G`, `F`, `Xs`, `Xw`, `Us`, `Uw`, `Rs`, `Rw`, `H`, `O`, `Ys`, `Yw`, `Ss`, `Sw`, `Ts`, `Tw`) and the accumulators (`Itg`, `Sum`, `Cnt`), the quantifier keywords (`all`, `some`, `none`, `one`, `most`, `least`) and the spec-pattern vocabulary are reserved: `after`, `afterwards`, `always`, `and`, `at`, `becomes`, `been`, `before`, `between`, `by`, `case`, `continually`, `eventually`, `every`, `followed`, `for`, `globally`, `has`, `have`, `holding`, `holds`, `if`, `in`, `interruption`, `is`, `it`, `least`, `less`, `long`, `must`, `never`, `occurred`, `once`, `remains`, `repeatedly`, `response`, `run`, `satisfied`, `so`, `than`, `that`, `the`, `then`, `until`, `while`, `within`, `without`, plus the time units `nanoseconds`, `microseconds`, `milliseconds`, `seconds`, `minutes`.
-
-### Declarations and Types
-
-Four declaration kinds introduce names into the program:
-
-- `type Name : T;` — a named type alias. It defines a new, reusable type but does not reserve any runtime storage.
-- `data Name : T;` — a **time-varying signal** sampled once per trace record. It is effectively a field of the per-timestamp `state_t` struct.
-- `conf Name : T;` — a **configuration value** that is constant for the whole trace. It is effectively a field of the `conf_t` struct shared by all records.
-- `import "path.ref";` — pull another REF file into this one (see *Splitting a specification across files* below).
-
-Splitting `data` from `conf` is a deliberate modeling choice: signals that change per event (sensor readings, state machine outputs) live in `data`, while things that are set at the start of a run and never change (thresholds, limits, operating mode) live in `conf`. The compiler uses that distinction to generate a correct trace/config memory layout (see `core/visitors/csvHeaders.cpp`, which derives CSV column names from `data` declarations).
-
-#### Splitting a specification across files
-
-`import` folds another REF file into the current one, at the point of the import:
-
-```text
-import "common/types.ref";
-import "reqs/door.ref";
-```
-
-Everything the imported file declares — types, signals, configuration — becomes visible to the statements that follow, and any requirements it contains are compiled and checked alongside the importing file's own. That covers both of the shapes this exists for: a *definitions* file that several specifications share, and an *index* file that pulls a directory of small requirement files into one run.
-
-**Resolution.** A relative path is resolved against the directory of the file containing the import, so a tree of specifications can be moved as a unit. If that misses, each `-I <dir>` given on the command line is tried in order:
-
-```bash
-./build/referee execute -I ./shared spec.ref trace.csv
-./build/rdb     build   -I ./shared spec.ref trace.csv -o trace.rdb
-```
-
-`rdb build` takes the same flag because it has to resolve the same imports to derive the schema.
-
-**Each file is imported once**, keyed on its real path. A diamond — two requirement files that both import the same definitions — is therefore the ordinary case rather than a duplicate-declaration error, and symlinks and `..` round-trips to the same file are recognised as the same file. Two *different* files declaring the same name is still an error, and says so.
-
-An import that leads back to a file already being read is reported as a cycle rather than quietly skipped, because the importer would otherwise carry on referring to declarations that have not been processed yet.
-
-**Requirement labels become file-qualified.** A requirement that came in through an import is reported (and named in the emitted IR) as `path/to/file.ref:row:col .. row:col`, with the path relative to the root file. Requirements in the root file itself stay unqualified, so a single-file specification is labelled exactly as it was before imports existed:
-
-```text
-13:0 .. 13:21                            PASS
-reqs/one.ref:5:0 .. 5:10                 PASS
-reqs/two.ref:5:0 .. 5:10                 PASS
-```
-
-The qualification is load-bearing, not cosmetic: the last two requirements sit at the same line and column in different files, and would otherwise collide into one name.
-
-#### Unbounded arrays
-
-An array declared without an extent is **unbounded**: each record carries its own length.
-
-```text
-data readings : integer[];      // however many this record holds
-data grid     : integer[][];    // ragged in both dimensions
-```
-
-The value of an unbounded array is a `{count, pointer}` descriptor rather than inline storage. `readings.count` is a load of that count — so it answers a size the specification never wrote down, and answers a *different* size at each state if the records differ:
-
-```text
-G(readings.count <= 64);                    // a bound on the length
-G(all v in readings: v >= 0);               // a loop over however many there are
-G(readings.count > 0 => readings[0] >= 0);  // guard the access with the count
-```
-
-The same specification holds against traces whose records are different lengths — a message with three octets and one with seven, in the same run — which is the point of leaving the extent out. `T[N]` is unchanged and still expands at compile time; only `T[]` is new, so nothing that compiled before compiles differently.
-
-In CSV a ragged trace sizes its header to the widest record and marks a cell that is not an element with `-` (or leaves it empty); a present element after an absent one is rejected, since an array has no holes:
-
-```text
-__time__,pkt[0],pkt[1],pkt[2]
-0,0xDE,0xAD,0xBE       # three octets
-1000,0x01,0x02,-       # two
-2000,-,-,-             # none
-```
-
-Design notes are in `docs/ragged-arrays.md`.
-
-#### Quantifiers
-
-A requirement over an array can range over its elements instead of naming each one:
-
-```text
-data limits : integer[4];
-
-all limit in limits: limit < max;       // every element
-some limit in limits: limit < max;      // at least one
-none limit in limits: limit < max;      // not any
-one  limit in limits: limit < max;      // exactly one
-at least 2 limit in limits: limit < max;
-at most  2 limit in limits: limit < max;
-```
-
-The body runs to the end of the statement, so parenthesise it when something follows: `!(all x in v: x > 2)`.
-
-**Binders.** One name binds the *element*. A second binds the index, and `_` discards either:
-
-```text
-all x    in v: x > 0;                   // element
-all x, i in v: x * 10 == w[i];          // element and index — correlates two arrays
-all _, i in v: w[i] > v[i];             // index only
-```
-
-**Nesting** handles multiple dimensions, rather than a third binder:
-
-```text
-all row in g: all p in row: p > 0;
-```
-
-**Quantifiers and temporal operators compose in both orders**, and mean different things:
-
-```text
-all p in xs: G(P(p));       // each element satisfies P at every state
-G(all p in xs: P(p));       // at every state, every element satisfies P
-```
-
-Over an array of **known size**, a quantifier expands while the AST is built — `all` to a conjunction, `some` to a disjunction, the counted forms to a sum of indicators compared against the bound. Nothing reaches runtime and nothing changes in the trace format.
-
-Over an **unbounded** array (`T[]`) there is no size to expand over, so the quantifier lowers to a **runtime loop**: it counts the elements whose body holds and compares that against the length, which is the same reduction the counted forms already use. `all v in pkt: v > 0` is then O(length) at each state it is evaluated, rather than a constant. A temporal operator *inside* such a quantifier is rejected — the buffers that make it linear are built once per node, before the loop's index exists — so quantify over the values and put the temporal operator outside. A quantifier may also appear in a computed signal (`data any_big = some x in v: x > 3;`).
-
-The domain must be an array; quantifying over anything else is rejected at the quantifier itself.
-
-**An array's element count** is available as `xs.count`:
-
-```text
-data limits : integer[4];
-data grid   : integer[3][2];
-
-limits.count == 4;
-grid.count == 3;            // the outer dimension
-grid[0].count == 2;         // the inner one
-all _, i in limits: i < limits.count;
-```
-
-It is known when the AST is built, so it lowers to a literal — no load, no state access. `count` is resolved by the type it is applied to, so a struct field of the same name is unaffected, and an array has no other member.
-
-#### Computed signals
-
-`data` has a second form that gives a name to a derived signal instead of declaring a column in the trace:
-
-```text
-data Name = expression;
-```
-
-The type is inferred from the expression, and the expression may use anything already in scope — other `data` signals, `conf` values, and the full operator set including the temporal operators:
-
-```text
-data a : boolean;
-data b : boolean;
-
-data both      = a && b;          // point-wise
-data seen_a    = O(a);            // "a has occurred at some point in the past"
-data next_both = Xs(both);        // computed signals may build on each other
-```
-
-This exists to let a recurring sub-formula be named once and referred to everywhere, rather than pasted into a dozen requirements. It is also a performance lever: a computed signal is evaluated exactly once per state for the whole trace, whereas the same sub-formula written inline in ten requirements is evaluated ten times.
-
-Two consequences worth knowing:
-
-- **Declaration order matters.** A computed signal can only reference names declared before it, so forward and circular references cannot be written. Dependencies are resolved in declaration order.
-- **Computed signals are not stored in `.rdb` files.** They are a property of the specification, not of the recording, so `rdb build` writes only the trace-backed signals and `referee execute` recomputes the derived ones from the `.ref` at run time. A `.rdb` therefore stays valid when a computed signal's defining expression changes — only the `.ref` needs to be re-read. See `test/logic/expr_data.ref` and `test/logic/expr_chain.ref` for worked examples.
-
-The type grammar supports:
-
-- **Primitive types:** `boolean`, `byte` (8-bit unsigned), `integer` (64-bit signed), `number` (floating point), `string`.
-- **Enumerations:** `enum { A, B, ... }` — a finite set of named values referenced as `T.A`, `T.B`. Enums are nominal: two enum types with the same members are distinct.
-- **Structures:** `struct { field1: T1; field2: T2; ... }` — record types with named, typed fields. Nesting is allowed (`struct { inner: struct { ... }; }`).
-- **Arrays:** `T[N]`, a fixed extent written in the specification, which may be stacked to form multi-dimensional arrays `T[N][M]`. Dimensions read as they do in C, C++ and Kotlin: `integer[3][2]` is **three** arrays of **two**, the first subscript written is the outer one, and `g[2][1]` is the last element. Writing `T[]` instead makes the array **unbounded** — each record carries its own length, so `payload : byte[]` is a genuinely ragged array whose rows may differ in extent, and `T[][]` is ragged in both dimensions. `T[N]` and `T[]` are genuinely different types: the first is inline storage with a constant extent and its `.count` folds to a literal, the second is a `{count, pointer}` descriptor whose `.count` is a load and whose elements the loader places per record. See *Unbounded arrays* below.
-- **Named type references:** any previously-declared `type Name : ...` can be used wherever a type is expected, anywhere more complex types are built (struct fields, array elements, other aliases).
-
-```text
-type Button : enum   { DEPRESSED, RELEASED };
-type State  : enum   { ON, OFF };
-type Door   : enum   { OPENED, CLOSED };
-type Point  : struct { x: number; y: number; };
-type Matrix : Point[3][3];
-
-data button : Button;
-data lock   : State;
-data alarm  : State;
-data door   : Door;
-data pos    : Point;
-
-conf xyz    : struct { a: integer; b: number; limits: integer[4]; };
-conf grid   : Matrix;
-```
-
-Member access uses `.` (`lock.ON`, `pos.x`, `xyz.limits`) and array indexing uses `[...]` (`xyz.limits[2]`, `grid[1][2].x`). Accesses nest in the obvious way, so `data abc : struct { x: integer[2][3]; };` permits `abc.x[1][2]`.
-
-#### `byte`, and reasoning about a wire
-
-`byte` is a **storage width, not a value kind**. It occupies one octet in a trace row instead of eight, and every read of one widens to `integer`, so no arithmetic, comparison or accumulation rule has to know it exists — `flag & 0x80` type-checks against integer operands with no cast, and `Sum(true, payload[0])` totals bytes as integers. A cell outside `0..255` is refused at load time rather than truncated, since a payload octet quietly becoming a different value is precisely what a checker exists to catch.
-
-It exists for binary protocols. A message arrives pre-framed — someone has already cut the stream into records — and the framing lives in individual bits of an octet:
-
-```text
-conf k       : struct { SOM: boolean; EOM: boolean; };
-data flag    : byte;
-data payload : byte[];          // extent from the trace
-
-G(k.SOM <=> (flag & 0x01) != 0);        // start-of-message bit
-G(k.EOM <=> (flag & 0x02) != 0);        // end-of-message bit
-G(flag >> 4 <= 3);                      // sequence number, top nibble
-
-data xorsum = payload[0] ^ payload[1] ^ payload[2] ^ payload[3];
-```
-
-Without `byte` a payload costs eight bytes per octet in every row; without the bitwise operators the framing bits are reachable only as `(flag / 128) % 2 == 1`. Neither half is much use alone. See `test/logic/bytes.ref`.
-
-Enum members are reached **through the signal**, not through the type: `lock.ON` reads as "the current value of `lock` is `ON`" and is the form requirements use to turn a raw signal into a boolean. Writing the member against the type instead (`State.ON`, or `lock == State.ON`) is *not* accepted — the parser resolves the head of a dotted name as a signal, so a type name there fails to resolve.
-
-### Expressions
-
-REF expressions combine the familiar C-family operator set with dedicated temporal operators. Outside of the temporal layer, the non-temporal expression language is what requirement authors use most of the time.
-
-**Operators, from tightest to loosest binding.** The ordering follows C++ and Kotlin, which agree on all of these: multiplicative, additive, shift, relational, equality, `&`, `^`, `|`, `&&`, `^^`, `||`. `=>` and `<=>` have no C++ equivalent and sit where logic conventionally puts them — looser than `||`, tighter than the conditional. So `2 + 3 * 4` is 14, `a || b && c` is `a || (b && c)`, and `a && x <= 5` needs no parentheses. `=>` is right-associative, again following logic: `a => b => c` is `a => (b => c)`.
-
-**Bitwise and logical are separate families.** `&` `^` `|` are bitwise — integers only, operating on the bit pattern. `&&` `^^` `||` are logical — booleans only. They do not overlap: `a & b` on booleans is a type error, and so is `a && b` on integers. Each logical operator also has an English **word alias** — `and` `xor` `or`, and `not` for `!` — the same operator under a second spelling, so `a and not b` is exactly `a && !b`. (`and` doubles as the `between P and Q` keyword; the parser tells the two uses apart by context.)
-
-
-| Category    | Operators                                  | Notes                                            |
-| ----------- | ------------------------------------------ | ------------------------------------------------ |
-| Postfix     | `.field`, `[index]`, `[lo:hi]`, `.count`   | Member access, array indexing, half-open slice, element count. |
-| Unary       | `!` (`not`), `-`, `~`                      | Logical negation, arithmetic negation, bitwise complement. |
-| Multiplicative | `*`, `/`, `%`                           | `%` is integer modulo.                           |
-| Additive    | `+`, `-`                                   |                                                  |
-| Shift       | `<<`, `>>`                                 | Integers only. `>>` is arithmetic — REF integers are signed. |
-| Relational  | `<`, `<=`, `>`, `>=`                       |                                                  |
-| Equality    | `==`, `!=`                                 | Works on booleans, numbers, strings, enums.      |
-| Bitwise AND | `&`                                        | Integers only.                                   |
-| Bitwise XOR | `^`                                        | Integers only.                                   |
-| Bitwise OR  | `\|`                                       | Integers only.                                   |
-| Logical AND | `&&` (`and`)                               | Booleans; short-circuits — the right side is evaluated only if the left doesn't decide it. |
-| Logical XOR | `^^` (`xor`)                               | Booleans; evaluates both operands (xor cannot short-circuit). |
-| Logical OR  | `\|\|` (`or`)                               | Booleans; short-circuits.                        |
-| Implication | `=>`, `<=>`                                | Material implication and biconditional. Also short-circuit. |
-| Ternary     | `cond ? then : else`                       | Selects between two values of the same type.     |
-| Grouping    | `(...)`                                    |                                                  |
-
-The precedence is C's, exactly — including the part everyone trips over: `&`, `^` and `\|` bind *looser* than `==`, so `flag & 0x80 != 0` reads as `flag & (0x80 != 0)`. C computes that silently; REF rejects it, because `!=` yields a boolean and `&` takes integers. Write `(flag & 0x80) != 0`.
-
-The bitwise `^` and the logical `^^` sit at different precedence levels — `^` with the other bitwise operators just below `==`, `^^` with the logical ones just above `||` — because that is where each family belongs. `^^` (or `xor`) is the only logical xor; the bitwise `^` does not take booleans.
-
-`=>` and `<=>` are first-class operators, not macros: `p => q` is exactly `!p || q`, and `p <=> q` is `p == q` restricted to booleans, but writing them with the logical spelling makes requirement intent immediately readable ("whenever `p`, then `q`").
-
-**`&&`, `||`, `=>` and `? :` short-circuit.** The right-hand side of `&&` is evaluated only where the left held, the right of `||` only where the left did not, and only the taken arm of a ternary. That is what lets a guard actually guard: `x != 0 => y / x > 1` does not divide where `x` is zero, and `n.count > 0 && n[0] > 0` does not index an empty array. The operators lower to branches, not to a `select` over both operands — so the guarded expression is never reached when the guard says not to.
-
-**Indexing is bounds-checked.** A constant index outside a written extent (`v[7]` on a `T[3]`) is a compile-time error. A runtime index outside the length — into an unbounded array, or with a computed subscript — fails the requirement rather than reading past the row, and the report names the index and the count. Combined with short-circuiting, `n.count > i => n[i] == …` is the safe idiom.
-
-**Types in expressions.** Arithmetic mixes `integer` and `number`, with the usual widening to `number`, and comparisons widen the same way — `i < n` with `i : integer` and `n : number` is fine. Otherwise comparisons are homogeneous: two strings, two booleans, or two values of the same enum type, but not, say, an integer against a string. The ternary operator requires both arms to have a common type. These rules are enforced by the `typecalc` visitor before LLVM IR is generated, so type errors surface at compile time.
-
-**Literals in expressions.** Besides the usual numeric literals described above, an enum-valued signal is tested by naming the member on the signal — `lock.ON`, `door.CLOSED`. There is no implicit coercion from strings or integers, and no way to write a bare enum constant detached from a signal.
-
-Temporal operators come in both **future** and **past** flavours, and most come in **strong** and **weak** variants to give well-defined semantics on finite traces:
-
-| Future | Past | Meaning |
-| --- | --- | --- |
-| `G(p)` | `H(p)` | `p` holds at every state (globally / historically) |
-| `F(p)` | `O(p)` | `p` holds at some state (eventually / once) |
-| `Xs(p)` / `Xw(p)` | `Ys(p)` / `Yw(p)` | strong/weak next / yesterday |
-| `Us(p, q)` / `Uw(p, q)` | `Ss(p, q)` / `Sw(p, q)` | strong/weak until / since |
-| `Rs(p, q)` / `Rw(p, q)` | `Ts(p, q)` / `Tw(p, q)` | strong/weak release / triggered |
-| `Itg(v)` / `Itg(c, v)` | — | **integral** over time of a numeric `v`; the two-argument form integrates only while boolean `c` holds |
-| `Sum(c, v)` | — | **total** of numeric `v` over the records where `c` holds |
-| `Cnt(c)` | — | **count** of the records where `c` holds |
-
-All temporal operators optionally accept a **time bound** `[lo:hi]`, `[:hi]`, or `[lo:]`, giving MTL-style bounded versions such as `G[100:1000](a)` or `Us[1:3](alpha, beta)`.
-
-#### Semantics
-
-A temporal formula is true or false **at a state**, over the states from there onward (future operators) or up to there (past operators). A requirement is the formula evaluated at the **first** real state, so `G(p)` as a requirement means "`p` at every state", `F(p)` means "`p` at some state". The trace is **finite**; the strong/weak distinction is entirely about what happens when it ends before the operator has been decided.
-
-Writing the trace as states `s₀ … sₙ₋₁` and `p@j` for "`p` holds at state `j`", evaluated at state `i`:
-
-**Unary.**
-
-| | holds at `i` iff |
-| --- | --- |
-| `G(p)` / `H(p)` | `p@j` for every `j ≥ i` / every `j ≤ i` |
-| `F(p)` / `O(p)` | `p@j` for some `j ≥ i` / some `j ≤ i` |
-| `Xs(p)` / `Ys(p)` | a next / previous state exists **and** `p` holds there — **false** at the last / first state |
-| `Xw(p)` / `Yw(p)` | **if** a next / previous state exists, `p` holds there — **true** at the last / first state |
-
-Strong and weak next differ only at the edge of the trace: `Xs` demands a next state to hold in (there is none at the end, so it is false), `Xw` is vacuously true when there is none. That is the whole of the strong/weak distinction, and it recurs in every binary operator below.
-
-**Binary — until and since.**
-
-- `Us(p, q)` — **strong until**: some `j ≥ i` has `q@j`, and `p` holds at every state from `i` up to (not including) `j`. The `q` must actually occur within the trace.
-- `Uw(p, q)` — **weak until**: `Us(p, q)`, *or* `p` holds at every state from `i` onward (`q` may never come). `Us` requires the release; `Uw` forgives its absence.
-- `Ss(p, q)` / `Sw(p, q)` — **since**: the same, mirrored into the past. `Ss(p, q)` holds at `i` iff some `j ≤ i` has `q@j` with `p` at every state after `j` up to `i`.
-
-**Binary — release and trigger** are the duals, and this is exactly how they are defined:
-
-```text
-Rw(p, q) = ¬Us(¬p, ¬q)      Rs(p, q) = ¬Uw(¬p, ¬q)
-Tw(p, q) = ¬Ss(¬p, ¬q)      Ts(p, q) = ¬Sw(¬p, ¬q)
-```
-
-Read directly: `q` must hold at every state from `i` up to **and including** the first state where `p` holds — `p` *releases* the obligation on `q`. If `p` never holds, `q` must hold forever; **weak** release (`Rw`) accepts that, **strong** release (`Rs`) additionally requires `p` to occur. Trigger (`Tw`/`Ts`) is the same into the past. `G` and `H` are the degenerate case with no releaser: `G(p)` canonicalises to `Rw(false, p)` — `p` released by nothing, so `p` forever.
-
-**Recurrences.** Each operator is defined at a state in terms of its value at the neighbouring state — `i+1` for future operators, `i−1` for past ones — which is both the semantics and, verbatim, what the compiler emits (see *Temporal lowering*). Two families cover all eight binary operators; the unary ones are special cases:
-
-```text
-until / since   (disjunctive):   val[i] = q[i] ∨ (p[i] ∧ val[i±1])
-release / trigger (conjunctive):  val[i] = q[i] ∧ (p[i] ∨ val[i±1])
-
-  Us(p,q)[i] = q[i] ∨ (p[i] ∧ Us(p,q)[i+1])      Ss(p,q)[i] = q[i] ∨ (p[i] ∧ Ss(p,q)[i−1])
-  Uw(p,q)[i] = q[i] ∨ (p[i] ∧ Uw(p,q)[i+1])      Sw(p,q)[i] = q[i] ∨ (p[i] ∧ Sw(p,q)[i−1])
-  Rs(p,q)[i] = q[i] ∧ (p[i] ∨ Rs(p,q)[i+1])      Ts(p,q)[i] = q[i] ∧ (p[i] ∨ Ts(p,q)[i−1])
-  Rw(p,q)[i] = q[i] ∧ (p[i] ∨ Rw(p,q)[i+1])      Tw(p,q)[i] = q[i] ∧ (p[i] ∨ Tw(p,q)[i−1])
-
-  G(p)[i] = p[i] ∧ G(p)[i+1]      F(p)[i] = p[i] ∨ F(p)[i+1]        (future:  neighbour i+1)
-  H(p)[i] = p[i] ∧ H(p)[i−1]      O(p)[i] = p[i] ∨ O(p)[i−1]        (past:    neighbour i−1)
-  Xs(p)[i] = p[i+1]               Ys(p)[i] = p[i−1]
-```
-
-The recurrences for a strong and its weak twin are *identical* — `Us` and `Uw` read the same, `Rs` and `Rw` read the same. They differ only in one place:
-
-**The base case is the whole strong/weak distinction.** Past the end of the finite trace the recurrence has to stop, and what it returns there is the seed: a **strong** operator seeds `false` (an obligation not discharged within the trace is unmet — `Us` off the end is false, `Xs` at the last state is false), a **weak** operator seeds `true` (an obligation the trace ended before it could be tested is forgiven — `Uw` off the end is true, `Xw` at the last state is true). `G(p) = Rw(false, p)` unfolds to `p[i] ∧ val[i+1]` seeded `true`; `F(p) = Us(true, p)` unfolds to `p[i] ∨ val[i+1]` seeded `false`. Choosing strong or weak is choosing what an unfinished trace means.
-
-**Time bounds.** `op[lo:hi]` restricts the witnessing (or obligated) states to those whose timestamp lies in `[t + lo, t + hi]`, where `t` is the timestamp at the evaluation point — MTL over the trace's own clock. `[:hi]` and `[lo:]` leave the open end unbounded. Only the bounded forms consult timestamps at all; the unbounded operators step from sample to sample and never look at the clock (see *What a trace means between samples*).
-
-The three accumulators share one shape: a condition selects the states that contribute, states where it fails are skipped rather than ending the walk, and the extent is set by the `[lo:hi]` window. What differs is the weight a contributing state carries — `Itg` weights it by its duration, `Sum` by a value, `Cnt` by one. That is the difference between "how long was the valve open" and "how many bytes were in this message".
-
-```text
-G(k.SOM => Cnt[0:5000](k.MID) <= 8);        // at most 8 packets per message
-G(k.SOM => Sum[0:5000](true, len) <= 4096); // and at most 4096 bytes
-```
-
-Accumulation runs forward from the current state, so the window is what bounds a per-message requirement — the condition chooses states, it does not delimit them. Without a window the walk reaches the end of the trace. `Cnt(c)` is `Sum(c, 1)`.
-
-All three fold in a single backward pass — the same linear lowering the until/release family uses, weighted by the accumulator's own contribution — so an unbounded accumulator under `G` is O(N) across the trace rather than O(N²). See *Computational complexity* below.
-
-### External functions
-
-Some requirements need arithmetic the language cannot express and should not grow syntax for. The motivating one is concrete: MCTP over SMBus ends every packet with a PEC, a CRC-8 over the transaction. REF has no fold over an array and no function abstraction, so the only spelling in the language itself is the fully unrolled polynomial — eight shift/xor steps per octet, across every octet.
-
-A `func` declares a native function; the implementation is a `.so` referee loads at run time.
-
-```text
-func crc8 : (byte[], integer) -> byte;
-
-data pec_ok = crc8(pkt, len - 1) == pkt[len - 1];
-
-globally, it is always the case that pec_ok holds;
-```
-
-```bash
-referee header spec.ref -o spec.h                              # types + prototypes
-referee header spec.ref --stub --header-name spec.h -o impl.c  # a skeleton to fill in
-cc -shared -fPIC -I . impl.c -o plugins/libspec.so
-referee execute spec.ref trace.csv -L plugins
-```
-
-The generated header is the load-bearing piece: C cannot diagnose a signature mismatch — it is undefined behaviour, not an error — so referee emits the header and, with `--stub`, the implementation skeleton too, from the same table it uses to compile the call. The specification alone is enough; no trace is needed.
-
-- **Symbols carry a `referee_` prefix.** `func read` binds to `referee_read` and so cannot reach `read(2)`, and referee inspects only `referee_*`, so one plugin's private helpers cannot collide with another's.
-- **Names may be namespaced** with `::` to any depth — `func std::math::sqrt`, mangled to `referee_std__math__sqrt`. It is a lexical convention, not a scoping construct. `.` could not be used: it is member access.
-- **A slice gives a call the length it means.** `pkt[lo:hi]` is the elements from `lo` up to but not including `hi`, and its extent is a value rather than a compile-time constant — so `crc8(pkt[0:len])` passes exactly the octets that are real, with no second argument to keep in step.
-- **Arrays cross as a `{count, data}` descriptor**, structs by `const` pointer, enums and other primitives by value. For an unbounded array `count` *is* the length; for a sized one it is the written extent. Either way the callee reads exactly `count` elements and needs no separate length argument.
-- **A whole-state function** takes the state at the point of evaluation instead of individual arguments: `func packet_ok : (__state__) -> boolean;`. `__state__` is a parameter list, not a type. The callee reads signals through accessors the generated header defines — never by laying out the row itself, which is an implementation detail that has changed — and the object states which layout it was built against, checked before anything runs. Which state is passed *moves*: inside a temporal operator it is the state the walk has reached. Prefer a value signature where one will do; the whole-state form is a broad contract where a value one is narrow.
-- **`-L` takes a `.so` or a directory of them**, repeatable. Loading is deterministic, a duplicate entry point is an error rather than a race, resolution never falls back to the host process, and a specification declaring no `func` never scans the path at all.
-
-Everything resolves before the first trace row is read. See `docs/external-functions.md` for the design, and `examples/extfunc/` for a worked example.
-
-A **freeze variable** `name@(... expression ...)` binds the current state to `name`, so subexpressions can reference data at that frozen point — e.g. `x@(F(x.abc.a == 3))` means "there is a future state whose `abc.a` equals the value `abc.a` had at the freeze point". A special `__time__` identifier refers to the current timestamp, and the frozen state's timestamp is `name.__time__`.
-
-The elapsed time since a freeze is common enough to have a name: **`name.elapsed`** is a pseudo-property — like `.count` on an array — that desugars to `__time__ - name.__time__`. So a deadline reads as `t.elapsed <= 5` rather than the subtraction spelled out.
-
-```text
-// A problem must be followed by an alarm within 5 seconds
-G(problem => t@(F(alarm && t.elapsed <= 5)));
-```
-
-### Specification Patterns
-
-On top of raw temporal-logic expressions, REF provides [Dwyer's property specification patterns](https://www.cs.colostate.edu/~france/CS614/Readings/Readings2011/propPatterns1-p7-dwyer.pdf) so requirements can be written in near-natural English — the paper that inspired this project. The scope comes first (one or more of `globally`, `before P`, `after P`, `while P`, `between P and Q`, `after P until Q`), followed by a pattern body:
-
-- `it is always the case that P holds [time bound];`
-- `it is never the case that P holds [time bound];`
-- `P eventually holds [time bound];`
-- `P holds after N units;` / `P holds in the long run;`
-- `once P becomes satisfied it remains so for at least N units;`
-- `once P becomes satisfied it remains so for less than N units;`
-- `P holds repeatedly [every N units];`
-- `if P, then in response S eventually holds [time bound];`
-- `if P, then it must have been the case that S has occurred before it;`
-- Response / precedence **chains** (`... followed by ...`), response **invariance** (`... holds continually ...`), and `P holds without interruption until S holds`.
-
-Time bounds may be `within N units`, `after N units`, or `between N and M units`, where `units` is one of `nanoseconds`, `microseconds`, `milliseconds`, `seconds`, `minutes`.
-
-Example — an elevator system:
+## The REF language
+
+A REF program declares the signals it talks about, then states requirements over
+them. A requirement is either a temporal-logic formula or a **specification
+pattern** — structured English, in the Dwyer tradition, that desugars to one.
+An elevator, in full:
 
 ```text
 type Button : enum { DEPRESSED, RELEASED };
@@ -583,128 +172,35 @@ after lock.ON, if door.OPENED, then it must have been the case that lock.OFF has
 after lock.ON, if lock.OFF, then it must have been the case that button.DEPRESSED has occurred before;
 ```
 
-Each of these lines compiles to a boolean-valued function over the trace; the runtime asserts that every such function returns `true` for every valid trace of the system.
+Each line compiles to a boolean-valued function over the trace, and the runtime
+asserts that every one returns `true` for every valid trace of the system.
+Because all requirements are evaluated over the same trace in the same module,
+any inconsistency between them becomes observable: the set of requirements is
+collectively checkable, not a collection of independent scripts.
 
-**A pattern's operands may be temporal.** `P`, `S`, `T` and the scope conditions are ordinary expressions, so `O(...)`, `F(...)`, `Us(...)` and the accumulators are all allowed in them — and what the scope changes is which states such an operator sees. Under `globally` (or with no scope) it spans the whole trace, exactly as the formula the pattern desugars to. Under `before` / `after` / `while` / `between … and …` / `after … until …` the body is re-evaluated over each segment the scope opens, and the operator reads only that segment: `after c, it is never the case that O(a) holds;` asks whether `a` occurred *since `c`*, not anywhere in the trace. To get the whole-trace reading inside a scope, name the sub-formula as a computed signal (`data seen_a = O(a);`) and use that instead — which also keeps it linear, since a scoped operator falls back to the O(N²) scan. See `docs/language.md`.
+The scope comes first — `globally`, `before P`, `after P`, `while P`,
+`between P and Q`, `after P until Q` — then the pattern body. Sixteen bodies
+cover the qualitative Dwyer catalogue (universality, absence, existence,
+response, precedence and their chain variants) and its real-time extensions
+(transient and steady state, minimum and maximum duration, recurrence, response
+invariance, until). Time bounds are `within N units`, `after N units` or
+`between N and M units`, where `units` is one of `nanoseconds`, `microseconds`,
+`milliseconds`, `seconds`, `minutes`.
 
-### Evaluation Model
+**The language reference lives under `docs/` and is the authoritative version:**
 
-A REF program does not describe a computation that produces outputs; it describes **predicates over a trace**. The compiler and runtime together work as follows.
+| | |
+| --- | --- |
+| [getting-started.md](docs/getting-started.md) | install → first requirement → first verdict, in ten minutes |
+| [language.md](docs/language.md) | the whole surface syntax: statements, declarations, types, expressions, precedence |
+| [specification-patterns.md](docs/specification-patterns.md) | all sixteen pattern bodies across the five scopes, with bounds and constraints |
+| [temporal-operators.md](docs/temporal-operators.md) | `G`/`F`/`X`/`U`/`R`, past-time `H`/`O`/`Y`/`S`/`T`, strong vs weak on finite traces, MTL windows, accumulators, the TPTL freeze |
+| [cookbook.md](docs/cookbook.md) | worked requirements: watchdogs, startup ordering, bounded response, mode invariants, debounce |
+| [architecture.md](docs/architecture.md) | temporal lowering, the two recurrence families, and the per-construct cost table |
 
-1. **Declarations shape the trace.** The set of `data` declarations determines the schema of each trace record (a `state_t` in generated code), and the set of `conf` declarations determines the static configuration (`conf_t`). `csvHeaders` walks these declarations and produces the matching flat column layout used for CSV ingestion — e.g. `data pos : struct { x: number; y: number; };` becomes two columns, `pos.x` and `pos.y`. Array fields expand to one column per element (`limits[0]`, `limits[1]`, …), the outer dimension varying slowest — a `data g : integer[3][2];` becomes `g[0][0]`, `g[0][1]`, `g[1][0]`, `g[1][1]`, `g[2][0]`, `g[2][1]`.
-2. **A trace is an ordered list of states plus a configuration.** Each state carries a timestamp (implicitly exposed to REF as the `__time__` pseudo-identifier inside freeze scopes) and values for every declared `data` field. The configuration carries values for every declared `conf` field. The trace is assumed to be **finite**; strong/weak variants of the temporal operators exist specifically so requirements behave correctly at the end of that finite trace.
-3. **Every requirement statement becomes one function.** For a statement `R` at file position `P`, the compiler emits an LLVM function named after `P` with the signature `bool eval(const state_t* states, size_t n, const conf_t* conf)` (more precisely, a pointer to the first state and the current-index bookkeeping that the temporal operators need). That function returns `true` iff the trace satisfies `R`.
-4. **The module is optimized, then JIT-compiled.** `Referee::compile` runs a fixed pipeline of LLVM passes (instruction combining, reassociation, GVN, CFG simplification, loop strength reduction, loop data prefetch, plus a custom pass that lowers `llvm.smax/smin/umax/umin` intrinsics into `icmp`+`select` to keep the ORC JIT happy) and pins the module's data layout to the host so struct field offsets match the C ABI used by the driver.
-5. **Computed signals are filled in first.** Alongside the requirement functions the compiler emits a `__prepare__` function, which the driver calls once before any requirement runs. It walks the trace once *per computed signal*, in declaration order, writing that signal's value at every state. Per-signal rather than per-state ordering is what makes `data y = Xs(x);` work: `x` is materialised across the whole trace before anything reading `x` at a later state is evaluated. Specifications with no computed signals get an empty `__prepare__`.
-6. **Verification is just iteration.** The runtime driver loads every requirement function by name, calls each one against the trace, and reports pass/fail. Two front ends use this loop today: the gtest harness (`test/logic.cpp`) builds a synthetic trace in C++, while the `referee execute` CLI ingests a CSV trace whose column layout is the one `csvHeaders` derives from the `data` declarations (and, optionally, a single-row `conf.csv` for `conf` declarations).
-
-Because all requirements are evaluated over the same trace in the same module, any inconsistency between them becomes observable: a trace that satisfies one requirement may violate another, and the set of requirements is collectively checkable — not a collection of independent scripts.
-
-### What a trace means between samples
-
-A trace row is a **sample**: a timestamp plus a complete set of values for every declared `data` signal. Referee's model of what happens *between* two samples is **sample-and-hold** — each sample's values are taken to hold from its own timestamp up to, but not including, the next one. A signal is a piecewise-constant function of time, and a row is the point at which it may change.
-
-Two consequences are worth being explicit about, because they pull in different directions.
-
-**Only time-bounded operators observe the clock.** The unbounded operators (`Xs`, `Ys`, `G`, `F`, `Us`, `Ss`, …) step from sample to sample and never look at a timestamp. `Xs(a)` means "at the next recorded sample", whether that sample is a millisecond later or an hour later:
-
-```text
-__time__,a          __time__,a
-0,false             0,false
-1,true              1000000,true
-```
-
-`Xs(a)` holds at the first state of **both** of these traces. The sampling rate is therefore part of what an unbounded requirement means — `Xs` is "next record", not "next instant". Only the bounded forms (`G[0:2500]`, `Us[1000:3000]`, …) interpret the hold, by intersecting their window with each sample's `[t_i, t_{i+1})` interval:
-
-```text
-__time__,a
-0,false
-1000,true
-
-F[0:500](a);      // FAIL — the window closes at t=500, and `a` is held false to t=1000
-F[0:1500](a);     // PASS — the window reaches t=1000, where the sample says true
-```
-
-**Rows are not sparse, and empty cells are not carried forward.** Every declared column must carry a value in every row. An empty cell is *not* filled from the row above — it reads as the type's zero (`false`, `0`, `0.0`, the empty string), and it does so silently:
-
-```text
-__time__,a,i
-0,true,42
-1000,,            # NOT a=true,i=42 held over — this row reads a=false, i=0
-2000,false,7
-```
-
-So sample-and-hold is what happens between rows, not within them. If you are generating a trace from a system that only reports signals when they change, you have to materialise the held values into complete rows before handing it to Referee; writing only the changed cell will silently zero everything else. Equivalently: **to say "this value changes at time T", add a complete row at T.**
-
-Finally, the packer brackets the trace with sentinel states one time unit outside it (at `firstT - 1` and `lastT + 1`), which is what gives the last real sample a non-empty interval to occupy. A bounded operator evaluated at the final sample therefore sees a one-unit-wide window rather than an open-ended one.
-
-### Temporal lowering
-
-The binary temporal operators come in two families that are duals of each other, and the distinction drives both the generated code and its correctness:
-
-| Family | Operators | Recurrence |
-| ------ | --------- | ---------- |
-| Disjunctive | `Us`, `Uw` (until), `Ss`, `Sw` (since) | `val[i] = rhs[i] \|\| (lhs[i] && val[i±1])` |
-| Conjunctive | `Rs`, `Rw` (release), `Ts`, `Tw` (trigger) | `val[i] = rhs[i] && (lhs[i] \|\| val[i±1])` |
-
-`U`/`R` recur forward (`val[i+1]`), `S`/`T` recur backward (`val[i-1]`). The strong/weak distinction is the base case: strong variants seed the recurrence with `false` at the end of the finite trace, weak variants with `true`. Several surface operators canonicalize into this family — `G(x)` becomes `Rw(false, x)`, for instance — so the conjunctive form is on the hot path even for specifications that never mention release or trigger by name.
-
-For the **unbounded** operators the compiler emits that recurrence directly as a single linear pass over the trace into a `bool[numStates]` buffer, then each use of the operator becomes an array load. Evaluating a requirement containing `k` distinct unbounded temporal operators therefore costs `O(k·N)` rather than the `O(N²)` of a nested scan, and a sub-formula shared between operators is computed once.
-
-**Bounded** operators (`G[0:2500](a)`, `Us[1000:3000](a, c)`, …) are also lowered linearly, by a different route. The recurrence above does not apply to them — `timeLo`/`timeHi` derive from the timestamp at the *evaluation point*, so `val[i]` and `val[i±1]` are quantified over different windows and the neighbour's result is not a reusable sub-result. What does carry over is that timestamps increase strictly, so the states the scan examines at evaluation point `i` form a contiguous index range `[S(i), E(i)]`, and its answer is the outcome at the first *decisive* index in that range — the first `j` with `rhs[j] == rhsV` or `lhs[j] == lhsV`. Decisiveness depends only on `j`, never on `i`, so one pass serves every evaluation point:
-
-```text
-decIdx[j] = nearest decisive index from j, in the scan direction   // one pass
-val[i]    = decIdx[S(i)] within E(i) ? outcome(decIdx[S(i)]) : endV
-```
-
-Both window ends move monotonically with `i`, so one forward-only pointer each covers the whole trace, giving two linear passes in place of the nested scan. Expressing the ends as "last index whose timestamp is `<= X`" rather than searching outward from `i` keeps each pointer a plain walk:
-
-```text
-UR:  S(i) = max(q, i),  q = last index with t[q] <= t[i]+lo
-     E(i) = e,          e = last index <= N-2 with t[e] < t[i]+hi
-ST:  S(i) = min(p, i),  p = first index with t[p] >= t[i]-lo
-     E(i) = f,          f = first index with t[f] >  t[i]-hi
-```
-
-The requirement is that the bounds be **loop-invariant** — literals, or expressions over `conf`. The grammar admits an arbitrary expression there, and a bound reading a `data` signal or a frozen state makes the window non-monotone in `i`, which breaks the pointer walk; those operators stay on the nested scan. `test/logic/bounded.ref` exercises the whole matrix over an irregularly spaced trace.
-
-**Freeze (`@`) bodies** are excluded from the buffered path regardless. A buffer is indexed by state, which is only meaningful for an operator whose value is a function of the state index, and inside a freeze an operator that names the frozen state denotes different things at different evaluation points. An operator that merely *contains* a freeze is still eligible — it is evaluated once per state like any other — so `Us(t@(...), b)` is buffered while a temporal operator nested under that `t@` is not.
-
-### Computational complexity
-
-For a trace of **N** states and a requirement containing **k** distinct temporal
-operators, the table below details the evaluation complexity. The design intent is that checking a long trace against a large
-specification is the ordinary case, so every operator that can be made linear
-in the trace length has been.
-
-| Construct | Cost per requirement | Notes |
-| --- | --- | --- |
-| State formula (`&&`, `==`, arithmetic, member access) | O(N) | one pass; short-circuit operators branch rather than evaluate both sides |
-| `G` `F` `H` `O` `Xs` `Xw` `Ys` `Yw` | O(N) each | canonicalize into the until/release recurrence |
-| `Us` `Uw` `Rs` `Rw` `Ss` `Sw` `Ts` `Tw`, unbounded | O(N) each | single linear pass into a `bool[N]` buffer; a shared sub-formula is computed once, so a whole requirement is **O(k·N)** |
-| the same, **bounded** `[lo:hi]` | O(N) each | monotone two-pointer walk, provided the bounds are loop-invariant (literals or `conf`); a bound reading a `data` signal falls back to the nested O(N²) scan |
-| `Sum` `Cnt` `Itg`, unbounded | O(N) each | one backward fold, the same recurrence weighted by value / one / duration |
-| the same, **windowed** `[lo:hi]` | O(N × w) | linear in the trace, `w` = states per window |
-| freeze `t@(…)` with a temporal body | O(N²) for that subtree | the frozen state is a different binding at each evaluation point, so it cannot be buffered |
-| a temporal operator inside a **scoped** pattern (`before`, `after`, `while`, `between`, `after … until`) | O(N²) for that subtree | the segment bounds are loop values, so the operator is evaluated per segment by the scan rather than buffered once; under `globally` it is buffered as usual |
-| quantifier over `T[N]` (sized) | compile-time | expands to conjunction / disjunction / indicator sum; no runtime cost |
-| quantifier over `T[]` (unbounded) | O(length) per state | a runtime loop; under `G`, O(N × length) |
-| array index / slice / `.count` | O(1) | a load and, for an index, a bounds check LLVM often proves away |
-| external `func` call | O(1) + callee | a native call; pure, so it hoists out of a loop when its arguments are loop-invariant |
-
-Two costs sit outside the per-requirement column:
-
-- **Compilation** is a fixed cost paid once — roughly 700 ms for a
-  196-requirement specification — independent of trace length. It dominates
-  below a few thousand states, which is why several traces are compiled once
-  and checked in turn (*Checking several traces* above).
-- **Checking** is about 0.12 ms per trace row per the same specification, so a
-  corpus is essentially `compile-once + Σ (rows × constant)`.
-
-`--explain` is the one deliberately super-linear path: a temporal requirement's
-per-state column re-walks its operator, O(N²), which is why it is opt-in and
-single-trace. The verdict it instruments stays O(N).
+Every REF example in those pages is kept as a fixture under `test/logic/` and
+run by `Cli.DocumentedExamplesCompileAndPass`, so a documented example that
+stops compiling — or stops holding — fails the build.
 
 # Installation
 
@@ -918,16 +414,20 @@ Compile every requirement, JIT it, and evaluate it against a CSV trace.
 
 - **`spec.ref`** — the requirement source file.
 - **`data.csv`** — the trace. One row per state. The column layout must match what `csvHeaders` derives from the `data` declarations in `spec.ref`:
-  - the first column is `__time__` (per-row timestamp, integer-valued; the unit is whatever the spec uses);
+  - the first column is `__time__` (per-row timestamp, integer-valued, **in nanoseconds** — the unit keywords in a specification pattern scale to it, so `within 100 milliseconds` means 100,000,000 ticks of `__time__`);
   - one column per leaf field of every `data` declaration — for `data pos : struct { x: number; y: number; };` you get `pos.x` and `pos.y`; for `data limits : integer[3];` you get `limits[0]`, `limits[1]`, `limits[2]`; nesting expands the obvious way (`grid[1][2].x`);
   - enums are written as the bare member name (`ON`, `OFF`), booleans as `true`/`false` (or `1`/`0`), strings unquoted.
 - **`--conf conf.csv`** *(optional)* — a single-row CSV carrying values for every `conf` declaration. Same column-naming rules as `data.csv`. If the spec has no `conf` declarations, omit it; if it has them and you omit the file, the configuration is zero-initialised, which is rarely what you want.
 
 ### Output
 
-One line per requirement, sorted by source position:
+One line per requirement. A [named](#naming-a-requirement) requirement is
+labelled by its name; an unnamed one by its source position, and the report is
+sorted by that position:
 
 ```text
+locks_promptly                           PASS
+never_open_and_locked                    PASS
 <startRow>:<startCol> .. <endRow>:<endCol>      PASS
 <startRow>:<startCol> .. <endRow>:<endCol>      FAIL
 …
@@ -1313,6 +813,13 @@ Corbett, over a temporal-logic core drawn from the classical literature — LTL
 and its past-time mirror, metric (time-bounded) operators, TPTL freeze
 quantifiers, and finite-trace strong/weak semantics. The primary sources for
 each are collected in **[docs/references.md](docs/references.md)**.
+
+The pattern catalogue spans two lines of work: the qualitative patterns of
+Dwyer, Avrunin and Corbett, and the real-time extensions — transient and steady
+state, minimum and maximum duration, recurrence, response invariance, and the
+`while` scope — from Konrad and Cheng's real-time specification patterns and the
+structured-English grammar of Autili et al. All three are cited in
+[docs/references.md](docs/references.md).
 
 The paper that inspired the project: M. B. Dwyer, G. S. Avrunin, J. C. Corbett,
 *Patterns in Property Specifications for Finite-State Verification*, ICSE 1999

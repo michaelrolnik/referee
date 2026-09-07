@@ -17,7 +17,9 @@ built on top of all of it.
 - [Front end: source to typed AST](#front-end-source-to-typed-ast)
 - [Lowering to LLVM IR](#lowering-to-llvm-ir)
   - [The state buffer](#the-state-buffer)
+  - [Two recurrence families](#two-recurrence-families)
 - [Two backends](#two-backends)
+- [Computational complexity](#computational-complexity)
 - [The trace format](#the-trace-format)
 - [The online monitor](#the-online-monitor)
 - [Components](#components)
@@ -102,6 +104,26 @@ is read by loading `prop[index]` from the current state; an array signal's
 pointer is a `{count, pointer}` descriptor (see
 [ragged-arrays.md](ragged-arrays.md)).
 
+### Two recurrence families
+
+The binary temporal operators form two families that are duals of each other,
+and the distinction drives both the generated code and its correctness:
+
+| Family | Operators | Recurrence |
+| ------ | --------- | ---------- |
+| Disjunctive | `Us`, `Uw` (until), `Ss`, `Sw` (since) | `val[i] = rhs[i] \|\| (lhs[i] && val[i±1])` |
+| Conjunctive | `Rs`, `Rw` (release), `Ts`, `Tw` (trigger) | `val[i] = rhs[i] && (lhs[i] \|\| val[i±1])` |
+
+`U`/`R` recur forward (`val[i+1]`), `S`/`T` recur backward (`val[i-1]`). The
+strong/weak distinction is the **base case**: strong variants seed the
+recurrence with `false` at the end of the finite trace, weak variants with
+`true`. That is the whole of the finite-trace (LTLf) story in one line, and it
+is why [both variants exist](temporal-operators.md#strong-and-weak-and-why-finite-traces-need-both).
+
+Several surface operators canonicalize into this family — `G(x)` becomes
+`Rw(false, x)`, for instance — so the conjunctive form is on the hot path even
+for specifications that never mention release or trigger by name.
+
 ## Two backends
 
 **In-process JIT** (`referee execute`, `referee monitor`). `src/driver/
@@ -154,6 +176,29 @@ at end of stream, where the online and offline verdicts must agree — the
 correctness property the tests pin at every prefix. See
 [monitor.md](monitor.md) for the design and
 [monitor-implementation.md](monitor-implementation.md) for the build.
+
+## Computational complexity
+
+For a trace of **N** states and a requirement containing **k** distinct temporal
+operators. The design intent is that checking a long trace against a large
+specification is the ordinary case, so every operator that can be made linear in
+the trace length has been.
+
+| Construct | Cost per requirement | Notes |
+| --- | --- | --- |
+| State formula (`&&`, `==`, arithmetic, member access) | O(N) | one pass; short-circuit operators branch rather than evaluate both sides |
+| `G` `F` `H` `O` `Xs` `Xw` `Ys` `Yw` | O(N) each | canonicalize into the until/release recurrence |
+| `Us` `Uw` `Rs` `Rw` `Ss` `Sw` `Ts` `Tw`, unbounded | O(N) each | single linear pass into a `bool[N]` buffer; a shared sub-formula is computed once, so a whole requirement is **O(k·N)** |
+| the same, **bounded** `[lo:hi]` | O(N) each | monotone two-pointer walk, provided the bounds are loop-invariant (literals or `conf`); a bound reading a `data` signal falls back to the nested O(N²) scan |
+| `Sum` `Cnt` `Itg`, unbounded | O(N) each | one backward fold, the same recurrence weighted by value / one / duration |
+| the same, **windowed** `[lo:hi]` | O(N × w) | linear in the trace, `w` = states per window |
+| freeze `t@(…)` with a temporal body | O(N²) for that subtree | the frozen state is a different binding at each evaluation point, so it cannot be buffered |
+| a temporal operator inside a **scoped** pattern (`before`, `after`, `while`, `between`, `after … until`) | O(N²) for that subtree | the segment bounds are loop values, so the operator is evaluated per segment by the scan rather than buffered once; under `globally` it is buffered as usual |
+
+The two O(N²) rows are the ones worth knowing about when a specification gets
+slow. Naming a sub-formula as a computed signal (`data seen_a = O(a);`) moves it
+out of the scope and back onto the linear path — see
+[The REF language](language.md) and [Accumulator cost](accumulator-cost.md).
 
 ## Components
 

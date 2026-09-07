@@ -170,19 +170,42 @@ To see *why*, ask for a run trace:
 That emits NDJSON recording which states witnessed what — see
 [Run traces](run-traces.md) and [Run-trace format](run-trace-format.md).
 
-## Working out the column layout
+## The CSV column layout
 
-For scalar signals the column name is the signal name. For structs and arrays
-the expansion is mechanical but easier to discover than to derive: start from a
-CSV with only `__time__` and one row, run `referee execute`, and let the
-column-not-found error name the next column it wants. Repeat until it runs.
+The header is derived from the `data` declarations, in declaration order:
+
+- the first column is **`__time__`**, the per-row timestamp, in nanoseconds;
+- then one column per **leaf field** of every `data` declaration.
+
+Composite types expand:
+
+| Declaration | Columns |
+| --- | --- |
+| `data locked : boolean;` | `locked` |
+| `data pos : struct { x: number; y: number; };` | `pos.x`, `pos.y` |
+| `data limits : integer[3];` | `limits[0]`, `limits[1]`, `limits[2]` |
+| `data g : integer[3][2];` | `g[0][0]`, `g[0][1]`, `g[1][0]`, … — outer dimension slowest |
+| `data grid : Point[2];` | `grid[0].x`, `grid[0].y`, `grid[1].x`, … |
+
+Values are written plainly: enums as the **bare member name** (`ON`, `OFF` — not
+`State.ON`), booleans as `true`/`false` or `1`/`0`, numbers and strings
+unquoted.
+
+For a non-trivial schema the fastest way to get the header right is to let the
+compiler tell you: start from a CSV with only `__time__` and one row, run
+`referee execute`, and the column-not-found error names the next column it
+expects. Repeat until it runs. The same expansion is performed by
+`core/visitors/csvHeaders.cpp` if you would rather read the rules in code.
 
 If your spec uses `conf` declarations — values constant for the whole run — pass
-a one-row configuration CSV as well:
+a one-row configuration CSV with the same column-naming rules:
 
 ```bash
 ./build/referee execute spec.ref data.csv --conf conf.csv
 ```
+
+Omit it when the spec has `conf` declarations and the configuration is
+zero-initialised silently, which is rarely what you want.
 
 ## Try the bundled fixtures
 
